@@ -194,22 +194,105 @@ async function executeAction(action: AIAction): Promise<{ ok: boolean; result?: 
 }
 
 async function handleClick(action: AIAction): Promise<{ ok: boolean; result?: string; error?: string }> {
-  const el = document.querySelector<HTMLElement>(action.selector!)
-  if (!el) return { ok: false, error: `Element not found: ${action.selector}` }
+  const selector = action.selector ?? ''
+  let el = resolveElement(selector)
+
+  if (!el) {
+    el = findByVisibleText(selector)
+  }
+
+  if (!el) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await sleep(500)
+      el = resolveElement(selector) ?? findByVisibleText(selector)
+      if (el) break
+    }
+  }
+
+  if (!el) return { ok: false, error: `Element not found: ${selector}. Available buttons: ${listClickableElements()}` }
+
   el.scrollIntoView({ behavior: 'smooth', block: 'center' })
   await sleep(300)
+
+  el.focus()
+  el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }))
+  el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }))
   el.click()
-  return { ok: true, result: `Clicked: ${el.textContent?.trim().slice(0, 50)}` }
+
+  return { ok: true, result: `Clicked: "${el.textContent?.trim().slice(0, 60)}" (${el.tagName.toLowerCase()})` }
+}
+
+function resolveElement(selector: string): HTMLElement | null {
+  if (!selector) return null
+  try {
+    return document.querySelector<HTMLElement>(selector)
+  } catch {
+    return null
+  }
+}
+
+function findByVisibleText(text: string): HTMLElement | null {
+  if (!text) return null
+  const cleanText = text.replace(/^["']|["']$/g, '').trim().toLowerCase()
+  if (!cleanText) return null
+
+  const clickable = document.querySelectorAll<HTMLElement>(
+    'button, a, [role="button"], input[type="submit"], input[type="button"], [onclick], [tabindex]'
+  )
+
+  for (const el of clickable) {
+    const elText = (el.textContent?.trim() ?? '').toLowerCase()
+    const ariaLabel = (el.getAttribute('aria-label') ?? '').toLowerCase()
+    const title = (el.getAttribute('title') ?? '').toLowerCase()
+    const value = ((el as HTMLInputElement).value ?? '').toLowerCase()
+
+    if (elText === cleanText || ariaLabel === cleanText || title === cleanText || value === cleanText) {
+      return el
+    }
+  }
+
+  for (const el of clickable) {
+    const elText = (el.textContent?.trim() ?? '').toLowerCase()
+    if (elText.includes(cleanText) || cleanText.includes(elText)) {
+      return el
+    }
+  }
+
+  return null
+}
+
+function listClickableElements(): string {
+  const buttons = document.querySelectorAll<HTMLElement>(
+    'button, a[href], [role="button"], input[type="submit"]'
+  )
+  const visible: string[] = []
+  for (const el of buttons) {
+    if (el.offsetParent === null) continue
+    const text = el.textContent?.trim().slice(0, 40) || (el as HTMLInputElement).value || el.getAttribute('aria-label') || ''
+    if (text) visible.push(`"${text}"`)
+    if (visible.length >= 10) break
+  }
+  return visible.join(', ') || 'none visible'
 }
 
 async function handleType(action: AIAction): Promise<{ ok: boolean; result?: string; error?: string }> {
-  const el = document.querySelector<HTMLElement>(action.selector!)
-  if (!el) return { ok: false, error: `Element not found: ${action.selector}` }
+  const selector = action.selector ?? ''
+  let el = resolveElement(selector)
+
+  if (!el) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await sleep(400)
+      el = resolveElement(selector)
+      if (el) break
+    }
+  }
+
+  if (!el) return { ok: false, error: `Field not found: ${selector}` }
 
   const inputType = (el as HTMLInputElement).type || el.tagName.toLowerCase()
   const ok = await fillField(el, action.value ?? '', inputType)
-  if (!ok) return { ok: false, error: `Could not fill field: ${action.selector}` }
-  return { ok: true, result: `Typed into ${action.selector}` }
+  if (!ok) return { ok: false, error: `Could not fill field: ${selector}` }
+  return { ok: true, result: `Typed "${(action.value ?? '').slice(0, 30)}" into ${selector}` }
 }
 
 function handleScroll(action: AIAction): { ok: boolean; result?: string } {

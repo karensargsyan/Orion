@@ -435,8 +435,17 @@ When the user asks you to interact with the page, respond with structured action
 - Wait for page to load: [ACTION:WAIT ms="MILLISECONDS"]
 - Get fresh page state: [ACTION:GET_PAGE_STATE]
 
+CRITICAL SELECTOR RULES:
+- You MUST ONLY use CSS selectors that appear in the "Current Page" section below.
+- NEVER fabricate, guess, or assume a selector (e.g. do NOT invent "#upgrade-button" or ".submit-btn").
+- Every selector you use in an ACTION MUST come directly from the Buttons, Forms, or Links listed below.
+- For buttons: copy the exact selector shown after the → arrow (e.g. from '"Upgrade" → #sidebar .btn.upgrade', use '#sidebar .btn.upgrade').
+- For links: you can use [ACTION:NAVIGATE url="..."] with the href shown, or [ACTION:CLICK selector="..."] with the link selector.
+- If you cannot find a matching selector for what the user wants, tell the user what buttons/links ARE available and ask them to clarify.
+- If the page context is empty or says "No page data available", tell the user to reload the page and try again.
+
 Action guidelines:
-- Use the CSS selectors provided in the page context below. Prefer #id selectors, then [name="..."], then the full path.
+- Prefer #id selectors, then [name="..."], then the full path from the page context.
 - For <select> dropdowns, use SELECT_OPTION with the option's value or visible label text.
 - For checkboxes and radio buttons, use CHECK with value="true" to check or value="false" to uncheck.
 - After complex interactions (e.g. clicking a button that loads new content), use WAIT followed by GET_PAGE_STATE to see the result.
@@ -453,7 +462,7 @@ General guidelines:
 - Always analyze field values and available options before choosing what to fill.
 - If unsure about the correct value for a field, ASK the user before acting.
 
-${pageContext ? `\n## Current Page\n${pageContext}` : ''}
+${pageContext ? `\n## Current Page\n${pageContext}` : '\n## Current Page\nNo page data available. The page may not have loaded yet. Ask the user to reload.'}
 ${recentMemory ? `\n## Recent Context\n${recentMemory}` : ''}`.trim()
 }
 

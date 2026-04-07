@@ -68,7 +68,7 @@ function toAIAction(parsed: ParsedAction): AIAction {
   }
 }
 
-async function ensureContentScript(tabId: number): Promise<boolean> {
+export async function ensureContentScript(tabId: number): Promise<boolean> {
   try {
     const tab = await chrome.tabs.get(tabId)
     if (!tab.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://') || tab.url.startsWith('about:')) {
@@ -96,7 +96,7 @@ async function ensureContentScript(tabId: number): Promise<boolean> {
   }
 }
 
-async function requestFreshSnapshot(tabId: number): Promise<PageSnapshot | undefined> {
+export async function requestFreshSnapshot(tabId: number): Promise<PageSnapshot | undefined> {
   try {
     const response = await chrome.tabs.sendMessage(tabId, { type: MSG.REQUEST_FRESH_SNAPSHOT }) as { ok: boolean; snapshot?: PageSnapshot }
     if (response?.ok && response.snapshot) {

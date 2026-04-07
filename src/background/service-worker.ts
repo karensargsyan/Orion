@@ -16,7 +16,7 @@ import { recordAction, flushAllBuffers, flushBuffer, clearTabBuffer } from './ac
 import { matchVaultToForm, matchCredentialsToForm, describeForm } from './form-intelligence'
 import { probeEndpoint, quickHealthCheck } from './api-detector'
 import { startScreenshotLoop, stopScreenshotLoop, captureScreenshot } from './screenshot-loop'
-import { executeActionsFromText, parseActionsFromText, executeWithFollowUp } from './action-executor'
+import { executeActionsFromText, parseActionsFromText, executeWithFollowUp, ensureContentScript, requestFreshSnapshot } from './action-executor'
 import { analyzeHabits, getHabitPatterns } from './habit-tracker'
 import { getAllCalendarEvents } from './calendar-detector'
 
@@ -194,6 +194,11 @@ async function handleAIChat(
     timestamp: Date.now(),
     tabId,
   })
+
+  if (tabId > 0) {
+    await ensureContentScript(tabId)
+    await requestFreshSnapshot(tabId)
+  }
 
   const pageContext = tabState.summarize(tabId)
   const history = await getSessionMessages(chatSessionId, s.maxContextMessages)
