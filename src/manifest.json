@@ -1,0 +1,48 @@
+{
+  "manifest_version": 3,
+  "name": "LocalAI Assistant",
+  "version": "0.2.0",
+  "description": "AI-powered browser assistant using your local AI model. Reads pages, fills forms, analyzes emails, remembers context, all 100% local and private.",
+
+  "permissions": [
+    "storage",
+    "unlimitedStorage",
+    "tabs",
+    "activeTab",
+    "sidePanel",
+    "scripting",
+    "webNavigation",
+    "alarms"
+  ],
+
+  "host_permissions": [
+    "http://localhost/*",
+    "http://127.0.0.1/*",
+    "http://192.168.*/*",
+    "http://10.*/*",
+    "http://172.16.*/*",
+    "<all_urls>"
+  ],
+
+  "background": {
+    "service_worker": "background/service-worker.js",
+    "type": "module"
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content/content-main.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+
+  "side_panel": {
+    "default_path": "sidepanel/sidepanel.html"
+  },
+
+  "action": {
+    "default_title": "Open LocalAI Assistant"
+  }
+}

@@ -1,0 +1,155 @@
+import { DB_NAME, DB_VERSION, STORE } from './constants'
+
+let _db: IDBDatabase | null = null
+
+export function openDB(): Promise<IDBDatabase> {
+  if (_db) return Promise.resolve(_db)
+
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION)
+
+    req.onupgradeneeded = (e) => {
+      const db = (e.target as IDBOpenDBRequest).result
+      const tx = (e.target as IDBOpenDBRequest).transaction!
+      setupSchema(db, tx, e.oldVersion)
+    }
+
+    req.onsuccess = (e) => {
+      _db = (e.target as IDBOpenDBRequest).result
+      _db.onclose = () => { _db = null }
+      resolve(_db)
+    }
+
+    req.onerror = () => reject(req.error)
+    req.onblocked = () => reject(new Error('IDB blocked by older version'))
+  })
+}
+
+function setupSchema(db: IDBDatabase, tx: IDBTransaction, oldVersion: number): void {
+  // v0 -> v1: initial stores
+  if (oldVersion < 1) {
+    const chat = db.createObjectStore(STORE.CHAT_HISTORY, { keyPath: 'id', autoIncrement: true })
+    chat.createIndex('by_session', 'sessionId', { unique: false })
+    chat.createIndex('by_timestamp', 'timestamp', { unique: false })
+    chat.createIndex('by_session_timestamp', ['sessionId', 'timestamp'], { unique: false })
+
+    const session = db.createObjectStore(STORE.SESSION_MEMORY, { keyPath: 'id', autoIncrement: true })
+    session.createIndex('by_url', 'url', { unique: false })
+    session.createIndex('by_timestamp', 'timestamp', { unique: false })
+    session.createIndex('by_type', 'type', { unique: false })
+    session.createIndex('by_domain', 'domain', { unique: false })
+    session.createIndex('by_session', 'sessionId', { unique: false })
+
+    const global = db.createObjectStore(STORE.GLOBAL_MEMORY, { keyPath: 'id', autoIncrement: true })
+    global.createIndex('by_domain', 'domain', { unique: false })
+    global.createIndex('by_tag', 'tags', { unique: false, multiEntry: true })
+    global.createIndex('by_timestamp', 'timestamp', { unique: false })
+
+    const vault = db.createObjectStore(STORE.VAULT, { keyPath: 'id' })
+    vault.createIndex('by_category', 'category', { unique: false })
+
+    db.createObjectStore(STORE.SETTINGS, { keyPath: 'key' })
+  }
+
+  // v1 -> v2: add new stores and indexes
+  if (oldVersion < 2) {
+    // Add by_tabId index to session_memory if store exists
+    if (db.objectStoreNames.contains(STORE.SESSION_MEMORY)) {
+      const sessionStore = tx.objectStore(STORE.SESSION_MEMORY)
+      if (!sessionStore.indexNames.contains('by_tabId')) {
+        sessionStore.createIndex('by_tabId', 'tabId', { unique: false })
+      }
+    }
+
+    if (!db.objectStoreNames.contains(STORE.CALENDAR_EVENTS)) {
+      const cal = db.createObjectStore(STORE.CALENDAR_EVENTS, { keyPath: 'id', autoIncrement: true })
+      cal.createIndex('by_date', 'date', { unique: false })
+      cal.createIndex('by_timestamp', 'detectedAt', { unique: false })
+    }
+
+    if (!db.objectStoreNames.contains(STORE.HABIT_PATTERNS)) {
+      const hab = db.createObjectStore(STORE.HABIT_PATTERNS, { keyPath: 'id', autoIncrement: true })
+      hab.createIndex('by_domain', 'domain', { unique: false })
+      hab.createIndex('by_timestamp', 'timestamp', { unique: false })
+    }
+  }
+}
+
+// ─── Generic helpers ──────────────────────────────────────────────────────────
+
+function req2promise<T>(request: IDBRequest<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error)
+  })
+}
+
+export async function dbGet<T>(store: string, key: IDBValidKey): Promise<T | undefined> {
+  const db = await openDB()
+  const tx = db.transaction(store, 'readonly')
+  return req2promise<T>(tx.objectStore(store).get(key))
+}
+
+export async function dbGetAll<T>(store: string): Promise<T[]> {
+  const db = await openDB()
+  const tx = db.transaction(store, 'readonly')
+  return req2promise<T[]>(tx.objectStore(store).getAll())
+}
+
+export async function dbGetAllByIndex<T>(
+  store: string,
+  index: string,
+  query: IDBValidKey | IDBKeyRange,
+  count?: number
+): Promise<T[]> {
+  const db = await openDB()
+  const tx = db.transaction(store, 'readonly')
+  const idx = tx.objectStore(store).index(index)
+  return req2promise<T[]>(idx.getAll(query, count))
+}
+
+export async function dbPut<T>(store: string, value: T): Promise<IDBValidKey> {
+  const db = await openDB()
+  const tx = db.transaction(store, 'readwrite')
+  return req2promise<IDBValidKey>(tx.objectStore(store).put(value as object))
+}
+
+export async function dbDelete(store: string, key: IDBValidKey): Promise<void> {
+  const db = await openDB()
+  const tx = db.transaction(store, 'readwrite')
+  await req2promise<undefined>(tx.objectStore(store).delete(key))
+}
+
+export async function dbClear(store: string): Promise<void> {
+  const db = await openDB()
+  const tx = db.transaction(store, 'readwrite')
+  await req2promise<undefined>(tx.objectStore(store).clear())
+}
+
+export async function dbGetByIndexRange<T>(
+  store: string,
+  index: string,
+  query: IDBValidKey | IDBKeyRange,
+  limit = 100
+): Promise<T[]> {
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(store, 'readonly')
+    const idx = tx.objectStore(store).index(index)
+    const results: T[] = []
+    const req = idx.openCursor(query, 'prev')
+    req.onsuccess = () => {
+      const cursor = req.result
+      if (!cursor || results.length >= limit) { resolve(results); return }
+      results.push(cursor.value as T)
+      cursor.continue()
+    }
+    req.onerror = () => reject(req.error)
+  })
+}
+
+export async function dbCount(store: string): Promise<number> {
+  const db = await openDB()
+  const tx = db.transaction(store, 'readonly')
+  return req2promise<number>(tx.objectStore(store).count())
+}

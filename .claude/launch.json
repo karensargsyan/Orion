@@ -1,0 +1,24 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "Preview (static server)",
+      "runtimeExecutable": "/usr/local/bin/node",
+      "runtimeArgs": ["serve-dist.js"],
+      "port": 3000,
+      "autoPort": true
+    },
+    {
+      "name": "Build (one-time)",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "build"],
+      "port": 0
+    },
+    {
+      "name": "Watch (rebuild on change)",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "watch"],
+      "port": 0
+    }
+  ]
+}
