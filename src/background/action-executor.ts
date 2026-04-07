@@ -121,9 +121,9 @@ export async function executeActionsFromText(
     const result = await executeSingleAction(action, tabId)
     results.push(result)
 
-    if (!result.success) break
-
-    await requestFreshSnapshot(tabId)
+    if (result.success) {
+      await requestFreshSnapshot(tabId)
+    }
     await sleep(300)
   }
 
@@ -205,7 +205,7 @@ export async function executeWithFollowUp(
   settings: Settings,
   port: StreamPort,
   sessionMessages: Pick<ChatMessage, 'role' | 'content'>[],
-  maxRounds = 3
+  maxRounds = 8
 ): Promise<void> {
   let response = aiResponse
   let round = 0
@@ -226,26 +226,25 @@ export async function executeWithFollowUp(
       chunk: `\n\n> Executed ${results.length} action(s):\n> ${resultSummary.replace(/\n/g, '\n> ')}\n\n`,
     })
 
-    const allSucceeded = results.every(r => r.success)
-    if (allSucceeded && round < maxRounds - 1) {
-      const freshContext = tabState.summarize(tabId)
-      const userIsActive = results.some(r => r.userActive)
+    const anyFailed = results.some(r => !r.success)
+    if (round >= maxRounds - 1) break
 
-      const followUp = await callAI([
-        ...sessionMessages,
-        { role: 'assistant', content: response },
-        {
-          role: 'user',
-          content: `Action results:\n${resultSummary}\n\n${userIsActive ? '⚠️ The user is also interacting with the page right now. Coordinate carefully.\n\n' : ''}Current page state:\n${freshContext}\n\nContinue if more actions are needed, or summarize what was done.`,
-        },
-      ], settings, 1024)
+    await requestFreshSnapshot(tabId)
+    const freshContext = tabState.summarize(tabId)
+    const userIsActive = results.some(r => r.userActive)
 
-      if (followUp) {
-        port.postMessage({ type: MSG.STREAM_CHUNK, chunk: followUp })
-        response = followUp
-      } else {
-        break
-      }
+    const followUp = await callAI([
+      ...sessionMessages,
+      { role: 'assistant', content: response },
+      {
+        role: 'user',
+        content: `Action results:\n${resultSummary}\n\n${userIsActive ? '⚠️ The user is also interacting with the page right now. Coordinate carefully.\n\n' : ''}${anyFailed ? 'Some actions failed. Look at the error messages — they list available buttons. Try again using the correct button text or selector.\n\n' : ''}Updated page state:\n${freshContext}\n\nYou are round ${round + 2} of ${maxRounds}. Continue clicking/navigating if more steps are needed to complete the user's request. When done, summarize what you found or did.`,
+      },
+    ], settings, 2048)
+
+    if (followUp) {
+      port.postMessage({ type: MSG.STREAM_CHUNK, chunk: followUp })
+      response = followUp
     } else {
       break
     }

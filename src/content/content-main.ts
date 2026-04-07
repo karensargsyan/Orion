@@ -195,29 +195,29 @@ async function executeAction(action: AIAction): Promise<{ ok: boolean; result?: 
 
 async function handleClick(action: AIAction): Promise<{ ok: boolean; result?: string; error?: string }> {
   const selector = action.selector ?? ''
-  let el = resolveElement(selector)
+  let el: HTMLElement | null = null
 
-  if (!el) {
-    el = findByVisibleText(selector)
-  }
+  el = findByVisibleText(selector)
+
+  if (!el) el = resolveElement(selector)
 
   if (!el) {
     for (let attempt = 0; attempt < 3; attempt++) {
       await sleep(500)
-      el = resolveElement(selector) ?? findByVisibleText(selector)
+      el = findByVisibleText(selector) ?? resolveElement(selector)
       if (el) break
     }
   }
 
-  if (!el) return { ok: false, error: `Element not found: ${selector}. Available buttons: ${listClickableElements()}` }
+  if (!el) return { ok: false, error: `Element not found: "${selector}". Available buttons: ${listClickableElements()}` }
 
   el.scrollIntoView({ behavior: 'smooth', block: 'center' })
   await sleep(300)
 
   el.focus()
-  el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }))
-  el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }))
-  el.click()
+  el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }))
+  el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }))
+  el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }))
 
   return { ok: true, result: `Clicked: "${el.textContent?.trim().slice(0, 60)}" (${el.tagName.toLowerCase()})` }
 }
@@ -237,10 +237,12 @@ function findByVisibleText(text: string): HTMLElement | null {
   if (!cleanText) return null
 
   const clickable = document.querySelectorAll<HTMLElement>(
-    'button, a, [role="button"], input[type="submit"], input[type="button"], [onclick], [tabindex]'
+    'button, a, [role="button"], input[type="submit"], input[type="button"], [onclick], [tabindex], label[for]'
   )
 
-  for (const el of clickable) {
+  const visible = [...clickable].filter(el => el.offsetParent !== null || el.offsetHeight > 0)
+
+  for (const el of visible) {
     const elText = (el.textContent?.trim() ?? '').toLowerCase()
     const ariaLabel = (el.getAttribute('aria-label') ?? '').toLowerCase()
     const title = (el.getAttribute('title') ?? '').toLowerCase()
@@ -251,26 +253,56 @@ function findByVisibleText(text: string): HTMLElement | null {
     }
   }
 
-  for (const el of clickable) {
+  for (const el of visible) {
+    const directText = getDirectText(el).toLowerCase()
+    if (directText === cleanText) return el
+  }
+
+  for (const el of visible) {
     const elText = (el.textContent?.trim() ?? '').toLowerCase()
-    if (elText.includes(cleanText) || cleanText.includes(elText)) {
+    const ariaLabel = (el.getAttribute('aria-label') ?? '').toLowerCase()
+    if (
+      elText.includes(cleanText) || cleanText.includes(elText) ||
+      ariaLabel.includes(cleanText)
+    ) {
       return el
+    }
+  }
+
+  const allElements = document.querySelectorAll<HTMLElement>('*')
+  for (const el of allElements) {
+    if (el.offsetParent === null && el.offsetHeight === 0) continue
+    const role = el.getAttribute('role')
+    const cursor = window.getComputedStyle(el).cursor
+    if (role === 'button' || role === 'link' || role === 'tab' || role === 'menuitem' || cursor === 'pointer') {
+      const elText = (el.textContent?.trim() ?? '').toLowerCase()
+      if (elText === cleanText || elText.includes(cleanText)) return el
     }
   }
 
   return null
 }
 
+function getDirectText(el: HTMLElement): string {
+  let text = ''
+  for (const node of el.childNodes) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      text += node.textContent ?? ''
+    }
+  }
+  return text.trim()
+}
+
 function listClickableElements(): string {
   const buttons = document.querySelectorAll<HTMLElement>(
-    'button, a[href], [role="button"], input[type="submit"]'
+    'button, a[href], [role="button"], input[type="submit"], [role="tab"], [role="menuitem"]'
   )
   const visible: string[] = []
   for (const el of buttons) {
-    if (el.offsetParent === null) continue
-    const text = el.textContent?.trim().slice(0, 40) || (el as HTMLInputElement).value || el.getAttribute('aria-label') || ''
-    if (text) visible.push(`"${text}"`)
-    if (visible.length >= 10) break
+    if (el.offsetParent === null && el.offsetHeight === 0) continue
+    const text = el.textContent?.trim().slice(0, 50) || (el as HTMLInputElement).value || el.getAttribute('aria-label') || ''
+    if (text && !visible.includes(`"${text}"`)) visible.push(`"${text}"`)
+    if (visible.length >= 20) break
   }
   return visible.join(', ') || 'none visible'
 }
