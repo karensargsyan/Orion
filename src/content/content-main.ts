@@ -623,16 +623,31 @@ async function performClick(el: HTMLElement): Promise<{ ok: boolean; result?: st
   const cx = rect.left + rect.width / 2
   const cy = rect.top + rect.height / 2
   showClickEffect(cx, cy)
-  const mouseOpts: MouseEventInit = { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy }
 
-  el.dispatchEvent(new PointerEvent('pointerdown', { ...mouseOpts, pointerId: 1 }))
+  // Use full realistic event sequence that modern frameworks respond to
+  const mouseOpts: MouseEventInit = { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy }
+  const pointerOpts = { ...mouseOpts, pointerId: 1, pointerType: 'mouse' as const, isPrimary: true }
+
+  el.dispatchEvent(new PointerEvent('pointerover', pointerOpts))
+  el.dispatchEvent(new PointerEvent('pointerenter', { ...pointerOpts, bubbles: false }))
+  el.dispatchEvent(new MouseEvent('mouseover', mouseOpts))
+  el.dispatchEvent(new MouseEvent('mouseenter', { ...mouseOpts, bubbles: false }))
+  el.dispatchEvent(new PointerEvent('pointerdown', pointerOpts))
   el.dispatchEvent(new MouseEvent('mousedown', mouseOpts))
-  el.dispatchEvent(new PointerEvent('pointerup', { ...mouseOpts, pointerId: 1 }))
+  el.dispatchEvent(new PointerEvent('pointerup', pointerOpts))
   el.dispatchEvent(new MouseEvent('mouseup', mouseOpts))
   el.dispatchEvent(new MouseEvent('click', mouseOpts))
 
-  if (el.tagName === 'A' && (el as HTMLAnchorElement).href) {
-    try { (el as HTMLAnchorElement).click() } catch { /* native click fallback */ }
+  // Always try native .click() as well — many frameworks (React, Angular, etc.)
+  // need the trusted native event, not just dispatched synthetic events
+  try { el.click() } catch { /* ignore */ }
+
+  // Also try clicking the nearest <a> or <button> ancestor if el is a child
+  if (el.tagName !== 'A' && el.tagName !== 'BUTTON') {
+    const clickableParent = el.closest<HTMLElement>('a[href], button, [role="button"], [role="link"]')
+    if (clickableParent && clickableParent !== el) {
+      try { clickableParent.click() } catch { /* ignore */ }
+    }
   }
 
   await sleep(800)
@@ -644,16 +659,16 @@ async function performClick(el: HTMLElement): Promise<{ ok: boolean; result?: st
   const label = cleanResultText(el)
 
   if (preUrl !== postUrl) {
-    return { ok: true, result: `Clicked "${label}" and navigated to ${postUrl}` }
+    return { ok: true, result: `Clicked "${label}" → navigated to ${postUrl}` }
   }
   if (preTitle !== postTitle) {
-    return { ok: true, result: `Clicked "${label}" and page changed: ${postTitle}` }
+    return { ok: true, result: `Clicked "${label}" → page changed: ${postTitle}` }
   }
   if (preHash !== postHash) {
-    return { ok: true, result: `Clicked "${label}" and content updated` }
+    return { ok: true, result: `Clicked "${label}" → content updated` }
   }
 
-  return { ok: true, result: `Clicked "${label}" — WARNING: no visible page change detected. The click may not have had effect. Verify with GET_PAGE_STATE or screenshot.` }
+  return { ok: true, result: `Clicked "${label}" — WARNING: no visible page change detected. The click may not have had effect. Try a different element, use element_id from the accessibility tree, or scroll to reveal the target.` }
 }
 
 async function handleClickElement(el: HTMLElement): Promise<{ ok: boolean; result?: string; error?: string }> {

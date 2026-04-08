@@ -338,7 +338,12 @@ export async function executeActionsFromText(
       if (result.success) {
         const isNavAction = NAV_ACTIONS.has(action.action) ||
           (action.action === 'click' && result.result?.includes('Navigat'))
-        if (isNavAction) await sleep(1500)
+        if (isNavAction) {
+          // Wait for the new page to load, then re-inject the content script
+          await sleep(2000)
+          await ensureContentScript(tabId).catch(() => false)
+          await sleep(500)
+        }
       }
     } else {
       // Parallel batch — execute all simultaneously
@@ -736,12 +741,22 @@ export async function executeWithFollowUp(
       break
     }
 
+    // Check for is_complete signal from AI
+    if (checkIsComplete(response)) {
+      port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '' })
+      break
+    }
+
     const actions = parseActionsFromText(response)
     if (actions.length === 0) {
       if (containsMalformedActions(response)) {
         port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '\n\n> Model used wrong action format. Retrying...\n\n' })
       } else if (round === 0) {
-        port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '\n\n> No executable actions found in model response. The model may have described actions instead of emitting them.\n\n' })
+        port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '\n\n> No executable actions found in model response.\n\n' })
+      } else {
+        // On rounds 2+, the AI stopped emitting actions — task may be done or stuck.
+        // Don't silently break — tell the user.
+        port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '' })
       }
       break
     }
@@ -773,7 +788,10 @@ export async function executeWithFollowUp(
     const preTree = tabId > 0 ? await getCDPAccessibilityTree(tabId).catch(() => null) : null
 
     const results = await executeActionsFromText(response, tabId)
-    if (results.length === 0) break
+    if (results.length === 0) {
+      port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '\n\n> Actions could not be executed on this page.\n\n' })
+      break
+    }
     const postState = await captureVerificationState(tabId)
 
     // Fast post-action screenshot — confirms whether the action worked
@@ -831,6 +849,21 @@ export async function executeWithFollowUp(
 
     let followUpA11y: string | undefined
     let postTree: Awaited<ReturnType<typeof getCDPAccessibilityTree>> | null = null
+
+    // Ensure content script is alive (especially after navigation)
+    if (tabId > 0) {
+      const hasNav = results.some(r =>
+        r.success && (NAV_ACTIONS.has(r.action) || r.result?.includes('navigated'))
+      )
+      if (hasNav) {
+        // Page navigated — wait for load and re-inject content script
+        await sleep(1500)
+        await ensureContentScript(tabId).catch(() => false)
+        await sleep(500)
+        // Capture fresh snapshot of the new page
+        await requestFreshSnapshot(tabId)
+      }
+    }
 
     if (tabId > 0) {
       postTree = await getCDPAccessibilityTree(tabId).catch(() => null)
@@ -931,7 +964,13 @@ DO NOT repeat the same selector that already failed. DO NOT give up after one fa
     // Always send screenshots during automation (forceVision=true) — the AI
     // needs visual confirmation regardless of the user's visionEnabled setting
     const hasScreenshot = followUpMessages.some(m => !!m.imageData)
-    const followUp = await callAI(followUpMessages, settings, 4096, hasScreenshot)
+    let followUp = await callAI(followUpMessages, settings, 4096, hasScreenshot)
+
+    // If AI returned empty, retry once without screenshot (model may not support vision)
+    if (!followUp && hasScreenshot) {
+      const noImageMsgs = followUpMessages.map(m => ({ ...m, imageData: undefined }))
+      followUp = await callAI(noImageMsgs, settings, 4096)
+    }
 
     if (followUp) {
       if (isRepetitiveOutput(followUp)) {
@@ -943,6 +982,7 @@ DO NOT repeat the same selector that already failed. DO NOT give up after one fa
       }
       response = followUp
     } else {
+      port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '\n\n> AI did not respond — model may be overloaded or request too large.\n\n' })
       break
     }
 
@@ -968,6 +1008,12 @@ const MALFORMED_RE = /call:[\w]*:?[\w]*\{/i
 
 function containsMalformedActions(text: string): boolean {
   return MALFORMED_RE.test(text)
+}
+
+/** Check if the AI signalled task completion via is_complete: true in JSON. */
+function checkIsComplete(text: string): boolean {
+  const match = text.match(/"is_complete"\s*:\s*(true|false)/i)
+  return match?.[1]?.toLowerCase() === 'true'
 }
 
 function isRepetitiveOutput(text: string): boolean {
