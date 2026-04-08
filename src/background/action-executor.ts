@@ -11,6 +11,7 @@ import { getAllSettings } from './memory-manager'
 import { mempalaceEnabled, searchMempalace } from './mempalace-client'
 import { getCDPAccessibilityTree } from './cdp-accessibility'
 import { captureMiniMap } from './minimap-screenshot'
+import { recordPageVisit, getPageScreenshot } from './visual-sitemap'
 
 const ACTION_PATTERN = /\[ACTION:(\w+)([^\]]*)\]/g
 const MAX_INJECT_RETRIES = 2
@@ -200,6 +201,8 @@ function toAIAction(parsed: ParsedAction): AIAction {
       } catch { /* invalid JSON */ }
       return { action: 'fill_form', assignments }
     }
+    case 'sitemap_screenshot':
+      return { action: 'sitemap_screenshot', value: parsed.params.path ?? parsed.params.value ?? '/' }
     default:
       return { action: parsed.action as AIAction['action'], selector, value: parsed.params.value }
   }
@@ -328,10 +331,23 @@ export async function executeActionsFromText(
       results.push(...batchResults)
     }
 
-    // Refresh snapshot once after each batch
+    // Refresh snapshot + capture verification screenshot after each batch
     const lastResult = results[results.length - 1]
     if (lastResult?.success) {
       await requestFreshSnapshot(tabId)
+      // Take a verification screenshot after every action batch
+      try {
+        const verifyShot = await captureMiniMap(tabId).catch(() => null)
+        if (verifyShot) {
+          tabState.setScreenshot(tabId, verifyShot.dataUrl)
+          // Record in visual sitemap
+          const snap = tabState.get(tabId)
+          if (snap?.url) {
+            const domain = extractDomainFromUrl(snap.url)
+            recordPageVisit(domain, snap.url, snap, verifyShot.dataUrl).catch(() => {})
+          }
+        }
+      } catch { /* screenshot not critical */ }
     }
     await sleep(200)
   }
@@ -344,10 +360,28 @@ async function executeSingleAction(action: AIAction, tabId: number): Promise<AIA
     try {
       const dataUrl = await chrome.tabs.captureVisibleTab({ format: 'jpeg', quality: 60 })
       tabState.setScreenshot(tabId, dataUrl)
+      // Also record in sitemap
+      const snap = tabState.get(tabId)
+      if (snap?.url) {
+        const domain = extractDomainFromUrl(snap.url)
+        recordPageVisit(domain, snap.url, snap, dataUrl).catch(() => {})
+      }
       return { action: 'screenshot', success: true, result: 'Screenshot captured' }
     } catch (err) {
       return { action: 'screenshot', success: false, error: String(err) }
     }
+  }
+
+  if (action.action === 'sitemap_screenshot') {
+    const path = action.value ?? action.selector ?? '/'
+    const snap = tabState.get(tabId)
+    const domain = snap?.url ? extractDomainFromUrl(snap.url) : ''
+    const screenshot = await getPageScreenshot(domain, path)
+    if (screenshot) {
+      tabState.setScreenshot(tabId, screenshot)
+      return { action: 'sitemap_screenshot', success: true, result: `Loaded cached screenshot for ${path}` }
+    }
+    return { action: 'sitemap_screenshot', success: false, error: `No cached screenshot for path "${path}" on ${domain}` }
   }
 
   if (action.action === 'wait') {
@@ -724,6 +758,12 @@ export async function executeWithFollowUp(
       if (postMiniMap) {
         postScreenshot = postMiniMap.dataUrl
         tabState.setScreenshot(tabId, postMiniMap.dataUrl)
+        // Record post-action state in visual sitemap
+        const snap = tabState.get(tabId)
+        if (snap?.url) {
+          const domain = extractDomainFromUrl(snap.url)
+          recordPageVisit(domain, snap.url, snap, postMiniMap.dataUrl).catch(() => {})
+        }
       }
     }
 

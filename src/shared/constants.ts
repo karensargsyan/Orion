@@ -152,7 +152,7 @@ export const MSG = {
 export type MsgType = (typeof MSG)[keyof typeof MSG]
 
 export const DB_NAME = 'pwa_memory'
-export const DB_VERSION = 6
+export const DB_VERSION = 7
 
 export const STORE = {
   CHAT_HISTORY: 'chat_history',
@@ -167,6 +167,7 @@ export const STORE = {
   LEARNING_SESSIONS: 'learning_sessions',
   SUPERVISED_PLAYBOOKS: 'supervised_playbooks',
   SUPERVISED_SESSIONS: 'supervised_sessions',
+  VISUAL_SITEMAP: 'visual_sitemap',
 } as const
 
 export const PORT_AI_STREAM = 'ai-stream'

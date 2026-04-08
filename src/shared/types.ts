@@ -341,7 +341,7 @@ export interface FillAssignment {
 
 // ─── AI Action Commands ───────────────────────────────────────────────────────
 
-export type AIActionType = 'click' | 'type' | 'fill_form' | 'scroll' | 'select' | 'navigate' | 'read' | 'screenshot' | 'select_option' | 'check' | 'clear' | 'wait' | 'read_options' | 'get_page_state' | 'read_page' | 'hover' | 'doubleclick' | 'keypress' | 'focus' | 'back' | 'forward' | 'scroll_to' | 'select_text' | 'search' | 'open_tab' | 'read_tab' | 'close_tab' | 'batch_read' | 'analyze_file' | 'toggle'
+export type AIActionType = 'click' | 'type' | 'fill_form' | 'scroll' | 'select' | 'navigate' | 'read' | 'screenshot' | 'select_option' | 'check' | 'clear' | 'wait' | 'read_options' | 'get_page_state' | 'read_page' | 'hover' | 'doubleclick' | 'keypress' | 'focus' | 'back' | 'forward' | 'scroll_to' | 'select_text' | 'search' | 'open_tab' | 'read_tab' | 'close_tab' | 'batch_read' | 'analyze_file' | 'toggle' | 'sitemap_screenshot'
 
 export type ReadPageFilter = 'interactive' | 'forms' | 'text' | 'all'
 
@@ -528,4 +528,38 @@ export interface UserBehavior {
   occurrences: number
   lastSeen: number
   createdAt: number
+}
+
+// ─── Visual Sitemap ──────────────────────────────────────────────────────────
+
+/** One page entry in the per-domain sitemap. */
+export interface SitemapPageEntry {
+  /** URL path (without origin), e.g. "/settings/account" */
+  path: string
+  /** Full URL */
+  url: string
+  /** Page title */
+  title: string
+  /** Same-domain navigation links found on this page */
+  navLinks: { href: string; text: string }[]
+  /** Headings found on the page */
+  headings: string[]
+  /** Low-res JPEG screenshot (base64 data URL) — latest capture only */
+  screenshotDataUrl?: string
+  /** Last visit/capture timestamp */
+  lastSeen: number
+  /** How many times visited during automation */
+  visitCount: number
+}
+
+/** Per-domain sitemap stored in IDB and cached in memory. */
+export interface DomainSitemap {
+  /** IDB key: the hostname, e.g. "mail.google.com" */
+  domain: string
+  /** Map from normalized URL path to page entry */
+  pages: Record<string, SitemapPageEntry>
+  /** When this sitemap was last persisted to IDB */
+  lastPersisted: number
+  /** When any page was last updated */
+  lastUpdated: number
 }

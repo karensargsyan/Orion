@@ -668,7 +668,8 @@ export function buildSystemPrompt(
   behaviorKnowledge?: string,
   userInstructions?: string,
   mempalaceContext?: string,
-  viewportMeta?: { width: number; height: number; devicePixelRatio: number }
+  viewportMeta?: { width: number; height: number; devicePixelRatio: number },
+  sitemapContext?: string
 ): string {
   const now = new Date().toLocaleString()
   const hasVision = capabilities?.supportsVision ?? false
@@ -799,6 +800,7 @@ Examples:
 [ACTION:BATCH_READ value='["selector1","selector2"]'] — read many elements in ONE action (use selectors from page state). Prefer this over many separate READ actions.
 [ACTION:ANALYZE_FILE url="https://... or blob:..."] or [ACTION:ANALYZE_FILE selector="CSS for attachment link"] — extract text from attachments (respects size/type limits; executables blocked).
 [ACTION:FILL_FORM assignments='[{"selector":"CSS","value":"text","inputType":"text"}]'] — one action with ALL fields; inputType matches field type (text, email, etc.).
+[ACTION:SITEMAP_SCREENSHOT path="/settings"] — load a cached screenshot of a previously visited page path.
 
 ### Format 2: JSON Action (preferred when accessibility tree is available)
 Output a single JSON object:
@@ -883,6 +885,10 @@ Use [ACTION:READ_PAGE] to get structured page information with ref IDs:
 - [ACTION:READ_PAGE filter="all"] — everything combined (default)
 Use this BEFORE acting when you need to understand the page or after navigation to discover new elements.
 
+## SITE MAP — FAST NAVIGATION
+The system automatically builds a map of pages you visit. When navigating to a known page, use [ACTION:NAVIGATE url="..."] with the exact URL instead of clicking through menus — this is much faster.
+[ACTION:SITEMAP_SCREENSHOT path="/settings"] — load a cached screenshot of a previously visited page to see what it looks like without navigating there.
+${sitemapContext ? `\n${sitemapContext}\n` : ''}
 ## TOGGLES, SWITCHES, AND CHECKBOXES
 The accessibility tree shows element state: [State: ON], [State: OFF], [State: checked], [State: unchecked].
 1. **Always use TOGGLE action** for switches/toggles/checkboxes — it reads state and only clicks if needed.

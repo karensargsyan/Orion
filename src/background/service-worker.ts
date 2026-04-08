@@ -58,6 +58,7 @@ import { findMatchingPlaybook } from './playbook-matcher'
 import { getAllPlaybooks, deletePlaybook } from './memory-manager'
 import { getCDPAccessibilityTree, type CDPTreeResult } from './cdp-accessibility'
 import { captureMiniMap, type MiniMapResult } from './minimap-screenshot'
+import { recordPageVisit, getSitemapForPrompt, persistDirtySitemaps } from './visual-sitemap'
 
 // ─── Background AI call failure tracking ─────────────────────────────────────
 
@@ -175,6 +176,9 @@ async function initSW(): Promise<void> {
 
 chrome.runtime.onInstalled.addListener(() => { initSW().catch(console.error) })
 chrome.runtime.onStartup.addListener(() => { initSW().catch(console.error) })
+chrome.runtime.onSuspend?.addListener(() => {
+  persistDirtySitemaps().catch(() => {})
+})
 
 // ─── Offscreen STT Management ────────────────────────────────────────────────
 
@@ -630,6 +634,9 @@ async function handleAIChat(
     ? { ...s.apiCapabilities, supportsVision: true }
     : s.apiCapabilities
 
+  // Build sitemap context for the current domain
+  const sitemapText = await getSitemapForPrompt(currentDomain)
+
   // Choose system prompt based on lite mode (for small local models)
   const systemPrompt = s.liteMode
     ? buildCompactSystemPrompt(pageContext, accessibilityTree, viewportMeta)
@@ -643,7 +650,8 @@ async function handleAIChat(
         behaviorText || undefined,
         userInstructionsText || undefined,
         mempalaceBlock,
-        viewportMeta
+        viewportMeta,
+        sitemapText || undefined
       )
 
   let messages: Pick<ChatMessage, 'role' | 'content' | 'imageData'>[] = [
@@ -848,13 +856,18 @@ async function handleMessage(
     case MSG.PAGE_SNAPSHOT: {
       const snap = msg.payload as PageSnapshot
       tabState.set(tabId, snap)
+      // Record page visit in visual sitemap (without screenshot — the screenshot loop handles that)
+      const snapDomain = extractDomain(snap.url)
+      if (snapDomain) {
+        recordPageVisit(snapDomain, snap.url, snap).catch(() => {})
+      }
       if (s.monitoringEnabled && snap.forms.length > 0) {
         await addSessionMemory({
           type: 'form_detected',
           url: snap.url,
-          domain: extractDomain(snap.url),
+          domain: snapDomain,
           content: `Form detected on ${snap.title}: ${snap.forms.map(f => describeForm(f)).join('; ')}`,
-          tags: ['form', `domain:${extractDomain(snap.url)}`],
+          tags: ['form', `domain:${snapDomain}`],
           timestamp: Date.now(),
           sessionId,
           tabId,

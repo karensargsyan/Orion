@@ -2,7 +2,7 @@ import type { PageSnapshot } from '../shared/types'
 
 const snapshots = new Map<number, PageSnapshot>()
 const screenshots = new Map<number, string[]>()
-const MAX_SCREENSHOTS_PER_TAB = 2
+const MAX_SCREENSHOTS_PER_TAB = 5
 
 export const tabState = {
   set(tabId: number, snapshot: PageSnapshot): void {

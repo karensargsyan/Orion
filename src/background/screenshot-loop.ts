@@ -1,4 +1,5 @@
 import { tabState } from './tab-state'
+import { recordPageVisit } from './visual-sitemap'
 
 let intervalId: ReturnType<typeof setInterval> | null = null
 
@@ -30,6 +31,14 @@ export async function captureScreenshot(tabId: number): Promise<string | null> {
   try {
     const dataUrl = await chrome.tabs.captureVisibleTab({ format: 'jpeg', quality: 50 })
     tabState.setScreenshot(tabId, dataUrl)
+    // Feed screenshot to visual sitemap
+    const snap = tabState.get(tabId)
+    if (snap?.url) {
+      try {
+        const domain = new URL(snap.url).hostname
+        recordPageVisit(domain, snap.url, snap, dataUrl).catch(() => {})
+      } catch { /* invalid URL */ }
+    }
     return dataUrl
   } catch {
     return null

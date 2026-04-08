@@ -118,6 +118,14 @@ function setupSchema(db: IDBDatabase, tx: IDBTransaction, oldVersion: number): v
       ss.createIndex('by_started', 'startedAt', { unique: false })
     }
   }
+
+  // v6 -> v7: visual sitemap store
+  if (oldVersion < 7) {
+    if (!db.objectStoreNames.contains(STORE.VISUAL_SITEMAP)) {
+      const sm = db.createObjectStore(STORE.VISUAL_SITEMAP, { keyPath: 'domain' })
+      sm.createIndex('by_updated', 'lastUpdated', { unique: false })
+    }
+  }
 }
 
 // ─── Generic helpers ──────────────────────────────────────────────────────────
