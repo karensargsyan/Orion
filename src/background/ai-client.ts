@@ -236,7 +236,8 @@ async function streamOpenAI(
   controller: AbortController
 ): Promise<string> {
   const baseUrl = getBaseUrl(settings)
-  const hasVision = supportsVision(settings)
+  // Force vision on if any message has imageData (e.g., automation screenshots)
+  const hasVision = supportsVision(settings) || messages.some(m => !!m.imageData)
   const body = {
     model: getActiveModel(settings) || undefined,
     messages: buildOpenAIMessages(messages, hasVision),
@@ -464,7 +465,8 @@ export async function streamChat(
 export async function callAI(
   messages: Pick<ChatMessage, 'role' | 'content' | 'imageData'>[],
   settings: Settings,
-  maxTokens = 512
+  maxTokens = 512,
+  forceVision = false
 ): Promise<string> {
   const format = getApiFormat(settings)
 
@@ -474,7 +476,7 @@ export async function callAI(
 
   const baseUrl = getBaseUrl(settings)
   const headers = getAuthHeaders(settings)
-  const hasVision = supportsVision(settings)
+  const hasVision = forceVision || supportsVision(settings)
   const model = getActiveModel(settings)
 
   try {

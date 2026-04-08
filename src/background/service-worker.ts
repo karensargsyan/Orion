@@ -22,7 +22,7 @@ import { recordAction, flushAllBuffers, flushBuffer, clearTabBuffer } from './ac
 import { matchVaultToForm, matchCredentialsToForm, describeForm } from './form-intelligence'
 import { probeEndpoint, quickHealthCheck } from './api-detector'
 import { startScreenshotLoop, stopScreenshotLoop, captureScreenshot } from './screenshot-loop'
-import { executeActionsFromText, parseActionsFromText, executeWithFollowUp, ensureContentScript, requestFreshSnapshot } from './action-executor'
+import { executeActionsFromText, parseActionsFromText, executeWithFollowUp, ensureContentScript, requestFreshSnapshot, cancelAutomation } from './action-executor'
 import { analyzeHabits, getHabitPatterns } from './habit-tracker'
 import { getAllCalendarEvents } from './calendar-detector'
 import { detectPersonalData, storeDetectedPII } from './pii-detector'
@@ -477,8 +477,10 @@ chrome.runtime.onConnect.addListener((port) => {
       }
 
       if (msg.type === MSG.AI_ABORT) {
-        abortStream(msg.tabId as number ?? 0)
-        abortStream(`recall_${msg.tabId ?? 0}`)
+        const abortTabId = msg.tabId as number ?? 0
+        abortStream(abortTabId)
+        abortStream(`recall_${abortTabId}`)
+        cancelAutomation(abortTabId)
       }
 
       if (msg.type === MSG.CONFIRM_RESPONSE) {
@@ -577,8 +579,8 @@ async function handleAIChat(
     if (miniMap) {
       tabState.setScreenshot(tabId, miniMap.dataUrl)
       viewportMeta = miniMap.viewport
-      const isExternalMultimodal = s.activeProvider === 'gemini' || s.activeProvider === 'openai' || s.activeProvider === 'anthropic'
-      if (s.visionEnabled || isExternalMultimodal) screenshotData = miniMap.dataUrl
+      // Always capture screenshot — the AI needs to see the page for navigation
+      screenshotData = miniMap.dataUrl
     }
 
     if (!cdpResult) {
@@ -677,7 +679,8 @@ async function handleAIChat(
     ),
   ]
 
-  if (screenshotData && !s.liteMode) {
+  // Always attach screenshot — the AI needs visual context for page navigation
+  if (screenshotData) {
     const lastIdx = messages.reduce((acc, m, i) => m.role === 'user' ? i : acc, -1)
     if (lastIdx >= 0) messages[lastIdx].imageData = screenshotData
   }
@@ -873,6 +876,15 @@ async function handleMessage(
           tabId,
         })
       }
+      return { ok: true }
+    }
+
+    case MSG.STOP_AUTOMATION: {
+      // Stop button clicked on the page — cancel automation loop and abort any streaming
+      cancelAutomation(tabId)
+      abortStream(tabId)
+      // Hide the activity border
+      chrome.tabs.sendMessage(tabId, { type: MSG.HIDE_ACTIVITY_BORDER }).catch(() => {})
       return { ok: true }
     }
 

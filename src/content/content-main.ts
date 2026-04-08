@@ -1297,20 +1297,46 @@ function listClickableElements(): string {
   return visible.join(', ') || 'none visible'
 }
 
-// ─── Activity border indicator ─────────────────────────────────────────────
+// ─── Activity overlay with stop button ──────────────────────────────────────
 
 const BORDER_ID = '__localai-activity-border'
+const STOP_BTN_ID = '__localai-stop-btn'
 
 function showActivityBorder(): void {
   if (document.getElementById(BORDER_ID)) return
+
+  // Pulsing border frame
   const el = document.createElement('div')
   el.id = BORDER_ID
   el.style.cssText = `
-    position:fixed;inset:0;pointer-events:none;z-index:2147483647;
+    position:fixed;inset:0;pointer-events:none;z-index:2147483646;
     border:2px solid rgba(108,92,231,0.6);
     box-shadow:inset 0 0 30px rgba(108,92,231,0.08);
     border-radius:0;animation:__localai-pulse 2s ease-in-out infinite;
   `
+
+  // Floating stop button — top-right corner
+  const stopBtn = document.createElement('button')
+  stopBtn.id = STOP_BTN_ID
+  stopBtn.textContent = 'Stop AI'
+  stopBtn.style.cssText = `
+    position:fixed;top:12px;right:12px;z-index:2147483647;
+    padding:6px 16px;border:none;border-radius:6px;
+    background:rgba(220,38,38,0.9);color:#fff;
+    font:600 13px/1 -apple-system,BlinkMacSystemFont,sans-serif;
+    cursor:pointer;pointer-events:auto;
+    box-shadow:0 2px 8px rgba(0,0,0,0.3);
+    transition:background 0.15s, transform 0.1s;
+  `
+  stopBtn.addEventListener('mouseenter', () => { stopBtn.style.background = 'rgba(185,28,28,0.95)' })
+  stopBtn.addEventListener('mouseleave', () => { stopBtn.style.background = 'rgba(220,38,38,0.9)' })
+  stopBtn.addEventListener('mousedown', () => { stopBtn.style.transform = 'scale(0.95)' })
+  stopBtn.addEventListener('mouseup', () => { stopBtn.style.transform = '' })
+  stopBtn.addEventListener('click', () => {
+    chrome.runtime.sendMessage({ type: MSG.STOP_AUTOMATION }).catch(() => {})
+    hideActivityBorder()
+  })
+
   const style = document.createElement('style')
   style.id = `${BORDER_ID}-style`
   style.textContent = `
@@ -1321,10 +1347,12 @@ function showActivityBorder(): void {
   `
   document.head.appendChild(style)
   document.body.appendChild(el)
+  document.body.appendChild(stopBtn)
 }
 
 function hideActivityBorder(): void {
   document.getElementById(BORDER_ID)?.remove()
+  document.getElementById(STOP_BTN_ID)?.remove()
   document.getElementById(`${BORDER_ID}-style`)?.remove()
 }
 

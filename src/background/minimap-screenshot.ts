@@ -77,3 +77,18 @@ export async function captureHighQualityScreenshot(): Promise<string | null> {
     return null
   }
 }
+
+/**
+ * Ultra-fast low-quality screenshot for automation verification.
+ * Quality 20, max 512px width — small enough for fast AI processing.
+ */
+export async function captureAutomationScreenshot(tabId: number): Promise<MiniMapResult | null> {
+  try {
+    const dataUrl = await chrome.tabs.captureVisibleTab({ format: 'jpeg', quality: 20 })
+    const viewport = await getTabViewport(tabId)
+    const finalUrl = await resizeDataUrl(dataUrl, 512).catch(() => dataUrl)
+    return { dataUrl: finalUrl, viewport }
+  } catch {
+    return null
+  }
+}

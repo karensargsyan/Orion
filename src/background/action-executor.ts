@@ -10,13 +10,30 @@ import { recordActionFailure, recordActionSuccess, recallRelevantMemories } from
 import { getAllSettings } from './memory-manager'
 import { mempalaceEnabled, searchMempalace } from './mempalace-client'
 import { getCDPAccessibilityTree } from './cdp-accessibility'
-import { captureMiniMap } from './minimap-screenshot'
+import { captureMiniMap, captureAutomationScreenshot } from './minimap-screenshot'
 import { recordPageVisit, getPageScreenshot } from './visual-sitemap'
 
 const ACTION_PATTERN = /\[ACTION:(\w+)([^\]]*)\]/g
 const MAX_INJECT_RETRIES = 2
 const USER_ACTIVE_RETRY_DELAY = 2000
 const NAV_ACTIONS = new Set(['navigate', 'back', 'forward'])
+
+// ─── Cancellation registry ──────────────────────────────────────────────────
+// Allows aborting the executeWithFollowUp loop from outside (e.g., stop button)
+
+const cancelledTabs = new Set<number>()
+
+export function cancelAutomation(tabId: number): void {
+  cancelledTabs.add(tabId)
+}
+
+function isCancelled(tabId: number): boolean {
+  return cancelledTabs.has(tabId)
+}
+
+function clearCancellation(tabId: number): void {
+  cancelledTabs.delete(tabId)
+}
 
 interface ParsedAction {
   action: string
@@ -331,16 +348,14 @@ export async function executeActionsFromText(
       results.push(...batchResults)
     }
 
-    // Refresh snapshot + capture verification screenshot after each batch
+    // Refresh snapshot + capture fast verification screenshot after each batch
     const lastResult = results[results.length - 1]
     if (lastResult?.success) {
       await requestFreshSnapshot(tabId)
-      // Take a verification screenshot after every action batch
       try {
-        const verifyShot = await captureMiniMap(tabId).catch(() => null)
+        const verifyShot = await captureAutomationScreenshot(tabId).catch(() => null)
         if (verifyShot) {
           tabState.setScreenshot(tabId, verifyShot.dataUrl)
-          // Record in visual sitemap
           const snap = tabState.get(tabId)
           if (snap?.url) {
             const domain = extractDomainFromUrl(snap.url)
@@ -710,9 +725,17 @@ export async function executeWithFollowUp(
   const allParsedActions: ParsedAction[] = []
   const allResults: AIActionResult[] = []
 
+  // Clear any stale cancellation for this tab, then show stop overlay
+  clearCancellation(tabId)
   signalActivity(tabId, true)
 
   while (round < maxRounds) {
+    // Check if user clicked the stop button
+    if (isCancelled(tabId)) {
+      port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '\n\n> Automation stopped by user.\n\n' })
+      break
+    }
+
     const actions = parseActionsFromText(response)
     if (actions.length === 0) {
       if (containsMalformedActions(response)) {
@@ -738,10 +761,11 @@ export async function executeWithFollowUp(
     // Track error patterns across rounds
     const errorSig = lastErrorSignature
 
+    // Fast pre-action screenshot — low quality for speed
     let preScreenshot: string | undefined
     if (tabId > 0) {
-      const preMiniMap = await captureMiniMap(tabId).catch(() => null)
-      if (preMiniMap) preScreenshot = preMiniMap.dataUrl
+      const preShot = await captureAutomationScreenshot(tabId).catch(() => null)
+      if (preShot) preScreenshot = preShot.dataUrl
     }
 
     // Capture pre-action state including accessibility tree for state diff
@@ -752,17 +776,18 @@ export async function executeWithFollowUp(
     if (results.length === 0) break
     const postState = await captureVerificationState(tabId)
 
+    // Fast post-action screenshot — confirms whether the action worked
     let postScreenshot: string | undefined
     if (tabId > 0) {
-      const postMiniMap = await captureMiniMap(tabId).catch(() => null)
-      if (postMiniMap) {
-        postScreenshot = postMiniMap.dataUrl
-        tabState.setScreenshot(tabId, postMiniMap.dataUrl)
+      const postShot = await captureAutomationScreenshot(tabId).catch(() => null)
+      if (postShot) {
+        postScreenshot = postShot.dataUrl
+        tabState.setScreenshot(tabId, postShot.dataUrl)
         // Record post-action state in visual sitemap
         const snap = tabState.get(tabId)
         if (snap?.url) {
           const domain = extractDomainFromUrl(snap.url)
-          recordPageVisit(domain, snap.url, snap, postMiniMap.dataUrl).catch(() => {})
+          recordPageVisit(domain, snap.url, snap, postShot.dataUrl).catch(() => {})
         }
       }
     }
@@ -897,7 +922,16 @@ DO NOT repeat the same selector that already failed. DO NOT give up after one fa
       },
     ]
 
-    const followUp = await callAI(followUpMessages, settings, 4096)
+    // Check cancellation before calling AI (the callAI call is the slowest part)
+    if (isCancelled(tabId)) {
+      port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '\n\n> Automation stopped by user.\n\n' })
+      break
+    }
+
+    // Always send screenshots during automation (forceVision=true) — the AI
+    // needs visual confirmation regardless of the user's visionEnabled setting
+    const hasScreenshot = followUpMessages.some(m => !!m.imageData)
+    const followUp = await callAI(followUpMessages, settings, 4096, hasScreenshot)
 
     if (followUp) {
       if (isRepetitiveOutput(followUp)) {
@@ -915,7 +949,7 @@ DO NOT repeat the same selector that already failed. DO NOT give up after one fa
     round++
   }
 
-  if (hadFailure && !hadSuccess) {
+  if (hadFailure && !hadSuccess && !isCancelled(tabId)) {
     const failedCount = allResults.filter(r => !r.success).length
     const totalCount = allResults.length
     port.postMessage({
@@ -924,6 +958,7 @@ DO NOT repeat the same selector that already failed. DO NOT give up after one fa
     })
   }
 
+  clearCancellation(tabId)
   signalActivity(tabId, false)
 
   learnFromExecution(tabId, sessionMessages, allParsedActions, allResults, hadSuccess, hadFailure)

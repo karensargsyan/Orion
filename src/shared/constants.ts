@@ -93,9 +93,10 @@ export const MSG = {
   COMPACT_CONTEXT: 'COMPACT_CONTEXT',
   GLOBAL_SEARCH: 'GLOBAL_SEARCH',
 
-  // Activity indicator
+  // Activity indicator + stop automation
   SHOW_ACTIVITY_BORDER: 'SHOW_ACTIVITY_BORDER',
   HIDE_ACTIVITY_BORDER: 'HIDE_ACTIVITY_BORDER',
+  STOP_AUTOMATION: 'STOP_AUTOMATION',
 
   // Element markers / accessibility tree
   INJECT_MARKERS: 'INJECT_MARKERS',
