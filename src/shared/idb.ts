@@ -73,6 +73,51 @@ function setupSchema(db: IDBDatabase, tx: IDBTransaction, oldVersion: number): v
       hab.createIndex('by_timestamp', 'timestamp', { unique: false })
     }
   }
+
+  // v2 -> v3: domain skills store
+  if (oldVersion < 3) {
+    if (!db.objectStoreNames.contains(STORE.DOMAIN_SKILLS)) {
+      const skills = db.createObjectStore(STORE.DOMAIN_SKILLS, { keyPath: 'id', autoIncrement: true })
+      skills.createIndex('by_domain', 'domain', { unique: false })
+      skills.createIndex('by_task', 'taskPattern', { unique: false })
+      skills.createIndex('by_last_used', 'lastUsed', { unique: false })
+    }
+  }
+
+  // v3 -> v4: user behaviors store
+  if (oldVersion < 4) {
+    if (!db.objectStoreNames.contains(STORE.USER_BEHAVIORS)) {
+      const behaviors = db.createObjectStore(STORE.USER_BEHAVIORS, { keyPath: 'id', autoIncrement: true })
+      behaviors.createIndex('by_domain', 'domain', { unique: false })
+      behaviors.createIndex('by_category', 'category', { unique: false })
+      behaviors.createIndex('by_confidence', 'confidence', { unique: false })
+      behaviors.createIndex('by_last_seen', 'lastSeen', { unique: false })
+    }
+  }
+
+  // v4 -> v5: learning sessions store
+  if (oldVersion < 5) {
+    if (!db.objectStoreNames.contains(STORE.LEARNING_SESSIONS)) {
+      const ls = db.createObjectStore(STORE.LEARNING_SESSIONS, { keyPath: 'id' })
+      ls.createIndex('by_domain', 'domain', { unique: false })
+      ls.createIndex('by_started', 'startedAt', { unique: false })
+    }
+  }
+
+  // v5 -> v6: supervised playbooks + sessions
+  if (oldVersion < 6) {
+    if (!db.objectStoreNames.contains(STORE.SUPERVISED_PLAYBOOKS)) {
+      const pb = db.createObjectStore(STORE.SUPERVISED_PLAYBOOKS, { keyPath: 'id' })
+      pb.createIndex('by_domain', 'domain', { unique: false })
+      pb.createIndex('by_confidence', 'confidence', { unique: false })
+      pb.createIndex('by_updated', 'updatedAt', { unique: false })
+    }
+    if (!db.objectStoreNames.contains(STORE.SUPERVISED_SESSIONS)) {
+      const ss = db.createObjectStore(STORE.SUPERVISED_SESSIONS, { keyPath: 'id' })
+      ss.createIndex('by_domain', 'domain', { unique: false })
+      ss.createIndex('by_started', 'startedAt', { unique: false })
+    }
+  }
 }
 
 // ─── Generic helpers ──────────────────────────────────────────────────────────

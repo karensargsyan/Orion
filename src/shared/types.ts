@@ -72,13 +72,25 @@ export interface PageSnapshot {
   metaDescription: string
   screenshot?: string
   pageText?: string
+  /** Full body text (viewport + off-screen + typical DOM-hidden copy); capped at extraction time. */
+  completePageText?: string
   selectedText?: string
   visibleText?: string
 }
 
 // ─── User Actions ─────────────────────────────────────────────────────────────
 
-export type ActionType = 'click' | 'input' | 'submit' | 'focus' | 'navigate' | 'scroll'
+export type ActionType =
+  | 'click'
+  | 'input'
+  | 'submit'
+  | 'focus'
+  | 'navigate'
+  | 'scroll'
+  | 'move'
+  | 'pointer'
+  | 'wheel'
+  | 'keydown'
 
 export interface UserActionEvent {
   type: ActionType
@@ -86,6 +98,8 @@ export interface UserActionEvent {
   tagName: string
   text?: string
   value?: string
+  /** Extra compact context, e.g. coordinates "1200,400" or key name */
+  detail?: string
   url: string
   timestamp: number
   tabId?: number
@@ -93,7 +107,7 @@ export interface UserActionEvent {
 
 // ─── Memory ───────────────────────────────────────────────────────────────────
 
-export type SessionMemoryType = 'page_visit' | 'action' | 'form_detected' | 'ai_summary' | 'email_detected' | 'calendar_detected' | 'habit_pattern' | 'text_rewrite'
+export type SessionMemoryType = 'page_visit' | 'action' | 'form_detected' | 'ai_summary' | 'email_detected' | 'calendar_detected' | 'habit_pattern' | 'text_rewrite' | 'learning_snapshot'
 
 export interface SessionMemoryEntry {
   id?: number
@@ -105,6 +119,27 @@ export interface SessionMemoryEntry {
   timestamp: number
   sessionId: string
   tabId?: number
+}
+
+export interface LearningSnapshot {
+  timestamp: number
+  url: string
+  domain: string
+  screenshot?: string
+  pageTitle: string
+  accessibilityTree: string
+  recentActions: UserActionEvent[]
+  visibleText: string
+}
+
+export interface LearningSession {
+  id: string
+  startedAt: number
+  endedAt?: number
+  tabId: number
+  domain: string
+  snapshots: LearningSnapshot[]
+  analysis?: string
 }
 
 export interface GlobalMemoryEntry {
@@ -196,14 +231,66 @@ export interface ChatMessage {
   imageData?: string
 }
 
+// ─── Supervised Learning ─────────────────────────────────────────────────────
+
+export type STTProvider = 'web-speech' | 'whisper-local'
+
+export interface SupervisedInteraction {
+  command: string
+  actions: UserActionEvent[]
+  snapshots: LearningSnapshot[]
+  startedAt: number
+  endedAt?: number
+}
+
+export interface SupervisedSession {
+  id: string
+  startedAt: number
+  endedAt?: number
+  tabId: number
+  domain: string
+  interactions: SupervisedInteraction[]
+  analysis?: string
+}
+
+export interface LearnedPlaybook {
+  id: string
+  triggers: string[]
+  steps: string[]
+  selectors: string[]
+  domain: string
+  confidence: number
+  successCount: number
+  failureCount: number
+  createdAt: number
+  updatedAt: number
+}
+
+// ─── AI Provider Types ────────────────────────────────────────────────────────
+
+export type AIProvider = 'local' | 'gemini' | 'openai' | 'anthropic'
+
+export interface ExternalProviderConfig {
+  apiKey: string
+  model: string
+  baseUrl?: string
+}
+
 // ─── Settings ─────────────────────────────────────────────────────────────────
 
 export interface Settings {
+  activeProvider: AIProvider
   lmStudioUrl: string
   lmStudioModel: string
   authToken: string
   apiCapabilities?: APICapabilities
   rateLimitRpm: number
+  geminiApiKey?: string
+  geminiModel?: string
+  openaiApiKey?: string
+  openaiModel?: string
+  anthropicApiKey?: string
+  anthropicModel?: string
   monitoringEnabled: boolean
   visionEnabled: boolean
   maxContextMessages: number
@@ -211,9 +298,38 @@ export interface Settings {
   pbkdf2SaltB64?: string
   screenshotIntervalSec: number
   textRewriteEnabled: boolean
+  safetyBorderEnabled: boolean
+  composeAssistantEnabled: boolean
+  aiActionLearningEnabled: boolean
+  mempalaceBridgeEnabled?: boolean
+  mempalaceBridgeUrl?: string
+  mempalaceWing?: string
   calendarDetectionEnabled: boolean
   onboardingComplete: boolean
+  learningModeActive: boolean
+  learningSnapshotIntervalSec: number
+  sttProvider: STTProvider
+  whisperEndpoint: string
+  confirmationPreferences: ConfirmationPreference[]
+  globalAutoAccept: boolean
+  /** Context window in tokens (for token-aware truncation). 0 = auto-detect. */
+  contextWindowTokens: number
+  /** Use simplified prompt + fewer actions for small local models */
+  liteMode: boolean
 }
+
+// ─── Confirmation ─────────────────────────────────────────────────────────────
+
+export type ConfirmationLevel = 'always_ask' | 'auto_accept'
+
+export interface ConfirmationPreference {
+  actionType: string
+  domain?: string
+  level: ConfirmationLevel
+  updatedAt: number
+}
+
+export type ConfirmResponseType = 'once' | 'always_this' | 'always_all' | 'decline'
 
 // ─── Form Fill Assignment ─────────────────────────────────────────────────────
 
@@ -225,7 +341,9 @@ export interface FillAssignment {
 
 // ─── AI Action Commands ───────────────────────────────────────────────────────
 
-export type AIActionType = 'click' | 'type' | 'fill_form' | 'scroll' | 'select' | 'navigate' | 'read' | 'screenshot' | 'select_option' | 'check' | 'clear' | 'wait' | 'read_options' | 'get_page_state'
+export type AIActionType = 'click' | 'type' | 'fill_form' | 'scroll' | 'select' | 'navigate' | 'read' | 'screenshot' | 'select_option' | 'check' | 'clear' | 'wait' | 'read_options' | 'get_page_state' | 'read_page' | 'hover' | 'doubleclick' | 'keypress' | 'focus' | 'back' | 'forward' | 'scroll_to' | 'select_text' | 'search' | 'open_tab' | 'read_tab' | 'close_tab' | 'batch_read' | 'analyze_file' | 'toggle'
+
+export type ReadPageFilter = 'interactive' | 'forms' | 'text' | 'all'
 
 export interface AIAction {
   action: AIActionType
@@ -233,6 +351,7 @@ export interface AIAction {
   value?: string
   url?: string
   assignments?: FillAssignment[]
+  markerId?: number
 }
 
 export interface AIActionResult {
@@ -349,4 +468,64 @@ export interface MsgMemoryQuery {
   query: string
   sessionId: string
   tabId?: number
+}
+
+// ─── Web Research ──────────────────────────────────────────────────────────
+
+export interface SearchResult {
+  title: string
+  url: string
+  snippet: string
+}
+
+export interface PageContent {
+  title: string
+  url: string
+  text: string
+}
+
+// ─── PII Detection ─────────────────────────────────────────────────────────
+
+export type PIIType = 'email' | 'phone' | 'card' | 'name' | 'address'
+
+export interface PIIMatch {
+  type: PIIType
+  value: string
+  masked: string
+}
+
+// ─── Domain Skills ────────────────────────────────────────────────────────────
+
+export interface DomainSkill {
+  id?: number
+  domain: string
+  taskPattern: string
+  actionSequence: string
+  successCount: number
+  failureCount: number
+  lastUsed: number
+  createdAt: number
+}
+
+// ─── Behavioral Knowledge ──────────────────────────────────────────────────────
+
+export type BehaviorCategory =
+  | 'workflow'
+  | 'preference'
+  | 'shortcut'
+  | 'site_pattern'
+  | 'form_habit'
+  | 'navigation'
+  | 'interaction_style'
+
+export interface UserBehavior {
+  id?: number
+  domain: string
+  category: BehaviorCategory
+  description: string
+  evidence: string
+  confidence: number
+  occurrences: number
+  lastSeen: number
+  createdAt: number
 }

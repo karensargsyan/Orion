@@ -1,16 +1,33 @@
-import { MSG } from '../shared/constants'
+import { MSG, DEFAULTS } from '../shared/constants'
+import { isBraveBrowserAsync } from '../shared/browser-environment'
+import { extensionSiteSettingsUrl, WEB_SPEECH_NETWORK_NOTE } from '../shared/google-web-speech-permissions'
 import type { Settings, APICapabilities } from '../shared/types'
+import * as speech from './speech-service'
 
 export async function initSettings(container: HTMLElement): Promise<void> {
   const res = await chrome.runtime.sendMessage({ type: MSG.SETTINGS_GET }) as { ok: boolean; settings: Settings }
   const s = res.ok ? res.settings : {} as Settings
+  const provider = s.activeProvider || 'local'
 
   container.innerHTML = `
     <div class="settings-form">
       <h2>Settings</h2>
 
       <section class="settings-section">
-        <h3>AI Model</h3>
+        <h3>AI Provider</h3>
+        <div class="form-group">
+          <label>Active Provider</label>
+          <select id="active-provider">
+            <option value="local" ${provider === 'local' ? 'selected' : ''}>Local (LM Studio / Ollama)</option>
+            <option value="gemini" ${provider === 'gemini' ? 'selected' : ''}>Google Gemini</option>
+            <option value="openai" ${provider === 'openai' ? 'selected' : ''}>OpenAI</option>
+            <option value="anthropic" ${provider === 'anthropic' ? 'selected' : ''}>Anthropic Claude</option>
+          </select>
+        </div>
+      </section>
+
+      <section class="settings-section provider-section" id="section-local" ${provider === 'local' ? '' : 'style="display:none"'}>
+        <h3>Local AI Server</h3>
         ${renderConnectionInfo(s)}
         <div class="form-group">
           <label>Server URL</label>
@@ -35,6 +52,63 @@ export async function initSettings(container: HTMLElement): Promise<void> {
             <button id="btn-refresh-models" class="btn-small">Refresh</button>
           </div>
         </div>
+        <div class="form-actions">
+          <button id="btn-re-probe" class="btn-small">Re-detect Capabilities</button>
+          <p id="probe-status" class="hint-text"></p>
+        </div>
+      </section>
+
+      <section class="settings-section provider-section" id="section-gemini" ${provider === 'gemini' ? '' : 'style="display:none"'}>
+        <h3>Google Gemini</h3>
+        <div class="form-group">
+          <label>API Key</label>
+          <div class="input-row-inline">
+            <input type="password" id="gemini-api-key" value="${esc(s.geminiApiKey ?? '')}" placeholder="AIza...">
+            <button id="btn-test-gemini" class="btn-small">Test</button>
+          </div>
+          <p id="gemini-status" class="hint-text"></p>
+        </div>
+        <div class="form-group">
+          <label>Model</label>
+          <div class="input-row-inline">
+            <select id="gemini-model">
+              ${renderGeminiModelOptions(s.geminiModel)}
+            </select>
+            <button id="btn-refresh-gemini-models" class="btn-small">Refresh</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="settings-section provider-section" id="section-openai" ${provider === 'openai' ? '' : 'style="display:none"'}>
+        <h3>OpenAI</h3>
+        <div class="form-group">
+          <label>API Key</label>
+          <input type="password" id="openai-api-key" value="${esc(s.openaiApiKey ?? '')}" placeholder="sk-...">
+        </div>
+        <div class="form-group">
+          <label>Model</label>
+          <select id="openai-model">
+            ${renderOpenAIModelOptions(s.openaiModel)}
+          </select>
+        </div>
+      </section>
+
+      <section class="settings-section provider-section" id="section-anthropic" ${provider === 'anthropic' ? '' : 'style="display:none"'}>
+        <h3>Anthropic Claude</h3>
+        <div class="form-group">
+          <label>API Key</label>
+          <input type="password" id="anthropic-api-key" value="${esc(s.anthropicApiKey ?? '')}" placeholder="sk-ant-...">
+        </div>
+        <div class="form-group">
+          <label>Model</label>
+          <select id="anthropic-model">
+            ${renderAnthropicModelOptions(s.anthropicModel)}
+          </select>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <h3>General</h3>
         <div class="form-group">
           <label>Rate Limit (requests/minute)</label>
           <input type="number" id="rate-limit" value="${s.rateLimitRpm ?? 10}" min="1" max="60">
@@ -43,9 +117,15 @@ export async function initSettings(container: HTMLElement): Promise<void> {
           <label>Context Window (messages kept)</label>
           <input type="number" id="ctx-window" value="${s.maxContextMessages ?? 20}" min="2" max="50">
         </div>
-        <div class="form-actions">
-          <button id="btn-re-probe" class="btn-small">Re-detect Capabilities</button>
-          <p id="probe-status" class="hint-text"></p>
+        <div class="form-group">
+          <label>Context Window (tokens, 0 = auto)</label>
+          <input type="number" id="ctx-tokens" value="${s.contextWindowTokens ?? 0}" min="0" max="131072" step="1024">
+          <small style="color:var(--text-dim);font-size:11px">Set to your model's context size (e.g. 4096, 8192, 32768). 0 = auto-detect.</small>
+        </div>
+        <div class="form-group form-group-toggle">
+          <label>Lite Mode (simplified prompts for small local models &lt;20B)</label>
+          <input type="checkbox" id="lite-mode" ${s.liteMode ? 'checked' : ''}>
+          <small style="color:var(--text-dim);font-size:11px">Reduces system prompt from ~4500 to ~800 tokens. Fewer action types. Better for 7B-13B models.</small>
         </div>
       </section>
 
@@ -68,9 +148,106 @@ export async function initSettings(container: HTMLElement): Promise<void> {
           <input type="checkbox" id="text-rewrite-enabled" ${s.textRewriteEnabled ? 'checked' : ''}>
         </div>
         <div class="form-group form-group-toggle">
+          <label>Tab safety border (heuristic threat detection)</label>
+          <input type="checkbox" id="safety-border-enabled" ${s.safetyBorderEnabled ? 'checked' : ''}>
+        </div>
+        <p class="hint-text" style="margin-top:-8px;margin-bottom:10px">
+          Scores each page for phishing/scam signals using local heuristics (suspicious TLDs, fake login forms, urgency phrases).
+          Shows a green/orange/red border around the browser tab. No data is sent externally — analysis is fully local.
+          Disabled by default; may produce false positives on legitimate sites.
+        </p>
+        <div class="form-group form-group-toggle">
+          <label>Compose assistant (inline revised text while typing)</label>
+          <input type="checkbox" id="compose-assistant-enabled" ${s.composeAssistantEnabled !== false ? 'checked' : ''}>
+        </div>
+        <div class="form-group form-group-toggle">
+          <label>AI learning from your actions (periodic local model analysis)</label>
+          <input type="checkbox" id="ai-action-learning-enabled" ${s.aiActionLearningEnabled !== false ? 'checked' : ''}>
+        </div>
+        <div class="form-group">
+          <label>Learning mode snapshot interval (seconds)</label>
+          <input type="number" id="learning-interval" value="${s.learningSnapshotIntervalSec ?? 3}" min="1" max="30">
+        </div>
+        <div class="form-group form-group-toggle">
           <label>Calendar detection</label>
           <input type="checkbox" id="calendar-detection" ${s.calendarDetectionEnabled ? 'checked' : ''}>
         </div>
+      </section>
+
+      <section class="settings-section">
+        <h3>Speech Recognition</h3>
+        <p class="hint-text" style="margin-bottom:10px">
+          Used during Supervised Learning. <strong>Web Speech</strong> calls Google’s online recognizer (often blocked by Brave Shields, VPNs, or firewalls—you’ll see a “network” STT error).
+          <strong>Local Whisper</strong> sends audio only to your machine (OpenAI-compatible API) and does not use that service.
+        </p>
+        <p id="stt-brave-notice" class="hint-text" style="display:none;margin-bottom:10px;padding:10px;border-radius:8px;background:rgba(255,165,0,0.12);border:1px solid rgba(200,120,0,0.35)">
+          <strong>Brave:</strong> there is no separate Brave-only speech API for extensions—Web Speech still uses Google’s service (often blocked by Shields).
+          <strong>Alternative that works in Brave:</strong> choose <strong>Local Whisper Server</strong> below and run a local OpenAI-compatible Whisper endpoint (e.g. whisper.cpp, Ollama, LM Studio).
+          To keep using Web Speech instead, turn <strong>Shields down</strong> for this extension (Brave icon → Shields), or use Chrome where Web Speech usually connects without Shields blocking it.
+        </p>
+        <div id="stt-brave-web-speech-tools" class="form-group" style="display:none;margin-bottom:10px;padding:10px;border-radius:8px;background:rgba(80,120,255,0.08);border:1px solid rgba(80,100,200,0.25)">
+          <label>Brave: Web Speech setup</label>
+          <p class="hint-text" style="margin-bottom:8px">
+            Extensions <strong>cannot</strong> disable Brave Shields programmatically—you must use the Brave toolbar. Host access for this extension is already broad; Shields can still block Web Speech inside the browser.
+            Use the buttons below: Shields settings, a note on host permissions, or this extension’s site settings (microphone).
+          </p>
+          <div class="form-row" style="flex-wrap:wrap;gap:8px">
+            <button type="button" id="btn-brave-shields-settings" class="btn-small">Open Brave Shields settings</button>
+            <button type="button" id="btn-web-speech-network-note" class="btn-small">Host permission / Web Speech note</button>
+            <button type="button" id="btn-extension-site-settings" class="btn-small">This extension — site settings</button>
+          </div>
+          <p id="brave-web-speech-tool-status" class="hint-text"></p>
+        </div>
+        <div class="form-group">
+          <label>Microphone (this extension)</label>
+          <p class="hint-text" style="margin-bottom:6px">
+            Extensions cannot declare a Chrome permission that “allows Google Web Speech.” Grant the <strong>microphone</strong> here; Chrome remembers <strong>Allow</strong> until you revoke it under site settings.
+            A <strong>network</strong> STT error means the <em>online</em> speech service is blocked—not missing mic permission—use <strong>Local Whisper</strong> below or fix Shields/VPN.
+          </p>
+          <p id="mic-permission-status-line" class="hint-text" style="margin-bottom:6px"></p>
+          <div class="form-row" style="flex-wrap:wrap;gap:8px">
+            <button type="button" id="btn-grant-mic" class="btn-small">Grant &amp; save microphone access</button>
+            <button type="button" id="btn-open-mic-tab" class="btn-small">Open microphone permission page</button>
+          </div>
+          <p id="mic-grant-status" class="hint-text"></p>
+        </div>
+        <div class="form-group">
+          <label>STT Provider</label>
+          <select id="stt-provider">
+            <option value="web-speech" ${(s.sttProvider ?? 'web-speech') === 'web-speech' ? 'selected' : ''}>Web Speech API (Chrome built-in)</option>
+            <option value="whisper-local" ${s.sttProvider === 'whisper-local' ? 'selected' : ''}>Local Whisper Server</option>
+          </select>
+        </div>
+        <div class="form-group" id="whisper-endpoint-group" ${(s.sttProvider ?? 'web-speech') === 'whisper-local' ? '' : 'style="display:none"'}>
+          <label>Whisper Server URL</label>
+          <input type="text" id="whisper-endpoint" value="${esc(s.whisperEndpoint ?? '')}" placeholder="http://localhost:8888">
+          <p class="hint-text">OpenAI-compatible /v1/audio/transcriptions endpoint</p>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <h3>MemPalace</h3>
+        <p class="hint-text" style="margin-bottom:10px">
+          Long-term memory runs in Python on your machine (<a href="https://github.com/milla-jovovich/mempalace" target="_blank" rel="noopener">MemPalace</a>).
+          Run <code>python3 bridge/mempalace_bridge.py</code> from the extension repo, then enable below.
+        </p>
+        <div class="form-group form-group-toggle">
+          <label>Use MemPalace bridge (search + prompt)</label>
+          <input type="checkbox" id="mempalace-enabled" ${s.mempalaceBridgeEnabled ? 'checked' : ''}>
+        </div>
+        <div class="form-group">
+          <label>Bridge URL</label>
+          <input type="text" id="mempalace-url" value="${esc(s.mempalaceBridgeUrl ?? DEFAULTS.MEMPALACE_BRIDGE_URL)}" placeholder="http://127.0.0.1:8765">
+        </div>
+        <div class="form-group">
+          <label>Wing filter (optional)</label>
+          <input type="text" id="mempalace-wing" value="${esc(s.mempalaceWing ?? '')}" placeholder="e.g. wing_project">
+        </div>
+        <div class="form-row">
+          <button type="button" id="btn-mempalace-probe" class="btn-small">Test bridge</button>
+          <button type="button" id="btn-mempalace-inbox" class="btn-small">Push session memory to palace</button>
+        </div>
+        <p id="mempalace-status" class="hint-text"></p>
       </section>
 
       <section class="settings-section">
@@ -104,6 +281,92 @@ export async function initSettings(container: HTMLElement): Promise<void> {
   `
 
   wireSettingsEvents(container, s)
+  wireProviderToggle(container)
+  wireSTTProviderToggle(container)
+  wireMicrophoneSettingsPanel(container)
+  wireBraveWebSpeechTools(container)
+  void showBraveSpeechUi(container)
+  void refreshMicPermissionStatusLine(container)
+}
+
+async function showBraveSpeechUi(container: HTMLElement): Promise<void> {
+  const notice = container.querySelector('#stt-brave-notice') as HTMLElement | null
+  const tools = container.querySelector('#stt-brave-web-speech-tools') as HTMLElement | null
+  if (!(await isBraveBrowserAsync())) return
+  if (notice) notice.style.display = 'block'
+  if (tools) tools.style.display = 'block'
+}
+
+function wireBraveWebSpeechTools(container: HTMLElement): void {
+  const status = () => container.querySelector('#brave-web-speech-tool-status') as HTMLElement | null
+
+  container.querySelector('#btn-brave-shields-settings')?.addEventListener('click', () => {
+    void chrome.tabs.create({ url: 'brave://settings/shields', active: true })
+    const el = status()
+    if (el) {
+      el.textContent = 'Set Shields down for this extension from the Brave toolbar on a tab, or adjust global defaults here.'
+      el.style.color = ''
+    }
+  })
+
+  container.querySelector('#btn-web-speech-network-note')?.addEventListener('click', () => {
+    const el = status()
+    if (el) {
+      el.textContent = WEB_SPEECH_NETWORK_NOTE
+      el.style.color = ''
+    }
+  })
+
+  container.querySelector('#btn-extension-site-settings')?.addEventListener('click', () => {
+    void chrome.tabs.create({ url: extensionSiteSettingsUrl(), active: true })
+    const el = status()
+    if (el) {
+      el.textContent = 'Check microphone (and other permissions) for this extension.'
+      el.style.color = ''
+    }
+  })
+}
+
+function wireMicrophoneSettingsPanel(container: HTMLElement): void {
+  container.querySelector('#btn-grant-mic')?.addEventListener('click', async () => {
+    const status = container.querySelector('#mic-grant-status') as HTMLElement
+    status.textContent = 'Requesting microphone…'
+    status.style.color = ''
+    try {
+      await speech.grantMicrophonePermissionInteractive()
+      status.textContent =
+        'Saved. Chrome will keep “Allow” for this extension until you change it in Settings → Privacy and security → Site settings → Microphone.'
+      status.style.color = 'var(--color-success)'
+      void refreshMicPermissionStatusLine(container)
+    } catch (e) {
+      status.textContent = e instanceof Error ? e.message : String(e)
+      status.style.color = 'var(--color-error)'
+    }
+  })
+
+  container.querySelector('#btn-open-mic-tab')?.addEventListener('click', () => {
+    const url = chrome.runtime.getURL('permissions/microphone-permission.html')
+    void chrome.tabs.create({ url, active: true })
+  })
+}
+
+async function refreshMicPermissionStatusLine(container: HTMLElement): Promise<void> {
+  const el = container.querySelector('#mic-permission-status-line') as HTMLElement | null
+  if (!el) return
+  try {
+    if (!navigator.permissions?.query) {
+      el.textContent = 'Use the buttons above to allow the microphone (required for voice).'
+      return
+    }
+    const r = await navigator.permissions.query({ name: 'microphone' as PermissionName })
+    const apply = (): void => {
+      el.textContent = `Microphone permission for this extension page: ${r.state}.`
+    }
+    apply()
+    r.onchange = apply
+  } catch {
+    el.textContent = 'Use the buttons above to allow the microphone for this extension.'
+  }
 }
 
 function renderConnectionInfo(s: Settings): string {
@@ -115,6 +378,55 @@ function renderConnectionInfo(s: Settings): string {
       <span class="hint-text">${esc(caps.serverType)} &middot; ${caps.availableModels.length} model(s) &middot; ${caps.apiFormat}</span>
     </div>
   `
+}
+
+function renderGeminiModelOptions(selected?: string): string {
+  const models = [
+    'gemini-2.5-flash-preview-04-17',
+    'gemini-2.5-pro-preview-03-25',
+    'gemini-2.0-flash',
+    'gemini-2.0-flash-lite',
+    'gemini-1.5-pro',
+    'gemini-1.5-flash',
+  ]
+  return models.map(m =>
+    `<option value="${m}" ${m === selected ? 'selected' : ''}>${m}</option>`
+  ).join('')
+}
+
+function renderOpenAIModelOptions(selected?: string): string {
+  const models = ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'o3-mini', 'o4-mini']
+  return models.map(m =>
+    `<option value="${m}" ${m === selected ? 'selected' : ''}>${m}</option>`
+  ).join('')
+}
+
+function renderAnthropicModelOptions(selected?: string): string {
+  const models = ['claude-sonnet-4-20250514', 'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229']
+  return models.map(m =>
+    `<option value="${m}" ${m === selected ? 'selected' : ''}>${m}</option>`
+  ).join('')
+}
+
+function wireProviderToggle(container: HTMLElement): void {
+  const select = container.querySelector('#active-provider') as HTMLSelectElement
+  select.addEventListener('change', () => {
+    const provider = select.value
+    container.querySelectorAll<HTMLElement>('.provider-section').forEach(el => {
+      el.style.display = 'none'
+    })
+    const target = container.querySelector(`#section-${provider}`) as HTMLElement
+    if (target) target.style.display = ''
+  })
+}
+
+function wireSTTProviderToggle(container: HTMLElement): void {
+  const select = container.querySelector('#stt-provider') as HTMLSelectElement
+  if (!select) return
+  select.addEventListener('change', () => {
+    const group = container.querySelector('#whisper-endpoint-group') as HTMLElement
+    if (group) group.style.display = select.value === 'whisper-local' ? '' : 'none'
+  })
 }
 
 function wireSettingsEvents(container: HTMLElement, s: Settings): void {
@@ -159,18 +471,71 @@ function wireSettingsEvents(container: HTMLElement, s: Settings): void {
     }
   })
 
+  container.querySelector('#btn-test-gemini')?.addEventListener('click', async () => {
+    const apiKey = (container.querySelector('#gemini-api-key') as HTMLInputElement).value.trim()
+    const statusEl = container.querySelector('#gemini-status') as HTMLElement
+    if (!apiKey) { statusEl.textContent = 'Enter an API key first.'; statusEl.style.color = 'var(--color-error)'; return }
+    statusEl.textContent = 'Testing...'
+    const res = await chrome.runtime.sendMessage({ type: MSG.GEMINI_MODELS, apiKey }) as { ok: boolean; models?: string[]; error?: string }
+    if (res.ok && res.models && res.models.length > 0) {
+      statusEl.textContent = `Connected! ${res.models.length} models available.`
+      statusEl.style.color = 'var(--color-success)'
+    } else {
+      statusEl.textContent = res.error || 'Could not connect. Check your API key.'
+      statusEl.style.color = 'var(--color-error)'
+    }
+  })
+
+  container.querySelector('#btn-refresh-gemini-models')?.addEventListener('click', async () => {
+    const apiKey = (container.querySelector('#gemini-api-key') as HTMLInputElement).value.trim()
+    const statusEl = container.querySelector('#gemini-status') as HTMLElement
+    if (!apiKey) { statusEl.textContent = 'Enter an API key first.'; statusEl.style.color = 'var(--color-error)'; return }
+    statusEl.textContent = 'Loading models...'
+    const res = await chrome.runtime.sendMessage({ type: MSG.GEMINI_MODELS, apiKey }) as { ok: boolean; models?: string[] }
+    const select = container.querySelector('#gemini-model') as HTMLSelectElement
+    if (res.ok && res.models && res.models.length > 0) {
+      const current = select.value
+      select.innerHTML = res.models.map(m =>
+        `<option value="${esc(m)}" ${m === current ? 'selected' : ''}>${esc(m)}</option>`
+      ).join('')
+      statusEl.textContent = `${res.models.length} models loaded.`
+      statusEl.style.color = 'var(--color-success)'
+    } else {
+      statusEl.textContent = 'No models found.'
+      statusEl.style.color = 'var(--color-error)'
+    }
+  })
+
   container.querySelector('#btn-save-settings')?.addEventListener('click', async () => {
     const partial: Partial<Settings> = {
+      activeProvider: (container.querySelector('#active-provider') as HTMLSelectElement).value as Settings['activeProvider'],
       lmStudioUrl: (container.querySelector('#lm-url') as HTMLInputElement).value.trim(),
       lmStudioModel: (container.querySelector('#lm-model') as HTMLSelectElement).value,
       authToken: (container.querySelector('#auth-token') as HTMLInputElement).value.trim(),
       rateLimitRpm: Number((container.querySelector('#rate-limit') as HTMLInputElement).value),
       maxContextMessages: Number((container.querySelector('#ctx-window') as HTMLInputElement).value),
+      contextWindowTokens: Number((container.querySelector('#ctx-tokens') as HTMLInputElement).value),
+      liteMode: (container.querySelector('#lite-mode') as HTMLInputElement).checked,
+      geminiApiKey: (container.querySelector('#gemini-api-key') as HTMLInputElement).value.trim(),
+      geminiModel: (container.querySelector('#gemini-model') as HTMLSelectElement).value,
+      openaiApiKey: (container.querySelector('#openai-api-key') as HTMLInputElement).value.trim(),
+      openaiModel: (container.querySelector('#openai-model') as HTMLSelectElement).value,
+      anthropicApiKey: (container.querySelector('#anthropic-api-key') as HTMLInputElement).value.trim(),
+      anthropicModel: (container.querySelector('#anthropic-model') as HTMLSelectElement).value,
       monitoringEnabled: (container.querySelector('#monitoring-enabled') as HTMLInputElement).checked,
       visionEnabled: (container.querySelector('#vision-enabled') as HTMLInputElement).checked,
       screenshotIntervalSec: Number((container.querySelector('#screenshot-interval') as HTMLInputElement).value),
       textRewriteEnabled: (container.querySelector('#text-rewrite-enabled') as HTMLInputElement).checked,
+      safetyBorderEnabled: (container.querySelector('#safety-border-enabled') as HTMLInputElement).checked,
+      composeAssistantEnabled: (container.querySelector('#compose-assistant-enabled') as HTMLInputElement).checked,
+      aiActionLearningEnabled: (container.querySelector('#ai-action-learning-enabled') as HTMLInputElement).checked,
+      learningSnapshotIntervalSec: Number((container.querySelector('#learning-interval') as HTMLInputElement).value),
       calendarDetectionEnabled: (container.querySelector('#calendar-detection') as HTMLInputElement).checked,
+      sttProvider: (container.querySelector('#stt-provider') as HTMLSelectElement).value as Settings['sttProvider'],
+      whisperEndpoint: (container.querySelector('#whisper-endpoint') as HTMLInputElement).value.trim(),
+      mempalaceBridgeEnabled: (container.querySelector('#mempalace-enabled') as HTMLInputElement).checked,
+      mempalaceBridgeUrl: (container.querySelector('#mempalace-url') as HTMLInputElement).value.trim(),
+      mempalaceWing: (container.querySelector('#mempalace-wing') as HTMLInputElement).value.trim() || undefined,
     }
     await chrome.runtime.sendMessage({ type: MSG.SETTINGS_SET, partial })
     const statusEl = container.querySelector('#save-status') as HTMLElement
@@ -212,6 +577,50 @@ function wireSettingsEvents(container: HTMLElement, s: Settings): void {
   container.querySelector('#btn-clear-all-mem')?.addEventListener('click', async () => {
     if (!confirm('Clear ALL memory and chat history?')) return
     await chrome.runtime.sendMessage({ type: MSG.MEMORY_CLEAR })
+  })
+
+  container.querySelector('#btn-mempalace-probe')?.addEventListener('click', async () => {
+    const url = (container.querySelector('#mempalace-url') as HTMLInputElement).value.trim()
+    const statusEl = container.querySelector('#mempalace-status') as HTMLElement
+    statusEl.textContent = 'Testing…'
+    statusEl.style.color = ''
+    const res = await chrome.runtime.sendMessage({ type: MSG.MEMPALACE_PROBE, url }) as {
+      ok: boolean
+      mempalaceInstalled?: boolean
+      palacePath?: string
+      error?: string
+    }
+    if (res.ok) {
+      const mp = res.mempalaceInstalled ? 'mempalace package OK' : 'bridge up; pip install mempalace if search fails'
+      statusEl.textContent = `${mp}${res.palacePath ? ` · ${res.palacePath}` : ''}`
+      statusEl.style.color = 'var(--color-success)'
+    } else {
+      statusEl.textContent = res.error || 'Unreachable. Is the bridge running?'
+      statusEl.style.color = 'var(--color-error)'
+    }
+  })
+
+  container.querySelector('#btn-mempalace-inbox')?.addEventListener('click', async () => {
+    const url = (container.querySelector('#mempalace-url') as HTMLInputElement).value.trim()
+    const statusEl = container.querySelector('#mempalace-status') as HTMLElement
+    if (!url) {
+      statusEl.textContent = 'Set bridge URL first.'
+      statusEl.style.color = 'var(--color-error)'
+      return
+    }
+    statusEl.textContent = 'Pushing to palace…'
+    const res = await chrome.runtime.sendMessage({ type: MSG.MEMPALACE_PUSH_INBOX, url }) as {
+      ok: boolean
+      stored?: number
+      error?: string
+    }
+    if (res.ok) {
+      statusEl.textContent = `Stored ${res.stored ?? 0} entries in MemPalace.`
+      statusEl.style.color = 'var(--color-success)'
+    } else {
+      statusEl.textContent = res.error || 'Failed'
+      statusEl.style.color = 'var(--color-error)'
+    }
   })
 }
 

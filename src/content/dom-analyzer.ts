@@ -193,6 +193,56 @@ function analyzeButtons(): PageButton[] {
     .slice(0, 20)
 }
 
+function analyzeInteractiveElements(): PageButton[] {
+  const seen = new Set<Element>()
+  const seenText = new Set<string>()
+  const results: PageButton[] = []
+
+  const roleEls = document.querySelectorAll<HTMLElement>(
+    '[role="row"], [role="listitem"], [role="option"], [role="gridcell"], [role="treeitem"], [role="menuitem"], [role="tab"], [role="link"], tbody > tr, [tabindex], [onclick], [data-action], [jsaction]'
+  )
+
+  for (const el of roleEls) {
+    if (seen.has(el) || !isVisible(el)) continue
+    if (!isInteractiveCandidate(el)) continue
+
+    const rawText = (el.textContent?.trim() ?? '').slice(0, 80).replace(/^\s+/gm, ' ')
+    if (rawText.length < 3) continue
+
+    const dedup = rawText.slice(0, 50)
+    if (seenText.has(dedup)) continue
+
+    seen.add(el)
+    seenText.add(dedup)
+    results.push({
+      selector: getUniqueSelector(el),
+      text: rawText,
+      role: el.getAttribute('role') || el.tagName.toLowerCase(),
+    })
+    if (results.length >= 15) return results
+  }
+
+  return results
+}
+
+const NON_INTERACTIVE_TAGS = new Set([
+  'SCRIPT', 'STYLE', 'NOSCRIPT', 'IFRAME', 'SVG', 'PATH',
+  'META', 'LINK', 'HEAD', 'BR', 'HR', 'DEFS', 'CLIPPATH', 'TEMPLATE',
+])
+
+function isInteractiveCandidate(el: HTMLElement): boolean {
+  if (NON_INTERACTIVE_TAGS.has(el.tagName)) return false
+  if (el.closest('script, style, noscript, template')) return false
+
+  const text = el.textContent?.trim() ?? ''
+  if (text.length > 500) return false
+
+  const t = text.trimStart()
+  if (/^(\(function|var |const |let |\/\/|\/\*|\{|import |export |if\s*\(|try\s*\{|window\.)/.test(t)) return false
+
+  return true
+}
+
 // ─── Link analysis ────────────────────────────────────────────────────────────
 
 function analyzeLinks(): PageLink[] {
@@ -218,7 +268,7 @@ export function buildSnapshot(): PageSnapshot {
     title: document.title,
     timestamp: Date.now(),
     forms: analyzeForms(),
-    buttons: analyzeButtons(),
+    buttons: [...analyzeButtons(), ...analyzeInteractiveElements()],
     links: analyzeLinks(),
     headings: analyzeHeadings(),
     metaDescription: document.querySelector<HTMLMetaElement>('meta[name="description"]')?.content?.trim() ?? '',

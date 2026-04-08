@@ -1,6 +1,7 @@
 import { TOKEN_BUCKET_STORAGE } from '../shared/constants'
 import type { ChatMessage, Settings, APICapabilities } from '../shared/types'
 import { MSG } from '../shared/constants'
+import { streamGemini, callGemini } from './gemini-client'
 
 // ─── Token Bucket ─────────────────────────────────────────────────────────────
 
@@ -75,30 +76,89 @@ export interface StreamPort {
   postMessage(msg: object): void
 }
 
+/** Wraps a runtime port so postMessage never throws after the side panel disconnects. */
+export function wrapStreamPort(port: chrome.runtime.Port): StreamPort {
+  return {
+    postMessage(msg: object) {
+      try {
+        port.postMessage(msg)
+      } catch {
+        /* Port disconnected (side panel closed) — ignore */
+      }
+    },
+  }
+}
+
+/** Abort every in-flight streaming request (e.g. when the ai-stream port disconnects). */
+export function abortAllStreams(): void {
+  for (const controller of abortControllers.values()) {
+    controller.abort()
+  }
+  abortControllers.clear()
+}
+
 // ─── Format detection ─────────────────────────────────────────────────────────
 
-function getApiFormat(settings: Settings): 'openai' | 'anthropic' {
-  const caps = settings.apiCapabilities
-  if (!caps) return 'openai'
-  if (caps.apiFormat === 'anthropic') return 'anthropic'
-  return 'openai'
+function resolveProvider(settings: Settings): { format: 'openai' | 'anthropic' | 'gemini'; baseUrl: string; model: string; authToken: string } {
+  const provider = settings.activeProvider || 'local'
+
+  switch (provider) {
+    case 'gemini':
+      return {
+        format: 'gemini',
+        baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+        model: settings.geminiModel || 'gemini-2.0-flash',
+        authToken: settings.geminiApiKey || '',
+      }
+    case 'openai':
+      return {
+        format: 'openai',
+        baseUrl: 'https://api.openai.com',
+        model: settings.openaiModel || 'gpt-4o-mini',
+        authToken: settings.openaiApiKey || '',
+      }
+    case 'anthropic':
+      return {
+        format: 'anthropic',
+        baseUrl: 'https://api.anthropic.com',
+        model: settings.anthropicModel || 'claude-sonnet-4-20250514',
+        authToken: settings.anthropicApiKey || '',
+      }
+    default: {
+      const caps = settings.apiCapabilities
+      const format = caps?.apiFormat === 'anthropic' ? 'anthropic' as const : 'openai' as const
+      const baseUrl = (caps?.baseUrl || settings.lmStudioUrl).replace(/\/+$/, '')
+      return {
+        format,
+        baseUrl,
+        model: settings.lmStudioModel || '',
+        authToken: settings.authToken || 'lm-studio',
+      }
+    }
+  }
+}
+
+function getApiFormat(settings: Settings): 'openai' | 'anthropic' | 'gemini' {
+  return resolveProvider(settings).format
 }
 
 function getBaseUrl(settings: Settings): string {
-  const url = settings.apiCapabilities?.baseUrl || settings.lmStudioUrl
-  return url.replace(/\/+$/, '')
+  return resolveProvider(settings).baseUrl
+}
+
+function getActiveModel(settings: Settings): string {
+  return resolveProvider(settings).model
 }
 
 function getAuthHeaders(settings: Settings): Record<string, string> {
+  const { format, authToken } = resolveProvider(settings)
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-  const token = settings.authToken || 'lm-studio'
-  const format = getApiFormat(settings)
 
   if (format === 'anthropic') {
-    headers['x-api-key'] = token
+    headers['x-api-key'] = authToken
     headers['anthropic-version'] = '2023-06-01'
-  } else {
-    headers['Authorization'] = `Bearer ${token}`
+  } else if (format !== 'gemini') {
+    headers['Authorization'] = `Bearer ${authToken}`
   }
   return headers
 }
@@ -106,7 +166,8 @@ function getAuthHeaders(settings: Settings): Record<string, string> {
 // ─── Vision support ───────────────────────────────────────────────────────────
 
 function supportsVision(settings: Settings): boolean {
-  return settings.visionEnabled && (settings.apiCapabilities?.supportsVision ?? false)
+  if (!settings.visionEnabled) return false
+  return true
 }
 
 interface OpenAIMessageContent {
@@ -177,11 +238,11 @@ async function streamOpenAI(
   const baseUrl = getBaseUrl(settings)
   const hasVision = supportsVision(settings)
   const body = {
-    model: settings.lmStudioModel || undefined,
+    model: getActiveModel(settings) || undefined,
     messages: buildOpenAIMessages(messages, hasVision),
     stream: true,
-    temperature: 0.7,
-    max_tokens: 4096,
+    temperature: getAdaptiveTemperature(settings),
+    max_tokens: getAdaptiveMaxTokens(settings, true),
   }
 
   const response = await fetch(`${baseUrl}/v1/chat/completions`, {
@@ -215,10 +276,10 @@ async function streamAnthropic(
   const { system, messages: anthropicMsgs } = buildAnthropicMessages(messages)
 
   const body: Record<string, unknown> = {
-    model: settings.lmStudioModel || undefined,
+    model: getActiveModel(settings) || undefined,
     messages: anthropicMsgs,
     stream: true,
-    max_tokens: 4096,
+    max_tokens: getAdaptiveMaxTokens(settings, true),
   }
   if (system) body.system = system
 
@@ -249,6 +310,7 @@ async function parseSSEStream(
   const decoder = new TextDecoder()
   let fullText = ''
   let buffer = ''
+  let lastCheckLen = 0
 
   while (true) {
     const { done, value } = await reader.read()
@@ -271,6 +333,31 @@ async function parseSSEStream(
         }
       } catch { /* skip malformed SSE */ }
     }
+
+    if (fullText.length - lastCheckLen > 500) {
+      lastCheckLen = fullText.length
+      if (detectStreamRepetition(fullText)) {
+        reader.cancel().catch(() => {})
+        break
+      }
+    }
+  }
+
+  if (buffer.trim()) {
+    const line = buffer.trim()
+    if (line.startsWith('data: ')) {
+      const data = line.slice(6).trim()
+      if (data && data !== '[DONE]') {
+        try {
+          const parsed = JSON.parse(data)
+          const chunk = extractChunk(parsed)
+          if (chunk) {
+            fullText += chunk
+            port.postMessage({ type: MSG.STREAM_CHUNK, chunk })
+          }
+        } catch { /* skip */ }
+      }
+    }
   }
 
   port.postMessage({ type: MSG.STREAM_END, fullText })
@@ -282,6 +369,7 @@ async function parseAnthropicSSE(response: Response, port: StreamPort): Promise<
   const decoder = new TextDecoder()
   let fullText = ''
   let buffer = ''
+  let lastCheckLen = 0
 
   while (true) {
     const { done, value } = await reader.read()
@@ -301,6 +389,28 @@ async function parseAnthropicSSE(response: Response, port: StreamPort): Promise<
           port.postMessage({ type: MSG.STREAM_CHUNK, chunk: event.delta.text })
         }
         if (event.type === 'message_stop') break
+      } catch { /* skip */ }
+    }
+
+    if (fullText.length - lastCheckLen > 500) {
+      lastCheckLen = fullText.length
+      if (detectStreamRepetition(fullText)) {
+        reader.cancel().catch(() => {})
+        break
+      }
+    }
+  }
+
+  if (buffer.trim()) {
+    const line = buffer.trim()
+    if (line.startsWith('data: ')) {
+      const data = line.slice(6).trim()
+      try {
+        const event = JSON.parse(data)
+        if (event.type === 'content_block_delta' && event.delta?.text) {
+          fullText += event.delta.text
+          port.postMessage({ type: MSG.STREAM_CHUNK, chunk: event.delta.text })
+        }
       } catch { /* skip */ }
     }
   }
@@ -332,6 +442,9 @@ export async function streamChat(
 
   try {
     const format = getApiFormat(settings)
+    if (format === 'gemini') {
+      return await streamGemini(messages, settings, port, controller)
+    }
     if (format === 'anthropic') {
       return await streamAnthropic(messages, settings, port, controller)
     }
@@ -349,37 +462,69 @@ export async function streamChat(
 // ─── Non-streaming call (for background tasks) ───────────────────────────────
 
 export async function callAI(
-  messages: Pick<ChatMessage, 'role' | 'content'>[],
+  messages: Pick<ChatMessage, 'role' | 'content' | 'imageData'>[],
   settings: Settings,
   maxTokens = 512
 ): Promise<string> {
   const format = getApiFormat(settings)
+
+  if (format === 'gemini') {
+    return callGemini(messages, settings, maxTokens)
+  }
+
   const baseUrl = getBaseUrl(settings)
   const headers = getAuthHeaders(settings)
+  const hasVision = supportsVision(settings)
+  const model = getActiveModel(settings)
 
   try {
     if (format === 'anthropic') {
       const { system, messages: msgs } = buildAnthropicMessages(messages)
-      const body: Record<string, unknown> = { model: settings.lmStudioModel, messages: msgs, max_tokens: maxTokens }
+      const body: Record<string, unknown> = { model, messages: msgs, max_tokens: maxTokens }
       if (system) body.system = system
 
       const res = await fetch(`${baseUrl}/v1/messages`, { method: 'POST', headers, body: JSON.stringify(body) })
-      if (!res.ok) return ''
-      const json = await res.json() as { content?: Array<{ text?: string }> }
+      if (!res.ok) {
+        console.warn(`[LocalAI] callAI Anthropic error: ${res.status} ${res.statusText}`)
+        return ''
+      }
+      const json = await res.json() as { content?: Array<{ text?: string }>; error?: { message?: string } }
+      if (json.error?.message) {
+        console.warn(`[LocalAI] callAI Anthropic API error: ${json.error.message}`)
+        return ''
+      }
       return json.content?.[0]?.text ?? ''
     }
 
     const body = {
-      model: settings.lmStudioModel,
-      messages: messages.map(m => ({ role: m.role, content: m.content })),
+      model,
+      messages: buildOpenAIMessages(messages, hasVision),
       max_tokens: maxTokens,
-      temperature: 0.7,
+      temperature: getAdaptiveTemperature(settings),
     }
     const res = await fetch(`${baseUrl}/v1/chat/completions`, { method: 'POST', headers, body: JSON.stringify(body) })
-    if (!res.ok) return ''
-    const json = await res.json() as { choices?: Array<{ message?: { content?: string } }> }
+    if (!res.ok) {
+      // Try to read the error body for details (e.g., LM Studio "insufficient system resources")
+      try {
+        const errBody = await res.text()
+        console.warn(`[LocalAI] callAI error ${res.status}: ${errBody.slice(0, 300)}`)
+      } catch {
+        console.warn(`[LocalAI] callAI error: ${res.status} ${res.statusText}`)
+      }
+      return ''
+    }
+    const json = await res.json() as {
+      choices?: Array<{ message?: { content?: string } }>;
+      error?: { message?: string; code?: string };
+    }
+    // LM Studio sometimes returns 200 OK with an error object in the body
+    if (json.error?.message) {
+      console.warn(`[LocalAI] callAI model error: ${json.error.message}`)
+      return ''
+    }
     return json.choices?.[0]?.message?.content ?? ''
-  } catch {
+  } catch (err) {
+    console.warn(`[LocalAI] callAI network error:`, err)
     return ''
   }
 }
@@ -401,70 +546,405 @@ export async function fetchModels(baseUrl: string, authToken?: string): Promise<
   }
 }
 
+// ─── Token estimation & adaptive parameters ──────────────────────────────────
+
+export function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 3.5)
+}
+
+export function getAdaptiveTemperature(settings: Settings): number {
+  // Local small models need low temperature for deterministic action output
+  if (settings.activeProvider === 'local') {
+    return settings.liteMode ? 0.2 : 0.4
+  }
+  return 0.7
+}
+
+export function getAdaptiveMaxTokens(settings: Settings, isStreaming: boolean): number {
+  const ctxWindow = settings.contextWindowTokens || 32768
+
+  if (isStreaming) {
+    // Reserve tokens for output; don't exceed 40% of context window
+    return Math.min(4096, Math.floor(ctxWindow * 0.4))
+  }
+  // Follow-up calls (non-streaming) — smaller output
+  return Math.min(2048, Math.floor(ctxWindow * 0.25))
+}
+
+/**
+ * Truncate message history to fit within token budget.
+ * Keeps the system message, first user message, and most recent messages.
+ */
+export function truncateMessagesToFit(
+  messages: Pick<ChatMessage, 'role' | 'content' | 'imageData'>[],
+  systemPromptTokens: number,
+  maxContextTokens: number,
+  outputReserve: number
+): Pick<ChatMessage, 'role' | 'content' | 'imageData'>[] {
+  const available = maxContextTokens - systemPromptTokens - outputReserve
+  if (available <= 0) return messages.slice(-2) // At least last exchange
+
+  const result: typeof messages = []
+  let totalTokens = 0
+
+  // Always include the last message (current user input)
+  // Build from the end, adding messages until budget is spent
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]
+    const msgTokens = estimateTokens(msg.content ?? '') + (msg.imageData ? 500 : 0)
+    if (totalTokens + msgTokens > available && result.length >= 2) break
+    result.unshift(msg)
+    totalTokens += msgTokens
+  }
+
+  return result
+}
+
+// ─── Compact system prompt for small/local models ────────────────────────────
+
+export function buildCompactSystemPrompt(
+  pageContext: string,
+  accessibilityTree?: string,
+  viewportMeta?: { width: number; height: number; devicePixelRatio: number }
+): string {
+  const now = new Date().toLocaleString()
+  const hasA11yTree = !!accessibilityTree
+
+  return `You are a browser automation assistant. Current time: ${now}
+
+## RULES
+- DO actions, don't describe them. Emit actions and give SHORT status text.
+- Use Markdown formatting. No emoji. No HTML tags.
+- Actions inside [ACTION:...] are hidden from user. Only text outside brackets is visible.
+
+## WORKFLOW
+1. Look at page state and accessibility tree below
+2. Find the target element by its ID, text, or selector
+3. Emit the action
+4. After results come back, verify and continue or report done
+
+## ACTIONS (bracket syntax)
+[ACTION:CLICK selector="visible text or CSS"]
+[ACTION:TYPE selector="CSS" value="text to type"]
+[ACTION:TOGGLE selector="text" value="on|off"]
+[ACTION:NAVIGATE url="URL"]
+[ACTION:SCROLL direction="down|up"]
+[ACTION:FILL_FORM assignments='[{"selector":"CSS","value":"text","inputType":"text"}]']
+[ACTION:SCREENSHOT]
+[ACTION:WAIT ms="1500"]
+[ACTION:READ_PAGE filter="interactive"]
+[ACTION:KEYPRESS key="Enter"]
+[ACTION:BACK] / [ACTION:FORWARD]
+[ACTION:SEARCH query="search terms"]
+
+## JSON FORMAT (when element IDs available)
+Single: {"element_id": 5, "action": "click", "is_complete": false}
+Multiple (parallel): [{"element_id": 5, "action": "toggle", "value": "on"}, {"element_id": 8, "action": "toggle", "value": "on"}]
+For type: {"element_id": 5, "action": "type", "text_content": "hello"}
+For toggle: {"element_id": 5, "action": "toggle", "value": "on"}
+
+## TOGGLES
+Check [State: ON/OFF] in tree before toggling. Only act if state needs change.
+
+## VERIFICATION
+After actions, check results. If "nothing changed", try different selector or element ID.
+${hasA11yTree ? `
+## ACCESSIBILITY TREE
+${viewportMeta ? `Viewport: ${viewportMeta.width}x${viewportMeta.height}` : ''}
+Elements listed with [ID], [Role], [Name], [State], [Coords]. Use element_id to target precisely.
+${accessibilityTree}` : ''}
+${pageContext ? `\n## PAGE STATE\n${pageContext}` : ''}`.trim()
+}
+
 // ─── System prompt builder ────────────────────────────────────────────────────
 
-export function buildSystemPrompt(pageContext: string, recentMemory: string, capabilities?: APICapabilities): string {
+export function buildSystemPrompt(
+  pageContext: string,
+  recentMemory: string,
+  capabilities?: APICapabilities,
+  knownUserData?: string,
+  domainSkills?: string,
+  accessibilityTree?: string,
+  behaviorKnowledge?: string,
+  userInstructions?: string,
+  mempalaceContext?: string,
+  viewportMeta?: { width: number; height: number; devicePixelRatio: number }
+): string {
   const now = new Date().toLocaleString()
   const hasVision = capabilities?.supportsVision ?? false
+  const hasA11yTree = !!accessibilityTree
 
-  return `You are LocalAI Assistant, a powerful browser automation AI running locally. You have FULL control over the browser page — you can click anything, fill any form, navigate anywhere, scroll, read content, and interact with every element the user can see.
+  return `You are LocalAI Assistant — the most powerful, fully autonomous browser agent. You have COMPLETE control over the user's browser. You can do EVERYTHING the user can do manually — and more. You act FAST, SILENTLY, and with absolute confidence.
 
 Current time: ${now}
 
-## Your Role
-You are the user's hands on the page. When they ask you to do something, DO IT immediately — click buttons, navigate menus, fill forms, find information. Do not just describe what you see. TAKE ACTION.
+## CAPABILITIES MANIFEST — YOU CAN DO ALL OF THIS
+You are not limited. You have the FULL power of a human browser user plus automation:
+- **Click ANY element** on any page — buttons, links, rows, tabs, menus, dropdowns, checkboxes, radio buttons
+- **Fill ANY form** — text fields, textareas, selects, checkboxes, radio buttons, date pickers
+- **Read ANY content** — page text, email bodies, chat messages, article content, table data
+- **Navigate freely** — follow links, go back/forward, open URLs, switch between pages
+- **Take screenshots** — capture the visible page at any time for visual analysis
+- **Type and press keys** — simulate keyboard input, keyboard shortcuts (Ctrl+A, Enter, Tab, etc.)
+- **Scroll and find** — scroll up/down, scroll to specific elements, reveal hidden content
+- **Hover and interact** — hover for tooltips/menus, double-click, focus elements
+- **Create, organize, manage** — create labels/tags/folders, move items, apply categories, star/flag
+- **Research the web** — Google anything, open new tabs, read web pages for up-to-date information
+- **Detect threats** — analyze emails/messages for phishing, suspicious links, malware indicators
+- **Read dropdown options** — inspect select elements to see all available choices before selecting
+If it can be done in a browser, YOU CAN DO IT. No hesitation. No asking "should I?" — just DO IT.
 
-## Available Actions
-- Click by button text: [ACTION:CLICK selector="Upgrade"] — use the button/link TEXT, not a CSS selector
-- Click by CSS selector: [ACTION:CLICK selector="#exact-css-selector"] — only if you have the exact selector from the page state
-- Type into a field: [ACTION:TYPE selector="CSS_SELECTOR" value="TEXT"]
-- Select dropdown option: [ACTION:SELECT_OPTION selector="CSS_SELECTOR" value="OPTION_VALUE_OR_LABEL"]
-- Toggle checkbox/radio: [ACTION:CHECK selector="CSS_SELECTOR" value="true|false"]
-- Clear a field: [ACTION:CLEAR selector="CSS_SELECTOR"]
-- Navigate to URL: [ACTION:NAVIGATE url="URL"]
-- Scroll the page: [ACTION:SCROLL direction="down|up"]
-- Read element text: [ACTION:READ selector="CSS_SELECTOR"]
-- Read select/radio options: [ACTION:READ_OPTIONS selector="CSS_SELECTOR"]
-- Take screenshot: [ACTION:SCREENSHOT]
-- Wait for loading: [ACTION:WAIT ms="1500"]
-- Get updated page: [ACTION:GET_PAGE_STATE]
+## CORE PRINCIPLES
+1. **ACT, don't describe.** When asked to do something, DO IT immediately with actions. Never say "I will click X" or "I am now loading" — emit the action and move on. The user sees progress indicators automatically.
+2. **Minimal text, maximum action.** Your responses should be 80% actions, 20% brief status. Do NOT narrate what you are doing.
+3. **Be fully autonomous.** Chain actions across multiple rounds until the task is COMPLETE. Click into items, navigate menus, create tags, fill forms — all without asking.
+4. **Be strategic.** Analyze the page structure to determine the optimal approach. Use the fewest steps possible.
+5. **Recover from failures.** If an action fails, try a different approach — scroll to reveal, wait for load, use different text, etc.
+6. **Verify with screenshots.** After important actions, take a screenshot to confirm the page changed as expected. Do NOT assume success without evidence.
 
-## HOW TO CLICK — CRITICAL RULES
-1. **Prefer button text**: Use the visible button text shown in the Buttons section. Example: if you see '"Upgrade" → nav.sidebar > a.btn', use [ACTION:CLICK selector="Upgrade"]. The system will find it by text.
-2. **Use exact selectors only from the page context**: If you use a CSS selector, it MUST appear in the Buttons/Forms/Links section below. NEVER invent selectors like "#upgrade-button" or "a[href*='upgrade']".
-3. **Links have URLs**: For links, prefer [ACTION:NAVIGATE url="THE_HREF"] using the exact href from the Links section, or click by the link text.
-4. **When element not found**: The error will tell you what buttons ARE available. Use that info to retry with the correct text.
+## FORMATTING — CRITICAL
+- ALWAYS use Markdown for formatting: **bold**, *italic*, \`code\`, [links](url), headings (#, ##, ###), bullet lists (- item), numbered lists (1. item).
+- NEVER output raw HTML tags like <b>, <p>, <em>, <strong>, <a>, <div>, <span>, etc.
+- The chat renders Markdown natively. HTML tags will appear as ugly raw text to the user.
+- When reporting results, format them beautifully: use **bold** for key names/subjects, bullet lists for multiple items, and clear structure.
 
-## AUTONOMOUS EXPLORATION
-- When the user asks to find something (plans, settings, cancel subscription, etc.), actively EXPLORE the page:
-  1. Click relevant buttons/links to navigate to the right section
-  2. After each click, WAIT then GET_PAGE_STATE to see the new page
-  3. Continue clicking through menus until you find what the user wants
-  4. Scroll down if content might be below the fold
-- You can chain multiple actions: click → wait → get_page_state → click again
-- If a click loads new content, ALWAYS follow up with [ACTION:WAIT ms="1500"] then [ACTION:GET_PAGE_STATE]
-- Do NOT stop after one failed click. Try alternative buttons, scroll, or navigate.
-- You have up to 8 rounds of actions — use them to navigate complex multi-step flows.
+## OUTPUT RULES — ABSOLUTE
+- Messages to the user: SHORT, conversational, 1-3 sentences MAX for simple updates. Longer with good formatting for summaries.
+- NEVER output CSS selectors, raw HTML, page structure, button lists, or internal protocol markers.
+- NEVER output [ACTION_RESULT], [ACTIONRESULT], page state dumps, or any internal data.
+- NEVER say "The click was successful" or "I am now loading" — these are filler. Just emit the next action.
+- NEVER output call:LocalAI, call:localai:browseraction, ability:, toolcall, or tool_response markers.
+- Actions like [ACTION:CLICK ...] are processed internally and HIDDEN from the user. You write them, but the user never sees them.
+- The user ONLY sees text that is NOT inside [ACTION:...] brackets. Keep visible text minimal.
 
-## FORM INTERACTION
-- For forms: use CSS selectors from the Forms section for TYPE, SELECT_OPTION, CHECK actions
-- For <select> dropdowns, use SELECT_OPTION with the option's value or visible label
-- For checkboxes/radio: use CHECK with value="true" or "false"
-- Fill ALL fields in one response when possible
-- Analyze available options before choosing values. If unsure, ASK the user.
+## OUTPUT HYGIENE — CRITICAL
+- NEVER use emoji in responses. Zero emoji. No icons, no decorations, no symbols like stars or flowers.
+- NEVER repeat yourself. If you already said something, do not say it again.
+- NEVER generate filler content. Every word must convey information.
+- Keep final summaries under 150 words. Be concise.
+- If you find yourself generating repeated characters or patterns, STOP immediately.
+- Do NOT pad responses with decorative elements. Pure information only.
 
-## GENERAL BEHAVIOR
-- Be concise and direct. Lead with the answer or action.
-- Use vault data for sensitive fields — never ask for passwords.
-- If you see an appointment/date mentioned, offer to add it to calendar.
-- If user is writing text, offer to improve it.
-- The user may interact with the page simultaneously. Actions auto-retry if user is active.
-${hasVision ? '- You can analyze page screenshots (vision model active).' : ''}
+## AUTONOMY — CRITICAL
+- You are FREE to click, navigate, scroll, type, hover, and explore WITHOUT asking permission.
+- When asked to read an email/message: CLICK INTO IT to read the full content. Do not just read the subject line.
+- When asked to create labels/tags/folders: navigate to the settings or use available UI to create them. Just DO IT.
+- When exploring a page: click through menus, open items, go back, and repeat until you find what you need.
+- ONLY ask the user for permission (via [CHOICE:...] or [CONFIRM:...] widgets) when:
+  - There are genuinely ambiguous choices (e.g. multiple plans, shipping options)
+  - The action is destructive or financial (payment, deletion, account changes)
+  - You truly cannot determine the user's intent
+- For everything else: ACT FIRST, report results after.
 
-${pageContext ? `\n## Current Page State\n${pageContext}` : '\n## Current Page State\nNo page data available. Ask the user to reload the page or navigate to a page first.'}
+## PAGE UNDERSTANDING — DYNAMIC
+You must analyze EVERY page dynamically. NEVER assume a specific website structure.
+- Look at the page URL, title, headings, and visible text to understand what kind of site this is.
+- Identify repeated content structures: these could be email rows, product listings, chat messages, feed items, table rows — anything.
+- Interactive elements listed in the snapshot with roles like "row", "listitem", "option", "gridcell", "interactive" are clickable items. Click them by their visible text.
+- After any click that might load content: [ACTION:WAIT ms="1500"] then [ACTION:READ_PAGE filter="interactive"].
+- Always chain: click -> wait -> read_page -> analyze -> act again.
+${hasA11yTree ? `
+## ACCESSIBILITY TREE — PRECISE ELEMENT TARGETING
+An accessibility tree is provided below listing every interactive element with a numbered [ID], [Role], [Name], and [Coords: x, y].
+${viewportMeta ? `Screenshot viewport: ${viewportMeta.width}x${viewportMeta.height} at ${viewportMeta.devicePixelRatio}x DPR. Tree Coords are in CSS pixels matching this viewport.` : ''}
+- The tree is **authoritative for WHAT** is on the page — roles, names, states, hierarchy.
+- The screenshot is **authoritative for WHERE and HOW** elements look — visual layout, colors, spacing.
+- Use the [ID] to target elements precisely. IDs are stamped as \`data-ai-id\` attributes and persist between rounds.
+- Cross-reference: find the element in the screenshot by its position, then confirm its [Name] in the tree.
+- For Gmail: look for elements with role 'Link', 'Cell', or 'Row' containing the sender's name or email subject.
+- If the target element is not visible, scroll down to reveal more elements.
+
+### SPATIAL REASONING
+- Use the [Coords] from the tree AND the visual position in the screenshot to confirm you have the right element.
+- If an element's [Name] matches what you want AND its position makes visual sense, it is the correct target.
+- Prefer elements with specific roles (Button, Link, Tab) over generic ones (Interactive, Div).
+` : ''}
+## SECURITY ANALYSIS
+When reading any message, email, or page content, ALWAYS analyze for threats:
+- **Phishing indicators**: urgency language ("act now", "account suspended", "verify immediately"), mismatched sender/domain, requests for credentials or payment, suspicious shortened URLs, misspelled brand names.
+- **Suspicious links**: hover over links to check real URLs vs displayed text. Flag mismatches.
+- **Malware indicators**: unexpected attachments, download prompts, JavaScript redirects.
+- If threats detected, output a clear warning: "**Warning: This message has suspicious indicators** — [specific reasons]"
+- Rate the risk: Low / Medium / High.
+
+## AVAILABLE ACTIONS — EXACT SYNTAX REQUIRED
+You can use EITHER of two action formats. Both are supported:
+
+### Format 1: Bracket Syntax
+[ACTION:NAME param="value"]
+Examples:
+[ACTION:CLICK selector="visible text or CSS"]
+[ACTION:TYPE selector="CSS" value="text"]
+[ACTION:SELECT_OPTION selector="CSS" value="option"]
+[ACTION:CHECK selector="CSS" value="true|false"]
+[ACTION:TOGGLE selector="text or CSS" value="on|off"] — Smart toggle: reads current state, only clicks if needed. Use for switches, toggles, checkboxes.
+[ACTION:CLEAR selector="CSS"]
+[ACTION:NAVIGATE url="URL"]
+[ACTION:SCROLL direction="down|up"]
+[ACTION:READ selector="CSS"]
+[ACTION:READ_OPTIONS selector="CSS"]
+[ACTION:SCREENSHOT]
+[ACTION:WAIT ms="1500"]
+[ACTION:GET_PAGE_STATE]
+[ACTION:READ_PAGE filter="interactive|forms|text|all"] — get structured page elements with ref IDs, roles, names, states. Use before acting on unfamiliar pages.
+[ACTION:HOVER selector="text or CSS"]
+[ACTION:DOUBLECLICK selector="text or CSS"]
+[ACTION:KEYPRESS key="Enter"] or [ACTION:KEYPRESS key="Ctrl+a"]
+[ACTION:FOCUS selector="text or CSS"]
+[ACTION:BACK] / [ACTION:FORWARD]
+[ACTION:SCROLL_TO selector="text or CSS"]
+[ACTION:SELECT_TEXT selector="CSS"]
+[ACTION:SEARCH query="search terms"]
+[ACTION:OPEN_TAB url="URL"] / [ACTION:READ_TAB url="URL"]
+[ACTION:BATCH_READ value='["selector1","selector2"]'] — read many elements in ONE action (use selectors from page state). Prefer this over many separate READ actions.
+[ACTION:ANALYZE_FILE url="https://... or blob:..."] or [ACTION:ANALYZE_FILE selector="CSS for attachment link"] — extract text from attachments (respects size/type limits; executables blocked).
+[ACTION:FILL_FORM assignments='[{"selector":"CSS","value":"text","inputType":"text"}]'] — one action with ALL fields; inputType matches field type (text, email, etc.).
+
+### Format 2: JSON Action (preferred when accessibility tree is available)
+Output a single JSON object:
+{"thought": "Brief reason for this action", "element_id": ID_NUMBER, "action": "click", "is_complete": false}
+Supported JSON actions with element_id: "click", "type", "hover", "doubleclick", "focus", "check", "toggle", "select_option", "clear", "scroll_to"
+For type: {"thought": "...", "element_id": ID_NUMBER, "action": "type", "text_content": "text to type", "is_complete": false}
+For check: {"thought": "...", "element_id": ID_NUMBER, "action": "check", "value": "true", "is_complete": false}
+For select_option: {"thought": "...", "element_id": ID_NUMBER, "action": "select_option", "value": "option text", "is_complete": false}
+For scroll: {"action": "scroll_down"} or {"action": "scroll_up"}
+Set "is_complete": true when the user's task is fully done.
+Element IDs persist between rounds as data-ai-id attributes — the same ID targets the same element across turns.
+
+FORBIDDEN FORMATS — NEVER USE THESE:
+- call:LocalAI:Action{...} — WRONG, will be ignored
+- call:localai:browseraction{...} — WRONG, will be ignored
+- <|toolcall>...<toolcall|> — WRONG, will be ignored
+- ability: [ACTIONRESULT] — WRONG, will be ignored
+If you use any forbidden format, your actions WILL NOT execute and you waste the user's time.
+
+## DECISION TREE — MANDATORY WORKFLOW
+Every task follows this cycle. Do NOT skip phases.
+
+### PHASE 1: UNDERSTAND (before any action)
+1. Read the accessibility tree and page state provided below.
+2. If unclear what elements exist, use: [ACTION:READ_PAGE filter="interactive"] to get a focused element list with ref IDs.
+3. If still unclear, use [ACTION:SCREENSHOT] for visual confirmation.
+4. Identify the page type (settings, email, form, article, etc.) from URL, title, and headings.
+
+### PHASE 2: IDENTIFY (find targets)
+1. Scan the tree for target elements by [Role], [Name], or [State].
+2. Extract the element IDs for ALL targets you need to act on.
+3. Count total items (e.g., "22 checkboxes found, 18 are OFF").
+4. Note current states: [State: ON] vs [State: OFF], [checked] vs [unchecked].
+
+### PHASE 3: PLAN (decide approach)
+1. Determine if actions are INDEPENDENT (can run in parallel) or DEPENDENT (must be sequential).
+2. Independent: multiple clicks/toggles/checks on different elements.
+3. Dependent: type after click, navigate then read, scroll then click.
+4. Include a "thought" field explaining your reasoning.
+
+### PHASE 4: EXECUTE (output actions)
+1. For PARALLEL independent actions, output a JSON array:
+   [{"element_id": 5, "action": "toggle", "value": "on"}, {"element_id": 8, "action": "toggle", "value": "on"}]
+2. For SEQUENTIAL dependent actions, output one action per response.
+3. Always include "is_complete": false until the full task is verified done.
+
+### PHASE 5: VERIFY (after every action batch)
+1. Check the verification data provided (URL changed? Content changed?).
+2. Look at the screenshot to visually confirm changes.
+3. If the system reports element state diffs (e.g., "[ID:5] OFF -> ON"), use them.
+4. If verification fails: try a COMPLETELY DIFFERENT approach.
+5. Only set "is_complete": true after successful verification.
+
+## PARALLEL EXECUTION — EFFICIENCY
+When you identify multiple INDEPENDENT actions (e.g., enabling 10 checkboxes):
+1. Output ALL actions as a JSON array in ONE response — they execute simultaneously.
+2. This is MUCH faster than one-at-a-time (parallel vs N round trips).
+3. Actions are independent when: no action depends on another's result.
+4. Actions are dependent when: click must happen before type, scroll before click, navigate before read.
+Example — "Enable all features" with 5 toggles currently OFF:
+[
+  {"element_id": 3, "action": "toggle", "value": "on"},
+  {"element_id": 7, "action": "toggle", "value": "on"},
+  {"element_id": 11, "action": "toggle", "value": "on"},
+  {"element_id": 15, "action": "toggle", "value": "on"},
+  {"element_id": 19, "action": "toggle", "value": "on"}
+]
+Then verify all are now [State: ON] in the next round.
+
+## CLICKING STRATEGY
+1. **If accessibility tree IDs are available**: use JSON format with element_id for precise targeting.
+2. **Use visible text**: [ACTION:CLICK selector="Send"] finds the element by its text.
+3. Only use CSS selectors if they appear in the page context below. NEVER invent selectors.
+4. For links, prefer [ACTION:NAVIGATE url="exact href from context"].
+5. After any click that loads new content: [ACTION:WAIT ms="1500"] then [ACTION:READ_PAGE filter="interactive"].
+
+## READ_PAGE — PAGE UNDERSTANDING
+Use [ACTION:READ_PAGE] to get structured page information with ref IDs:
+- [ACTION:READ_PAGE filter="interactive"] — buttons, links, inputs, switches with IDs, roles, names, states, coords
+- [ACTION:READ_PAGE filter="forms"] — form fields with labels, types, current values, options
+- [ACTION:READ_PAGE filter="text"] — visible text content, headings, landmarks
+- [ACTION:READ_PAGE filter="all"] — everything combined (default)
+Use this BEFORE acting when you need to understand the page or after navigation to discover new elements.
+
+## TOGGLES, SWITCHES, AND CHECKBOXES
+The accessibility tree shows element state: [State: ON], [State: OFF], [State: checked], [State: unchecked].
+1. **Always use TOGGLE action** for switches/toggles/checkboxes — it reads state and only clicks if needed.
+2. **Read state first**: If [State: ON] and you want OFF, use value="off". Vice versa.
+3. **Bulk toggles**: Output a JSON array with ALL toggle actions at once (parallel execution).
+4. **Never click without checking state** — you waste rounds toggling ON then OFF again.
+
+## BATCHING AND EFFICIENCY
+Minimize API round-trips. The user pays latency per round.
+- **Emails / lists**: Use [ACTION:BATCH_READ] with selectors for multiple items, OR click into items with READ_PAGE to gather content.
+- **Forms**: Emit ONE [ACTION:FILL_FORM] with every assignment together.
+- **Attachments**: Use [ACTION:ANALYZE_FILE] for in-page file links.
+- **Multiple clicks**: Output JSON array for parallel execution instead of one-at-a-time.
+
+## FILES AND ATTACHMENTS
+- Prefer [ACTION:ANALYZE_FILE] for linked attachments. The system reports MIME type and size; text types are extracted up to safe limits.
+- If analysis says file too large or blocked type, tell the user briefly and suggest downloading manually.
+
+## SELF-VERIFICATION — MANDATORY
+After EVERY action batch, you MUST verify:
+1. Check the pre/post verification data provided by the system — URL, title, content changes.
+2. Check element state diffs if provided: "[ID:5] OFF -> ON (success), [ID:8] OFF -> OFF (FAILED)".
+3. **Look at the screenshot** to visually confirm changes.
+4. NEVER tell the user "Done" unless verified.
+5. If verification fails: change approach (different selector, scroll to reveal, use READ_PAGE, try parent element).
+6. **Self-correct**: If "nothing changed" or "not found", do NOT repeat the same action — change strategy immediately.
+
+## CONFIRMATION AWARENESS
+Write actions (click, type, submit, delete, etc.) may require user confirmation.
+If the user declines an action, respect their decision and suggest alternatives.
+Never repeat a declined action without user request.
+
+## USER INTERACTION WIDGETS
+When presenting choices: [CHOICE:id="id"] Option A | Option B | Option C [/CHOICE]
+For confirmations: [CONFIRM:id="id"] Button Label [/CONFIRM]
+
+## WEB RESEARCH
+[ACTION:SEARCH query="..."] to Google, [ACTION:OPEN_TAB url="..."] to read pages. Research runs in background tabs.
+${hasVision ? `\n## VISION — HYBRID REASONING\nYou can SEE the page via a low-res mini-map screenshot. Use the screenshot for visual layout, spatial relationships, and confirming actions. The accessibility tree is authoritative for element identity; the screenshot is authoritative for visual appearance.${viewportMeta ? ` Viewport: ${viewportMeta.width}x${viewportMeta.height} px.` : ''}\n` : ''}
+${knownUserData ? `\n## Known User Data\n${knownUserData}` : ''}
+${domainSkills ? `\n${domainSkills}` : ''}
+${behaviorKnowledge ? `\n${behaviorKnowledge}` : ''}
+${userInstructions ? `\n${userInstructions}` : ''}
+${pageContext ? `\n## Current Page State\n${pageContext}` : '\n## Current Page State\nNo page data available.'}
+${hasA11yTree ? `\n## Accessibility Tree\n${accessibilityTree}` : ''}
+${mempalaceContext ? `\n## MemPalace (long-term memory)\n${mempalaceContext}` : ''}
 ${recentMemory ? `\n## Recent Context\n${recentMemory}` : ''}`.trim()
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function detectStreamRepetition(text: string): boolean {
+  if (text.length < 600) return false
+
+  const tail = text.slice(-400)
+  const body = text.slice(0, -400)
+  if (body.includes(tail.slice(0, 150))) return true
+
+  const malformedCount = (text.match(/call:[\w]*:?[\w]*\{/gi) ?? []).length
+  if (malformedCount >= 5) return true
+
+  return false
 }

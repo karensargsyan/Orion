@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "LocalAI Assistant",
-  "version": "0.2.0",
+  "version": "0.6.0",
   "description": "AI-powered browser assistant using your local AI model. Reads pages, fills forms, analyzes emails, remembers context, all 100% local and private.",
 
   "permissions": [
@@ -12,15 +12,14 @@
     "sidePanel",
     "scripting",
     "webNavigation",
-    "alarms"
+    "alarms",
+    "offscreen",
+    "debugger"
   ],
 
   "host_permissions": [
     "http://localhost/*",
     "http://127.0.0.1/*",
-    "http://192.168.*/*",
-    "http://10.*/*",
-    "http://172.16.*/*",
     "<all_urls>"
   ],
 

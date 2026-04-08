@@ -35,3 +35,7 @@ export async function captureScreenshot(tabId: number): Promise<string | null> {
     return null
   }
 }
+
+export async function captureForTab(tabId: number): Promise<string | null> {
+  return captureScreenshot(tabId)
+}

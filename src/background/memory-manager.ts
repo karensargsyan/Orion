@@ -4,6 +4,7 @@ import {
 import { STORE, DEFAULTS } from '../shared/constants'
 import type {
   ChatMessage, SessionMemoryEntry, GlobalMemoryEntry, VaultEntry, VaultCategory, Settings,
+  LearnedPlaybook, SupervisedSession,
 } from '../shared/types'
 
 // ─── Settings ─────────────────────────────────────────────────────────────────
@@ -21,11 +22,18 @@ export async function getAllSettings(): Promise<Settings> {
   const rows = await dbGetAll<{ key: string; value: unknown }>(STORE.SETTINGS)
   const map = Object.fromEntries(rows.map(r => [r.key, r.value]))
   return {
+    activeProvider: (map.activeProvider as Settings['activeProvider']) ?? DEFAULTS.ACTIVE_PROVIDER,
     lmStudioUrl: (map.lmStudioUrl as string) ?? DEFAULTS.LM_STUDIO_URL,
     lmStudioModel: (map.lmStudioModel as string) ?? DEFAULTS.LM_STUDIO_MODEL,
     authToken: (map.authToken as string) ?? DEFAULTS.AUTH_TOKEN,
     apiCapabilities: map.apiCapabilities as Settings['apiCapabilities'],
     rateLimitRpm: (map.rateLimitRpm as number) ?? DEFAULTS.RATE_LIMIT_RPM,
+    geminiApiKey: map.geminiApiKey as string | undefined,
+    geminiModel: map.geminiModel as string | undefined,
+    openaiApiKey: map.openaiApiKey as string | undefined,
+    openaiModel: map.openaiModel as string | undefined,
+    anthropicApiKey: map.anthropicApiKey as string | undefined,
+    anthropicModel: map.anthropicModel as string | undefined,
     monitoringEnabled: (map.monitoringEnabled as boolean) ?? DEFAULTS.MONITORING_ENABLED,
     visionEnabled: (map.visionEnabled as boolean) ?? DEFAULTS.VISION_ENABLED,
     maxContextMessages: (map.maxContextMessages as number) ?? DEFAULTS.MAX_CONTEXT_MESSAGES,
@@ -33,8 +41,22 @@ export async function getAllSettings(): Promise<Settings> {
     pbkdf2SaltB64: map.pbkdf2SaltB64 as string | undefined,
     screenshotIntervalSec: (map.screenshotIntervalSec as number) ?? DEFAULTS.SCREENSHOT_INTERVAL_SEC,
     textRewriteEnabled: (map.textRewriteEnabled as boolean) ?? DEFAULTS.TEXT_REWRITE_ENABLED,
+    safetyBorderEnabled: (map.safetyBorderEnabled as boolean) ?? DEFAULTS.SAFETY_BORDER_ENABLED,
+    composeAssistantEnabled: (map.composeAssistantEnabled as boolean) ?? DEFAULTS.COMPOSE_ASSISTANT_ENABLED,
+    aiActionLearningEnabled: (map.aiActionLearningEnabled as boolean) ?? DEFAULTS.AI_ACTION_LEARNING_ENABLED,
+    mempalaceBridgeEnabled: (map.mempalaceBridgeEnabled as boolean) ?? DEFAULTS.MEMPALACE_BRIDGE_ENABLED,
+    mempalaceBridgeUrl: (map.mempalaceBridgeUrl as string) ?? DEFAULTS.MEMPALACE_BRIDGE_URL,
+    mempalaceWing: map.mempalaceWing as string | undefined,
     calendarDetectionEnabled: (map.calendarDetectionEnabled as boolean) ?? DEFAULTS.CALENDAR_DETECTION_ENABLED,
     onboardingComplete: (map.onboardingComplete as boolean) ?? DEFAULTS.ONBOARDING_COMPLETE,
+    learningModeActive: (map.learningModeActive as boolean) ?? DEFAULTS.LEARNING_MODE_ACTIVE,
+    learningSnapshotIntervalSec: (map.learningSnapshotIntervalSec as number) ?? DEFAULTS.LEARNING_SNAPSHOT_INTERVAL_SEC,
+    sttProvider: (map.sttProvider as Settings['sttProvider']) ?? DEFAULTS.STT_PROVIDER,
+    whisperEndpoint: (map.whisperEndpoint as string) ?? DEFAULTS.WHISPER_ENDPOINT,
+    confirmationPreferences: (map.confirmationPreferences as Settings['confirmationPreferences']) ?? [],
+    globalAutoAccept: (map.globalAutoAccept as boolean) ?? false,
+    contextWindowTokens: (map.contextWindowTokens as number) ?? DEFAULTS.CONTEXT_WINDOW_TOKENS,
+    liteMode: (map.liteMode as boolean) ?? DEFAULTS.LITE_MODE,
   }
 }
 
@@ -165,4 +187,92 @@ export async function getDomainStats(limit = 20): Promise<Array<{ domain: string
     .map(([domain, data]) => ({ domain, ...data }))
     .sort((a, b) => b.count - a.count)
     .slice(0, limit)
+}
+
+// ─── Session-based clear ──────────────────────────────────────────────────
+
+export async function clearSessionChat(sessionId: string): Promise<void> {
+  const all = await dbGetAllByIndex<ChatMessage>(STORE.CHAT_HISTORY, 'by_session', sessionId)
+  for (const msg of all) {
+    if (msg.id !== undefined) await dbDelete(STORE.CHAT_HISTORY, msg.id)
+  }
+}
+
+// ─── Full-text search across all stores ───────────────────────────────────
+
+export async function searchAllHistory(query: string, limit = 60): Promise<string> {
+  const q = query.toLowerCase()
+  const results: Array<{ source: string; time: number; text: string }> = []
+
+  const chat = await dbGetAll<ChatMessage>(STORE.CHAT_HISTORY)
+  for (const m of chat) {
+    if (m.content.toLowerCase().includes(q)) {
+      results.push({
+        source: `chat[${m.sessionId}] ${m.role}`,
+        time: m.timestamp,
+        text: m.content.slice(0, 300),
+      })
+    }
+  }
+
+  const session = await dbGetAll<SessionMemoryEntry>(STORE.SESSION_MEMORY)
+  for (const e of session) {
+    if (e.content.toLowerCase().includes(q) || e.url.toLowerCase().includes(q)) {
+      results.push({
+        source: `memory[${e.type}] ${e.domain}`,
+        time: e.timestamp,
+        text: e.content.slice(0, 300),
+      })
+    }
+  }
+
+  const global = await dbGetAll<GlobalMemoryEntry>(STORE.GLOBAL_MEMORY)
+  for (const g of global) {
+    if (g.summary.toLowerCase().includes(q) || g.tags.some(t => t.toLowerCase().includes(q))) {
+      results.push({
+        source: `global[${g.domain}]`,
+        time: g.timestamp,
+        text: g.summary.slice(0, 300),
+      })
+    }
+  }
+
+  results.sort((a, b) => b.time - a.time)
+  return results.slice(0, limit)
+    .map(r => `[${new Date(r.time).toLocaleString()} | ${r.source}] ${r.text}`)
+    .join('\n\n')
+}
+
+// ─── Supervised Playbooks ────────────────────────────────────────────────────
+
+export async function savePlaybook(playbook: LearnedPlaybook): Promise<void> {
+  await dbPut<LearnedPlaybook>(STORE.SUPERVISED_PLAYBOOKS, playbook)
+}
+
+export async function getPlaybook(id: string): Promise<LearnedPlaybook | undefined> {
+  return dbGet<LearnedPlaybook>(STORE.SUPERVISED_PLAYBOOKS, id)
+}
+
+export async function getAllPlaybooks(limit = 100): Promise<LearnedPlaybook[]> {
+  return dbGetByIndexRange<LearnedPlaybook>(
+    STORE.SUPERVISED_PLAYBOOKS, 'by_updated', IDBKeyRange.lowerBound(0), limit
+  )
+}
+
+export async function getPlaybooksByDomain(domain: string): Promise<LearnedPlaybook[]> {
+  return dbGetAllByIndex<LearnedPlaybook>(STORE.SUPERVISED_PLAYBOOKS, 'by_domain', domain)
+}
+
+export async function deletePlaybook(id: string): Promise<void> {
+  await dbDelete(STORE.SUPERVISED_PLAYBOOKS, id)
+}
+
+// ─── Supervised Sessions ─────────────────────────────────────────────────────
+
+export async function saveSupervisedSession(session: SupervisedSession): Promise<void> {
+  await dbPut<SupervisedSession>(STORE.SUPERVISED_SESSIONS, session)
+}
+
+export async function getSupervisedSession(id: string): Promise<SupervisedSession | undefined> {
+  return dbGet<SupervisedSession>(STORE.SUPERVISED_SESSIONS, id)
 }

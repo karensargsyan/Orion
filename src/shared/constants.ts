@@ -8,6 +8,8 @@ export const MSG = {
   REQUEST_SCREENSHOT: 'REQUEST_SCREENSHOT',
   PAGE_TEXT: 'PAGE_TEXT',
   TEXT_SELECTED: 'TEXT_SELECTED',
+  /** Ask service worker to flush buffered user actions to memory + learning (content script periodic). */
+  FLUSH_ACTION_BUFFER: 'FLUSH_ACTION_BUFFER',
 
   // SW -> Content
   DO_FILL: 'DO_FILL',
@@ -84,12 +86,73 @@ export const MSG = {
   // Content script lifecycle
   REQUEST_FRESH_SNAPSHOT: 'REQUEST_FRESH_SNAPSHOT',
   GET_PAGE_STATE: 'GET_PAGE_STATE',
+
+  // Session management
+  RESOLVE_SESSION: 'RESOLVE_SESSION',
+  CLEAR_SESSION: 'CLEAR_SESSION',
+  COMPACT_CONTEXT: 'COMPACT_CONTEXT',
+  GLOBAL_SEARCH: 'GLOBAL_SEARCH',
+
+  // Activity indicator
+  SHOW_ACTIVITY_BORDER: 'SHOW_ACTIVITY_BORDER',
+  HIDE_ACTIVITY_BORDER: 'HIDE_ACTIVITY_BORDER',
+
+  // Element markers / accessibility tree
+  INJECT_MARKERS: 'INJECT_MARKERS',
+  REMOVE_MARKERS: 'REMOVE_MARKERS',
+  CLICK_MARKER: 'CLICK_MARKER',
+  EXECUTE_BY_AI_ID: 'EXECUTE_BY_AI_ID',
+  READ_PAGE: 'READ_PAGE',
+
+  ANALYZE_FILE: 'ANALYZE_FILE',
+
+  SET_SAFETY_BORDER: 'SET_SAFETY_BORDER',
+  REQUEST_COMPOSE_REWRITE: 'REQUEST_COMPOSE_REWRITE',
+
+  // Confirmation flow
+  CONFIRM_ACTION: 'CONFIRM_ACTION',
+  CONFIRM_RESPONSE: 'CONFIRM_RESPONSE',
+
+  // Page analysis
+  ANALYZE_PAGE: 'ANALYZE_PAGE',
+
+  /** Test local MemPalace bridge (GET /health). */
+  MEMPALACE_PROBE: 'MEMPALACE_PROBE',
+  /** Append recent session memory lines to bridge JSONL inbox for mining. */
+  MEMPALACE_PUSH_INBOX: 'MEMPALACE_PUSH_INBOX',
+
+  LEARNING_START: 'LEARNING_START',
+  LEARNING_STOP: 'LEARNING_STOP',
+  LEARNING_STATUS: 'LEARNING_STATUS',
+  GEMINI_MODELS: 'GEMINI_MODELS',
+
+  SUPERVISED_START: 'SUPERVISED_START',
+  SUPERVISED_STOP: 'SUPERVISED_STOP',
+  SUPERVISED_STATUS: 'SUPERVISED_STATUS',
+  SUPERVISED_VOICE_SEGMENT: 'SUPERVISED_VOICE_SEGMENT',
+  SUPERVISED_COMMAND_DONE: 'SUPERVISED_COMMAND_DONE',
+  PLAYBOOK_MATCH: 'PLAYBOOK_MATCH',
+  PLAYBOOK_LIST: 'PLAYBOOK_LIST',
+  PLAYBOOK_DELETE: 'PLAYBOOK_DELETE',
+  SHOW_CLICK_EFFECT: 'SHOW_CLICK_EFFECT',
+
+  // Offscreen STT relay
+  STT_OFFSCREEN_START: 'STT_OFFSCREEN_START',
+  STT_OFFSCREEN_STOP: 'STT_OFFSCREEN_STOP',
+  STT_OFFSCREEN_READY: 'STT_OFFSCREEN_READY',
+  STT_TRANSCRIPT_RELAY: 'STT_TRANSCRIPT_RELAY',
+  STT_COMMAND_RELAY: 'STT_COMMAND_RELAY',
+  STT_ERROR_RELAY: 'STT_ERROR_RELAY',
+  STT_STATUS_RELAY: 'STT_STATUS_RELAY',
+  STT_START_VIA_OFFSCREEN: 'STT_START_VIA_OFFSCREEN',
+  STT_STOP_VIA_OFFSCREEN: 'STT_STOP_VIA_OFFSCREEN',
+  MIC_PERMISSION_RESULT: 'MIC_PERMISSION_RESULT',
 } as const
 
 export type MsgType = (typeof MSG)[keyof typeof MSG]
 
 export const DB_NAME = 'pwa_memory'
-export const DB_VERSION = 2
+export const DB_VERSION = 6
 
 export const STORE = {
   CHAT_HISTORY: 'chat_history',
@@ -99,11 +162,24 @@ export const STORE = {
   SETTINGS: 'settings',
   CALENDAR_EVENTS: 'calendar_events',
   HABIT_PATTERNS: 'habit_patterns',
+  DOMAIN_SKILLS: 'domain_skills',
+  USER_BEHAVIORS: 'user_behaviors',
+  LEARNING_SESSIONS: 'learning_sessions',
+  SUPERVISED_PLAYBOOKS: 'supervised_playbooks',
+  SUPERVISED_SESSIONS: 'supervised_sessions',
 } as const
 
 export const PORT_AI_STREAM = 'ai-stream'
+export const PORT_STT_RELAY = 'stt-relay'
+
+/** chrome.storage.session key: mic granted (timestamp ms), fast sync across contexts this session. */
+export const SESSION_MIC_PERMISSION_KEY = 'stt_mic_permission_ts'
+
+/** chrome.storage.local key: persistent mic grant timestamp (survives browser restart). */
+export const LOCAL_MIC_PERMISSION_KEY = 'stt_mic_permission_granted_at'
 
 export const DEFAULTS = {
+  ACTIVE_PROVIDER: 'local' as const,
   LM_STUDIO_URL: '',
   LM_STUDIO_MODEL: '',
   AUTH_TOKEN: '',
@@ -116,8 +192,19 @@ export const DEFAULTS = {
   ACTION_BUFFER_SIZE: 500,
   SCREENSHOT_INTERVAL_SEC: 10,
   TEXT_REWRITE_ENABLED: true,
+  MEMPALACE_BRIDGE_ENABLED: true,
+  MEMPALACE_BRIDGE_URL: 'http://127.0.0.1:8765',
   CALENDAR_DETECTION_ENABLED: true,
   ONBOARDING_COMPLETE: false,
+  SAFETY_BORDER_ENABLED: false,
+  COMPOSE_ASSISTANT_ENABLED: true,
+  AI_ACTION_LEARNING_ENABLED: true,
+  LEARNING_MODE_ACTIVE: false,
+  LEARNING_SNAPSHOT_INTERVAL_SEC: 3,
+  STT_PROVIDER: 'web-speech' as const,
+  WHISPER_ENDPOINT: '',
+  CONTEXT_WINDOW_TOKENS: 0,
+  LITE_MODE: false,
 } as const
 
 export const SESSION_KEY_STORAGE = 'sessionKey'

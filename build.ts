@@ -5,7 +5,7 @@ import * as path from 'path'
 const watch = process.argv.includes('--watch')
 
 // Ensure dist directories exist
-const dirs = ['dist', 'dist/background', 'dist/content', 'dist/sidepanel', 'dist/icons']
+const dirs = ['dist', 'dist/background', 'dist/content', 'dist/sidepanel', 'dist/offscreen', 'dist/permissions', 'dist/icons']
 for (const d of dirs) fs.mkdirSync(d, { recursive: true })
 
 // Copy static files
@@ -25,6 +25,8 @@ function copyDir(src: string, dest: string): void {
 function copyStatic(): void {
   copyFile('src/manifest.json', 'dist/manifest.json')
   copyFile('src/sidepanel/sidepanel.html', 'dist/sidepanel/sidepanel.html')
+  copyFile('src/offscreen/offscreen.html', 'dist/offscreen/offscreen.html')
+  copyFile('src/permissions/microphone-permission.html', 'dist/permissions/microphone-permission.html')
   if (fs.existsSync('icons')) copyDir('icons', 'dist/icons')
   // _dev is NOT copied to dist — Chrome rejects filenames starting with "_"
 }
@@ -60,6 +62,22 @@ const buildConfigs: esbuild.BuildOptions[] = [
     ...sharedOptions,
     entryPoints: ['src/sidepanel/sidepanel.ts'],
     outfile: 'dist/sidepanel/sidepanel.js',
+    format: 'esm',
+    platform: 'browser',
+  },
+  // Offscreen Document (ESM — used for Web Speech API / mic access)
+  {
+    ...sharedOptions,
+    entryPoints: ['src/offscreen/offscreen.ts'],
+    outfile: 'dist/offscreen/offscreen.js',
+    format: 'esm',
+    platform: 'browser',
+  },
+  // Permission page (ESM — visible extension page for mic permission)
+  {
+    ...sharedOptions,
+    entryPoints: ['src/permissions/microphone-permission.ts'],
+    outfile: 'dist/permissions/microphone-permission.js',
     format: 'esm',
     platform: 'browser',
   },

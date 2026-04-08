@@ -1,21 +1,29 @@
-import type { PageSnapshot } from '../shared/types'
-
-const EMAIL_SELECTORS = [
-  '.adn.ads', '.ii.gt', '.message-body', '.email-content',
-  '[data-message-id]', '.mail-message-body', '.ReadMsgBody',
-  '.WordSection1', '[role="main"] .message',
-]
-
-const CHAT_SELECTORS = [
-  '[data-testid="msg-container"]', '.message-list', '.chat-message',
-  '.c-message__body', '.msg-content', '[class*="MessageBody"]',
-  '.text-msg', '._21Ahp', '.message-in', '.message-out',
-]
-
 const SKIP_TAGS = new Set([
   'SCRIPT', 'STYLE', 'NOSCRIPT', 'SVG', 'PATH', 'META', 'LINK',
   'HEAD', 'BR', 'HR', 'IMG', 'VIDEO', 'AUDIO', 'CANVAS', 'IFRAME',
 ])
+
+const SEMANTIC_CONTAINERS = [
+  '[role="main"]', 'main', 'article', '[role="feed"]',
+  '[role="list"]', '[role="grid"]', '[role="table"]',
+  '[role="tabpanel"]', '[role="dialog"]',
+]
+
+const LANDMARK_SELECTORS: Array<[string, string]> = [
+  ['nav, [role="navigation"]', 'nav'],
+  ['main, [role="main"]', 'main'],
+  ['aside, [role="complementary"]', 'aside'],
+  ['footer, [role="contentinfo"]', 'footer'],
+  ['header, [role="banner"]', 'header'],
+  ['[role="search"]', 'search'],
+  ['form, [role="form"]', 'form'],
+  ['[role="dialog"], [role="alertdialog"], dialog', 'dialog'],
+  ['[role="feed"]', 'feed'],
+  ['[role="list"], ul, ol', 'list'],
+  ['[role="grid"], [role="table"], table', 'grid'],
+]
+
+// ─── Generic text extraction ─────────────────────────────────────────────────
 
 export function extractPageText(maxLength = 8000): string {
   const contentEl = findMainContent()
@@ -23,6 +31,12 @@ export function extractPageText(maxLength = 8000): string {
     ? getTextContent(contentEl, maxLength)
     : getTextContent(document.body, maxLength)
   return text.trim()
+}
+
+/** Full document text: entire body tree (viewport + off-screen + typical hidden-in-DOM content). Skips script/style. Caps length. */
+export function extractCompletePageText(maxLength = 100_000): string {
+  if (!document.body) return ''
+  return getTextContent(document.body, maxLength).trim()
 }
 
 export function extractVisibleText(maxLength = 4000): string {
@@ -51,50 +65,97 @@ export function extractSelectedText(): string {
   return window.getSelection()?.toString()?.trim() ?? ''
 }
 
-export function extractEmailContent(): string | null {
-  for (const sel of EMAIL_SELECTORS) {
-    const els = document.querySelectorAll(sel)
-    if (els.length > 0) {
-      return Array.from(els).map(el => getTextContent(el, 3000)).join('\n---\n').slice(0, 8000)
+// ─── Structured content extraction (generic, no hardcoded selectors) ─────────
+
+export function extractStructuredContent(maxLength = 8000): string | null {
+  const mainContainer = findMainContent()
+  if (!mainContainer) return null
+
+  const repeatedBlocks = findRepeatedContentBlocks(mainContainer)
+  if (repeatedBlocks.length === 0) return null
+
+  const parts = repeatedBlocks
+    .slice(0, 50)
+    .map(el => getTextContent(el, 500).trim())
+    .filter(t => t.length > 5)
+
+  if (parts.length === 0) return null
+  return parts.join('\n---\n').slice(0, maxLength)
+}
+
+// ─── Semantic landmarks ──────────────────────────────────────────────────────
+
+export interface LandmarkInfo {
+  type: string
+  count: number
+  hasContent: boolean
+}
+
+export function extractSemanticLandmarks(): LandmarkInfo[] {
+  const landmarks: LandmarkInfo[] = []
+
+  for (const [selector, type] of LANDMARK_SELECTORS) {
+    const els = document.querySelectorAll<HTMLElement>(selector)
+    const visibleEls = [...els].filter(el => el.offsetParent !== null || el.offsetHeight > 0)
+    if (visibleEls.length > 0) {
+      const hasContent = visibleEls.some(el => (el.textContent?.trim().length ?? 0) > 10)
+      landmarks.push({ type, count: visibleEls.length, hasContent })
     }
   }
-  return null
+
+  return landmarks
 }
 
-export function extractChatContent(): string | null {
-  for (const sel of CHAT_SELECTORS) {
-    const els = document.querySelectorAll(sel)
-    if (els.length > 0) {
-      return Array.from(els)
-        .slice(-50)
-        .map(el => getTextContent(el, 500))
-        .join('\n')
-        .slice(0, 8000)
+// ─── Repeated content block detection ────────────────────────────────────────
+
+function findRepeatedContentBlocks(container: Element): Element[] {
+  const candidates: Element[] = []
+
+  for (const sel of SEMANTIC_CONTAINERS) {
+    const el = container.querySelector(sel) ?? document.querySelector(sel)
+    if (el) {
+      const blocks = findSiblingGroups(el)
+      if (blocks.length >= 2) return blocks
     }
   }
-  return null
+
+  const blocks = findSiblingGroups(container)
+  if (blocks.length >= 2) return blocks
+
+  return candidates
 }
 
-export function isEmailPage(): boolean {
-  const url = location.href.toLowerCase()
-  return url.includes('mail.google.com') ||
-    url.includes('outlook.live.com') ||
-    url.includes('outlook.office') ||
-    url.includes('mail.yahoo.com') ||
-    url.includes('mail.') ||
-    url.includes('/mail/') ||
-    document.querySelector('[role="main"] [data-message-id]') !== null
+function findSiblingGroups(parent: Element): Element[] {
+  const tagGroups = new Map<string, Element[]>()
+
+  for (const child of parent.children) {
+    const tag = child.tagName
+    const role = child.getAttribute('role') ?? ''
+    const key = role ? `${tag}[${role}]` : tag
+
+    if (!tagGroups.has(key)) tagGroups.set(key, [])
+    tagGroups.get(key)!.push(child)
+  }
+
+  let bestGroup: Element[] = []
+  for (const group of tagGroups.values()) {
+    if (group.length > bestGroup.length && group.length >= 2) {
+      const withText = group.filter(el => (el.textContent?.trim().length ?? 0) > 10)
+      if (withText.length >= 2) bestGroup = withText
+    }
+  }
+
+  if (bestGroup.length >= 2) return bestGroup
+
+  for (const child of parent.children) {
+    const nested = findSiblingGroups(child)
+    if (nested.length >= 2) return nested
+  }
+
+  return []
 }
 
-export function isChatPage(): boolean {
-  const url = location.href.toLowerCase()
-  return url.includes('web.whatsapp.com') ||
-    url.includes('app.slack.com') ||
-    url.includes('teams.microsoft.com') ||
-    url.includes('discord.com') ||
-    url.includes('messenger.com') ||
-    url.includes('telegram.org')
-}
+// ─── Internal helpers ────────────────────────────────────────────────────────
 
 function findMainContent(): Element | null {
   const candidates = [

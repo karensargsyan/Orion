@@ -1,4 +1,5 @@
 import { MSG } from '../shared/constants'
+import { safeSendMessage } from './runtime-safe'
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
 let lastText = ''
@@ -20,12 +21,12 @@ function onInput(e: Event): void {
     const text = getEditableText(el)
     if (text.length >= MIN_TEXT_LENGTH && text !== lastText) {
       lastText = text
-      chrome.runtime.sendMessage({
+      safeSendMessage({
         type: MSG.TEXT_SELECTED,
         text,
         isEditing: true,
         selector: getSelector(el),
-      }).catch(() => {})
+      })
     }
   }, 2000)
 }
@@ -36,12 +37,12 @@ function onBlur(e: FocusEvent): void {
 
   const text = getEditableText(el)
   if (text.length >= MIN_TEXT_LENGTH) {
-    chrome.runtime.sendMessage({
+    safeSendMessage({
       type: MSG.TEXT_SELECTED,
       text,
       isEditing: true,
       selector: getSelector(el),
-    }).catch(() => {})
+    })
   }
 }
 

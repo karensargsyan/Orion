@@ -77,9 +77,21 @@ export const tabState = {
     }
 
     if (snap.buttons.length) {
-      parts.push(`\nButtons:`)
-      for (const b of snap.buttons.slice(0, 15)) {
-        parts.push(`  - "${b.text}" → ${b.selector}`)
+      const regularButtons = snap.buttons.filter(b => b.role !== 'row' && b.role !== 'listitem' && b.role !== 'option' && b.role !== 'interactive' && b.role !== 'gridcell' && b.role !== 'treeitem')
+      const interactiveItems = snap.buttons.filter(b => b.role === 'row' || b.role === 'listitem' || b.role === 'option' || b.role === 'interactive' || b.role === 'gridcell' || b.role === 'treeitem')
+
+      if (regularButtons.length) {
+        parts.push(`\nButtons:`)
+        for (const b of regularButtons.slice(0, 15)) {
+          parts.push(`  - "${b.text}" → ${b.selector}`)
+        }
+      }
+
+      if (interactiveItems.length) {
+        parts.push(`\nInteractive Elements (click by text or selector):`)
+        for (const b of interactiveItems.slice(0, 10)) {
+          parts.push(`  - "${b.text.slice(0, 80)}" → ${b.selector}`)
+        }
       }
     }
 
@@ -90,10 +102,13 @@ export const tabState = {
       }
     }
 
+    if (snap.completePageText) {
+      parts.push(`\nFull document text (excerpt, includes off-screen/hidden-in-DOM):\n${snap.completePageText.slice(0, 1400)}`)
+    }
     if (snap.visibleText) {
-      parts.push(`\nVisible Text (excerpt):\n${snap.visibleText.slice(0, 1500)}`)
+      parts.push(`\nVisible viewport text (excerpt):\n${snap.visibleText.slice(0, 600)}`)
     } else if (snap.pageText) {
-      parts.push(`\nPage Content (excerpt):\n${snap.pageText.slice(0, 2000)}`)
+      parts.push(`\nMain region text (excerpt):\n${snap.pageText.slice(0, 800)}`)
     }
 
     if (snap.selectedText) {
