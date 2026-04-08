@@ -341,7 +341,7 @@ export interface FillAssignment {
 
 // ─── AI Action Commands ───────────────────────────────────────────────────────
 
-export type AIActionType = 'click' | 'type' | 'fill_form' | 'scroll' | 'select' | 'navigate' | 'read' | 'screenshot' | 'select_option' | 'check' | 'clear' | 'wait' | 'read_options' | 'get_page_state' | 'read_page' | 'hover' | 'doubleclick' | 'keypress' | 'focus' | 'back' | 'forward' | 'scroll_to' | 'select_text' | 'search' | 'open_tab' | 'read_tab' | 'close_tab' | 'batch_read' | 'analyze_file' | 'toggle' | 'sitemap_screenshot'
+export type AIActionType = 'click' | 'type' | 'fill_form' | 'scroll' | 'select' | 'navigate' | 'read' | 'screenshot' | 'select_option' | 'check' | 'clear' | 'wait' | 'read_options' | 'get_page_state' | 'read_page' | 'hover' | 'doubleclick' | 'keypress' | 'focus' | 'back' | 'forward' | 'scroll_to' | 'select_text' | 'search' | 'open_tab' | 'read_tab' | 'close_tab' | 'batch_read' | 'analyze_file' | 'toggle' | 'sitemap_screenshot' | 'research_done'
 
 export type ReadPageFilter = 'interactive' | 'forms' | 'text' | 'all'
 

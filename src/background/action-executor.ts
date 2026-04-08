@@ -3,7 +3,7 @@ import type { AIAction, AIActionResult, Settings, ChatMessage, PageSnapshot, Fil
 import { streamChat, callAI } from './ai-client'
 import type { StreamPort } from './ai-client'
 import { tabState } from './tab-state'
-import { searchGoogle, openAndReadTab } from './web-researcher'
+import { searchGoogle, openAndReadTab, closeAllResearchTabs, openAndReadMultipleTabs, getResearchTabCount } from './web-researcher'
 import { sanitizeModelOutput, stripMalformedActions } from '../shared/sanitize-output'
 import { extractTaskPattern, buildCompactSequence, saveOrReinforceSkill, recordSkillFailure } from './skill-manager'
 import { recordActionFailure, recordActionSuccess, recallRelevantMemories } from './mempalace-learner'
@@ -220,6 +220,8 @@ function toAIAction(parsed: ParsedAction): AIAction {
     }
     case 'sitemap_screenshot':
       return { action: 'sitemap_screenshot', value: parsed.params.path ?? parsed.params.value ?? '/' }
+    case 'research_done':
+      return { action: 'research_done' }
     default:
       return { action: parsed.action as AIAction['action'], selector, value: parsed.params.value }
   }
@@ -268,7 +270,7 @@ const BARRIER_ACTIONS = new Set([
   'navigate', 'back', 'forward', 'open_tab', 'close_tab',
   'scroll', 'scroll_to', 'wait',
   'screenshot', 'get_page_state', 'read_page',
-  'fill_form', 'search', 'read_tab',
+  'fill_form', 'search', 'read_tab', 'research_done',
 ])
 
 const PARALLELIZABLE_ACTIONS = new Set([
@@ -442,7 +444,14 @@ async function executeSingleAction(action: AIAction, tabId: number): Promise<AIA
   }
 
   if (action.action === 'close_tab') {
-    return { action: 'close_tab', success: true, result: 'Research tab closed' }
+    await closeAllResearchTabs()
+    return { action: 'close_tab', success: true, result: 'All research tabs closed' }
+  }
+
+  if (action.action === 'research_done') {
+    const count = getResearchTabCount()
+    await closeAllResearchTabs()
+    return { action: 'research_done', success: true, result: `Research complete — closed ${count} research tab${count !== 1 ? 's' : ''}` }
   }
 
   if (action.markerId && (action.action === 'click' || action.action === 'type')) {

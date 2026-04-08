@@ -638,6 +638,8 @@ export function buildCompactSystemPrompt(
 [ACTION:KEYPRESS key="Enter"]
 [ACTION:BACK] / [ACTION:FORWARD]
 [ACTION:SEARCH query="search terms"]
+[ACTION:OPEN_TAB url="URL"] — read a web page
+[ACTION:RESEARCH_DONE] — close research tabs when done
 
 ## JSON FORMAT (when element IDs available)
 Single: {"element_id": 5, "action": "click", "is_complete": false}
@@ -797,8 +799,10 @@ Examples:
 [ACTION:BACK] / [ACTION:FORWARD]
 [ACTION:SCROLL_TO selector="text or CSS"]
 [ACTION:SELECT_TEXT selector="CSS"]
-[ACTION:SEARCH query="search terms"]
-[ACTION:OPEN_TAB url="URL"] / [ACTION:READ_TAB url="URL"]
+[ACTION:SEARCH query="search terms"] — Google search, returns titles + URLs + snippets
+[ACTION:OPEN_TAB url="URL"] — open URL in background research tab, read its content
+[ACTION:READ_TAB url="URL"] — same as OPEN_TAB
+[ACTION:RESEARCH_DONE] — close all research tabs when investigation is complete
 [ACTION:BATCH_READ value='["selector1","selector2"]'] — read many elements in ONE action (use selectors from page state). Prefer this over many separate READ actions.
 [ACTION:ANALYZE_FILE url="https://... or blob:..."] or [ACTION:ANALYZE_FILE selector="CSS for attachment link"] — extract text from attachments (respects size/type limits; executables blocked).
 [ACTION:FILL_FORM assignments='[{"selector":"CSS","value":"text","inputType":"text"}]'] — one action with ALL fields; inputType matches field type (text, email, etc.).
@@ -927,8 +931,31 @@ Never repeat a declined action without user request.
 When presenting choices: [CHOICE:id="id"] Option A | Option B | Option C [/CHOICE]
 For confirmations: [CONFIRM:id="id"] Button Label [/CONFIRM]
 
-## WEB RESEARCH
-[ACTION:SEARCH query="..."] to Google, [ACTION:OPEN_TAB url="..."] to read pages. Research runs in background tabs.
+## WEB RESEARCH — DEEP INVESTIGATION
+You are a thorough researcher. When the user asks about anything — a topic, a product, a page, a person — you should investigate deeply.
+
+**Research workflow:**
+1. **Search**: [ACTION:SEARCH query="..."] — Google search, returns top 8 results with titles, URLs, and snippets
+2. **Read pages**: [ACTION:OPEN_TAB url="..."] — opens URL in background, reads its full text content (up to 12K chars). Tab stays open in an "AI Research" group.
+3. **Read more**: Open multiple result URLs to cross-reference information
+4. **Synthesize**: Combine findings from multiple sources into a clear answer
+5. **Cleanup**: [ACTION:RESEARCH_DONE] — closes all research tabs when you have your answer
+
+**Research tabs** are grouped under a collapsible blue "AI Research" tab group (max 8 tabs). They stay open so you can revisit them. Always close them when done.
+
+**When to research:**
+- User asks a question you can't answer from the current page
+- User asks "what is...", "how does...", "find...", "look up...", "compare..."
+- User asks about something on the page that needs external context
+- You need to verify information or find up-to-date data
+- User wants prices, reviews, documentation, news, etc.
+
+**Research strategy:**
+- Search first, then open the 2-3 most relevant results
+- Read each page thoroughly — don't just skim titles
+- If first results aren't good enough, search with different terms
+- Cross-reference facts across multiple sources
+- Always cite where you found information
 ${hasVision ? `\n## VISION — HYBRID REASONING\nYou can SEE the page via a low-res mini-map screenshot. Use the screenshot for visual layout, spatial relationships, and confirming actions. The accessibility tree is authoritative for element identity; the screenshot is authoritative for visual appearance.${viewportMeta ? ` Viewport: ${viewportMeta.width}x${viewportMeta.height} px.` : ''}\n` : ''}
 ${knownUserData ? `\n## Known User Data\n${knownUserData}` : ''}
 ${domainSkills ? `\n${domainSkills}` : ''}
