@@ -2,3 +2,20 @@ node_modules/
 dist/
 .DS_Store
 *.log
+
+# Secrets & environment
+.env
+.env.*
+*.secret*
+
+# Test artifacts
+.test-chrome-profile/
+test-results/
+playwright-report/
+
+# Python virtual environments
+bridge/.venv/
+whisper-mcp/.cache/
+whisper-mcp/mlx_models/
+__pycache__/
+*.pyc
