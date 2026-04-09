@@ -250,28 +250,61 @@ function relayToSttPort(msg: Record<string, unknown>): void {
 
 // ─── Side panel ──────────────────────────────────────────────────────────────
 
-// Chrome handles icon click → open sidebar. Always enabled globally.
-// This is the same mechanism as Chrome's built-in "Open side panel" menu item.
-chrome.sidePanel.setOptions({
-  path: 'sidepanel/sidepanel.html',
-  enabled: true,
-}).catch(() => {})
+// openPanelOnActionClick=true is the ONLY reliable way to open the panel.
+// Chrome's user gesture tracking is too strict for manual sidePanel.open().
+chrome.sidePanel.setOptions({ path: 'sidepanel/sidepanel.html', enabled: true }).catch(() => {})
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {})
 
 // Track tabs in the Orion group
 const orionTabs = new Set<number>()
 
-/** Register a tab as part of the Orion group */
+/** Enable sidebar for a tab (used by research tabs, GROUP_ACTIVE_TAB) */
 async function activateOrionForTab(tabId: number): Promise<void> {
   orionTabs.add(tabId)
   await addTabToAIGroup(tabId).catch(() => {})
+  await chrome.sidePanel.setOptions({
+    tabId,
+    path: 'sidepanel/sidepanel.html',
+    enabled: true,
+  }).catch(() => {})
 }
 
-// Screenshot on tab switch
+// When user switches tabs: disable the panel on non-Orion tabs.
+// This makes it so the panel only stays visible within the Orion group.
+// IMPORTANT: We re-enable globally after disabling per-tab, so that
+// clicking the icon on a NEW tab still works (openPanelOnActionClick
+// needs the panel to be enabled to trigger).
 chrome.tabs.onActivated.addListener(async (info) => {
+  const tabId = info.tabId
+  try {
+    const tab = await chrome.tabs.get(tabId)
+    let isOrion = orionTabs.has(tabId)
+    // Check if tab is in the Orion group even if not in our Set
+    if (!isOrion && tab.groupId !== undefined && tab.groupId !== -1) {
+      try {
+        const group = await chrome.tabGroups.get(tab.groupId)
+        isOrion = group.title === 'Orion'
+        if (isOrion) orionTabs.add(tabId)
+      } catch { /* group gone */ }
+    }
+
+    if (isOrion) {
+      // Orion tab: make sure panel is enabled
+      await chrome.sidePanel.setOptions({
+        tabId, path: 'sidepanel/sidepanel.html', enabled: true,
+      }).catch(() => {})
+    } else {
+      // Non-Orion tab: disable panel for THIS tab so it hides,
+      // but keep global enabled so clicking icon still works
+      await chrome.sidePanel.setOptions({
+        tabId, path: 'sidepanel/sidepanel.html', enabled: false,
+      }).catch(() => {})
+    }
+  } catch { /* tab gone */ }
+
   const s = await getSettings()
   if (s.onboardingComplete) {
-    await captureScreenshot(info.tabId).catch(() => {})
+    await captureScreenshot(tabId).catch(() => {})
   }
 })
 
