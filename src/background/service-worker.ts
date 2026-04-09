@@ -250,17 +250,12 @@ function relayToSttPort(msg: Record<string, unknown>): void {
 
 // ─── Side panel ──────────────────────────────────────────────────────────────
 
-// openPanelOnActionClick=true is the ONLY reliable way to open the panel.
-// Chrome's user gesture tracking is too strict for manual sidePanel.open().
-chrome.sidePanel.setOptions({ path: 'sidepanel/sidepanel.html', enabled: true }).catch(() => {})
+// openPanelOnActionClick: user clicks the extension icon → panel opens on THAT tab only.
+// The panel stays open only on tabs where the user opened it; Chrome manages this natively.
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {})
 
-// Track tabs in the Orion group
-const orionTabs = new Set<number>()
-
-/** Enable sidebar for a tab (used by research tabs, GROUP_ACTIVE_TAB) */
+/** Enable sidebar for a specific tab (used by research tabs) */
 async function activateOrionForTab(tabId: number): Promise<void> {
-  orionTabs.add(tabId)
   await addTabToAIGroup(tabId).catch(() => {})
   await chrome.sidePanel.setOptions({
     tabId,
@@ -269,44 +264,11 @@ async function activateOrionForTab(tabId: number): Promise<void> {
   }).catch(() => {})
 }
 
-// When user switches tabs: hide panel on non-Orion tabs, show on Orion tabs.
-// The trick: briefly disable per-tab to CLOSE the panel, then re-enable
-// so the icon click (openPanelOnActionClick) still works on that tab later.
+// Capture screenshot when user switches tabs (for page context)
 chrome.tabs.onActivated.addListener(async (info) => {
-  const tabId = info.tabId
-  try {
-    const tab = await chrome.tabs.get(tabId)
-    let isOrion = orionTabs.has(tabId)
-    if (!isOrion && tab.groupId !== undefined && tab.groupId !== -1) {
-      try {
-        const group = await chrome.tabGroups.get(tab.groupId)
-        isOrion = group.title === 'Orion'
-        if (isOrion) orionTabs.add(tabId)
-      } catch { /* group gone */ }
-    }
-
-    if (isOrion) {
-      // Orion tab: ensure panel is enabled
-      await chrome.sidePanel.setOptions({
-        tabId, path: 'sidepanel/sidepanel.html', enabled: true,
-      }).catch(() => {})
-    } else {
-      // Non-Orion tab: disable to close the panel...
-      await chrome.sidePanel.setOptions({
-        tabId, path: 'sidepanel/sidepanel.html', enabled: false,
-      }).catch(() => {})
-      // ...then re-enable after a tick so icon click still works
-      setTimeout(() => {
-        chrome.sidePanel.setOptions({
-          tabId, path: 'sidepanel/sidepanel.html', enabled: true,
-        }).catch(() => {})
-      }, 300)
-    }
-  } catch { /* tab gone */ }
-
   const s = await getSettings()
   if (s.onboardingComplete) {
-    await captureScreenshot(tabId).catch(() => {})
+    await captureScreenshot(info.tabId).catch(() => {})
   }
 })
 
@@ -456,7 +418,6 @@ async function runMempalaceLearningCycle(s: Settings): Promise<void> {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   tabState.delete(tabId)
-  orionTabs.delete(tabId)
   flushBuffer(tabId).then(() => clearTabBuffer(tabId)).catch(() => {})
 })
 
@@ -1223,8 +1184,7 @@ async function handleMessage(
     }
 
     case 'GROUP_ACTIVE_TAB': {
-      const tid = msg.tabId as number
-      if (tid > 0) await activateOrionForTab(tid)
+      // No-op: panel lifecycle is managed by Chrome via openPanelOnActionClick
       return { ok: true }
     }
 
