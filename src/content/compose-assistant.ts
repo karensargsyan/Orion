@@ -6,7 +6,7 @@
 import { MSG } from '../shared/constants'
 import { safeSendMessageAsync } from './runtime-safe'
 
-const PANEL_ID = '__localai-compose-panel'
+const PANEL_ID = '__orion-compose-panel'
 const MIN_CHARS = 28
 const DEBOUNCE_MS = 3200
 const COOLDOWN_MS = 45_000
@@ -41,7 +41,7 @@ function onInput(e: Event): void {
 }
 
 function isComposeField(el: HTMLElement): boolean {
-  if (el.closest('[data-localai-compose-ignore="1"]')) return false
+  if (el.closest('[data-orion-compose-ignore="1"]')) return false
   if (el instanceof HTMLTextAreaElement) return true
   if (el.isContentEditable) return true
   if (el instanceof HTMLInputElement) {
@@ -102,7 +102,7 @@ function showPanel(field: HTMLElement, original: string, improved: string): void
   const rect = field.getBoundingClientRect()
   const panel = document.createElement('div')
   panel.id = PANEL_ID
-  panel.setAttribute('data-localai-compose-ignore', '1')
+  panel.setAttribute('data-orion-compose-ignore', '1')
   panel.style.cssText = `
     position:fixed;z-index:2147483642;left:${Math.min(rect.left, window.innerWidth - 340)}px;
     top:${Math.max(8, rect.top + window.scrollY - 8)}px;width:min(340px,calc(100vw - 16px));

@@ -1,5 +1,5 @@
-const EFFECT_ID_PREFIX = '__localai-click-effect-'
-const STYLE_ID = '__localai-click-effects-style'
+const EFFECT_ID_PREFIX = '__orion-click-effect-'
+const STYLE_ID = '__orion-click-effects-style'
 
 let styleInjected = false
 
@@ -10,12 +10,12 @@ function injectStyles(): void {
   const style = document.createElement('style')
   style.id = STYLE_ID
   style.textContent = `
-    @keyframes __localai-ripple {
+    @keyframes __orion-ripple {
       0% { transform: translate(-50%, -50%) scale(0); opacity: 0.7; }
       70% { transform: translate(-50%, -50%) scale(1); opacity: 0.3; }
       100% { transform: translate(-50%, -50%) scale(1.2); opacity: 0; }
     }
-    @keyframes __localai-dot-pulse {
+    @keyframes __orion-dot-pulse {
       0% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
       100% { transform: translate(-50%, -50%) scale(0.3); opacity: 0; }
     }
@@ -42,7 +42,7 @@ export function showClickEffect(x: number, y: number): void {
     background: radial-gradient(circle, rgba(108, 92, 231, 0.25) 0%, transparent 70%);
     pointer-events: none;
     z-index: 2147483646;
-    animation: __localai-ripple 500ms ease-out forwards;
+    animation: __orion-ripple 500ms ease-out forwards;
   `
 
   const dot = document.createElement('div')
@@ -56,7 +56,7 @@ export function showClickEffect(x: number, y: number): void {
     background: rgba(108, 92, 231, 0.9);
     pointer-events: none;
     z-index: 2147483646;
-    animation: __localai-dot-pulse 400ms ease-out 100ms forwards;
+    animation: __orion-dot-pulse 400ms ease-out 100ms forwards;
   `
 
   document.body.appendChild(ripple)

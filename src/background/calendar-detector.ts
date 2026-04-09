@@ -77,14 +77,14 @@ export function generateICSContent(event: DetectedCalendarEvent): string {
   return [
     'BEGIN:VCALENDAR',
     'VERSION:2.0',
-    'PRODID:-//LocalAI Assistant//EN',
+    'PRODID:-//Orion//EN',
     'BEGIN:VEVENT',
     `DTSTART:${dtStart}`,
     `DTEND:${dtEnd}`,
     `SUMMARY:${escICS(event.title)}`,
     event.description ? `DESCRIPTION:${escICS(event.description)}` : '',
     event.location ? `LOCATION:${escICS(event.location)}` : '',
-    `UID:${Date.now()}@localai-assistant`,
+    `UID:${Date.now()}@orion`,
     'END:VEVENT',
     'END:VCALENDAR',
   ].filter(Boolean).join('\r\n')

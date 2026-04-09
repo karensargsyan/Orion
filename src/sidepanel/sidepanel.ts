@@ -91,6 +91,10 @@ async function init(): Promise<void> {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
     currentTabId = tab?.id ?? 0
+    // Group the active tab into "Orion" when the sidebar opens
+    if (currentTabId > 0) {
+      chrome.runtime.sendMessage({ type: 'GROUP_ACTIVE_TAB', tabId: currentTabId }).catch(() => {})
+    }
   } catch { /* sidepanel context */ }
 
   const res = await chrome.runtime.sendMessage({ type: MSG.SETTINGS_GET }) as { ok: boolean; settings: Settings }

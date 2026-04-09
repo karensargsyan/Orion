@@ -1,6 +1,6 @@
 /**
  * Web Researcher — opens tabs for Google search and page reading.
- * Groups all research tabs under a collapsible "AI Research" tab group.
+ * Groups all AI-managed tabs (research + automation) under a collapsible "AI Working" tab group.
  * Tabs are kept open during multi-step research and cleaned up when done.
  */
 
@@ -9,38 +9,45 @@ import { MSG } from '../shared/constants'
 import type { SearchResult, PageContent } from '../shared/types'
 
 const researchTabIds = new Set<number>()
-let researchGroupId: number | null = null
+let aiGroupId: number | null = null
 const TAB_LOAD_TIMEOUT = 15_000
 const MAX_RESEARCH_TABS = 8
 
 // ─── Tab Group Management ────────────────────────────────────────────────────
 
-async function getOrCreateResearchGroup(windowId?: number): Promise<number | null> {
+const AI_GROUP_TITLE = 'Orion'
+const AI_GROUP_COLOR: chrome.tabGroups.ColorEnum = 'blue'
+
+async function getOrCreateAIGroup(windowId?: number): Promise<number | null> {
   // Reuse existing group if still alive
-  if (researchGroupId !== null) {
+  if (aiGroupId !== null) {
     try {
-      const group = await chrome.tabGroups.get(researchGroupId)
-      if (group) return researchGroupId
+      const group = await chrome.tabGroups.get(aiGroupId)
+      if (group) return aiGroupId
     } catch { /* group was closed */ }
-    researchGroupId = null
+    aiGroupId = null
   }
 
-  // Find an existing "AI Research" group in this window
+  // Find an existing "AI Working" group in this window
   try {
-    const groups = await chrome.tabGroups.query({ title: 'AI Research' })
+    const groups = await chrome.tabGroups.query({ title: AI_GROUP_TITLE })
     if (groups.length > 0) {
-      researchGroupId = groups[0].id
-      return researchGroupId
+      aiGroupId = groups[0].id
+      return aiGroupId
     }
   } catch { /* tabGroups API not available */ }
 
   return null
 }
 
-async function addTabToResearchGroup(tabId: number): Promise<void> {
+/**
+ * Add any tab to the shared AI tab group.
+ * Used by both the web researcher (for research tabs) and the action executor (for the main working tab).
+ */
+export async function addTabToAIGroup(tabId: number): Promise<void> {
   try {
     const tab = await chrome.tabs.get(tabId)
-    const groupId = await getOrCreateResearchGroup(tab.windowId)
+    const groupId = await getOrCreateAIGroup(tab.windowId)
 
     if (groupId !== null) {
       // Add to existing group
@@ -48,16 +55,29 @@ async function addTabToResearchGroup(tabId: number): Promise<void> {
     } else {
       // Create new group
       const newGroupId = await chrome.tabs.group({ tabIds: [tabId] })
-      researchGroupId = newGroupId
+      aiGroupId = newGroupId
       await chrome.tabGroups.update(newGroupId, {
-        title: 'AI Research',
-        color: 'blue',
-        collapsed: true,
+        title: AI_GROUP_TITLE,
+        color: AI_GROUP_COLOR,
+        collapsed: false,
       })
     }
   } catch {
     // tabGroups API may not be available — that's fine, tabs still work
   }
+}
+
+/**
+ * Remove a tab from the AI group (e.g., when automation finishes on the main tab).
+ * If the tab was the last in the group, Chrome auto-removes the group.
+ */
+export async function removeTabFromAIGroup(tabId: number): Promise<void> {
+  try {
+    const tab = await chrome.tabs.get(tabId)
+    if (tab.groupId !== undefined && tab.groupId !== -1 && tab.groupId === aiGroupId) {
+      await chrome.tabs.ungroup([tabId])
+    }
+  } catch { /* tab already gone or API unavailable */ }
 }
 
 async function createResearchTab(url: string): Promise<chrome.tabs.Tab> {
@@ -69,7 +89,13 @@ async function createResearchTab(url: string): Promise<chrome.tabs.Tab> {
 
   const tab = await chrome.tabs.create({ url, active: false })
   researchTabIds.add(tab.id!)
-  await addTabToResearchGroup(tab.id!)
+  await addTabToAIGroup(tab.id!)
+  // Enable sidebar on research tabs so it's visible if user switches to them
+  await chrome.sidePanel.setOptions({
+    tabId: tab.id!,
+    path: 'sidepanel/sidepanel.html',
+    enabled: true,
+  }).catch(() => {})
   return tab
 }
 
@@ -88,7 +114,8 @@ async function waitForTabLoad(tabId: number): Promise<void> {
 
 export async function searchGoogle(query: string): Promise<SearchResult[]> {
   const encoded = encodeURIComponent(query)
-  const url = `https://www.google.com/search?q=${encoded}&hl=en&num=8`
+  // Use consent-bypass parameters to avoid GDPR consent page in EU
+  const url = `https://www.google.com/search?q=${encoded}&hl=en&num=8&gl=us`
 
   let tabId: number | undefined
   try {
@@ -96,15 +123,52 @@ export async function searchGoogle(query: string): Promise<SearchResult[]> {
     tabId = tab.id!
 
     await waitForTabLoad(tabId)
-    await sleep(800)
+    await sleep(1200)
 
+    // Try to dismiss Google consent page if present
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        func: () => {
+          // Click "Accept all" / "I agree" / "Alle akzeptieren" buttons on consent page
+          const btns = document.querySelectorAll('button')
+          for (const btn of btns) {
+            const text = (btn.textContent ?? '').toLowerCase()
+            if (text.includes('accept') || text.includes('agree') || text.includes('akzeptieren') || text.includes('zustimmen')) {
+              btn.click()
+              return true
+            }
+          }
+          // Also try form-based consent
+          const form = document.querySelector('form[action*="consent"]') as HTMLFormElement
+          if (form) { form.submit(); return true }
+          return false
+        },
+      })
+      // If consent was dismissed, wait for the actual search results to load
+      await sleep(2000)
+      await waitForTabLoad(tabId)
+      await sleep(800)
+    } catch { /* no consent page or script injection failed */ }
+
+    // Try structured extraction first
     const results = await chrome.scripting.executeScript({
       target: { tabId },
       func: extractGoogleResults,
     })
+    let searchResults = (results?.[0]?.result as SearchResult[]) ?? []
 
-    const searchResults = (results?.[0]?.result as SearchResult[]) ?? []
-    // Close the Google search tab (results are extracted, no need to keep it)
+    // Fallback: if structured extraction failed, read full page text and extract links
+    if (searchResults.length === 0) {
+      try {
+        const textResults = await chrome.scripting.executeScript({
+          target: { tabId },
+          func: extractSearchResultsFromText,
+        })
+        searchResults = (textResults?.[0]?.result as SearchResult[]) ?? []
+      } catch { /* ignore */ }
+    }
+
     await safeCloseTab(tabId)
     return searchResults.slice(0, 8)
   } catch (err) {
@@ -113,18 +177,54 @@ export async function searchGoogle(query: string): Promise<SearchResult[]> {
   }
 }
 
+/** Fallback: extract any links + surrounding text from the page when structured selectors fail */
+function extractSearchResultsFromText(): SearchResult[] {
+  const results: SearchResult[] = []
+  const links = document.querySelectorAll('a[href^="http"]')
+
+  for (const link of links) {
+    const href = (link as HTMLAnchorElement).href
+    if (!href || href.includes('google.com') || href.includes('accounts.google') || href.includes('support.google')) continue
+    const title = link.textContent?.trim() ?? ''
+    if (!title || title.length < 3) continue
+
+    // Get snippet from parent or sibling text
+    const parent = link.closest('div, li, article, section')
+    const snippet = parent?.textContent?.trim().slice(0, 200) ?? ''
+
+    // Deduplicate by domain
+    try {
+      const domain = new URL(href).hostname
+      if (results.some(r => new URL(r.url).hostname === domain)) continue
+    } catch { continue }
+
+    results.push({ title: title.slice(0, 100), url: href, snippet })
+    if (results.length >= 8) break
+  }
+  return results
+}
+
 function extractGoogleResults(): SearchResult[] {
   const results: SearchResult[] = []
-  const containers = document.querySelectorAll('div.g, div[data-sokoban-container]')
+  // Multiple selectors for different Google layouts (keeps changing)
+  const containers = document.querySelectorAll(
+    'div.g, div[data-sokoban-container], div[data-hveid] div[data-snf], div.MjjYud div[data-snf], div.MjjYud'
+  )
 
   for (const container of containers) {
     const linkEl = container.querySelector('a[href]') as HTMLAnchorElement | null
     const titleEl = container.querySelector('h3')
-    const snippetEl = container.querySelector('[data-sncf], .VwiC3b, [style*="-webkit-line-clamp"]')
+    // Multiple snippet selectors for different Google versions
+    const snippetEl = container.querySelector(
+      '[data-sncf], .VwiC3b, [style*="-webkit-line-clamp"], .lEBKkf, span.aCOpRe, div.IsZvec'
+    )
 
     if (!linkEl || !titleEl) continue
     const href = linkEl.href
-    if (!href || href.startsWith('https://www.google.com')) continue
+    if (!href || href.includes('google.com/search') || href.includes('accounts.google')) continue
+
+    // Deduplicate by URL
+    if (results.some(r => r.url === href)) continue
 
     results.push({
       title: titleEl.textContent?.trim() ?? '',
@@ -217,8 +317,8 @@ export async function closeAllResearchTabs(): Promise<void> {
     try { await chrome.tabs.remove(tabId) } catch { /* already closed */ }
   }
 
-  // Reset group tracking
-  researchGroupId = null
+  // Reset group tracking (only if no other tabs remain in the group)
+  aiGroupId = null
 }
 
 /** Get the number of currently open research tabs. */

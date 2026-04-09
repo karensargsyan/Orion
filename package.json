@@ -1,13 +1,17 @@
 {
-  "name": "localai-assistant",
+  "name": "orion",
   "version": "0.6.0",
   "private": true,
   "scripts": {
     "build": "npx tsx build.ts",
     "watch": "npx tsx build.ts --watch",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "npx playwright test",
+    "test:headed": "npx playwright test --headed",
+    "test:ui": "npx playwright test --ui"
   },
   "devDependencies": {
+    "@playwright/test": "^1.44.0",
     "@types/chrome": "^0.0.268",
     "esbuild": "^0.21.0",
     "tsx": "^4.7.0",

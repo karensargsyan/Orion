@@ -12,8 +12,8 @@ function renderWelcome(container: HTMLElement, onComplete: () => void): void {
   container.innerHTML = `
     <div class="onboarding">
       <div class="onboarding-header">
-        <div class="onboarding-logo">AI</div>
-        <h1>LocalAI Assistant</h1>
+        <div class="onboarding-logo">✦</div>
+        <h1>Orion</h1>
         <p class="onboarding-subtitle">Your private AI browser assistant. Runs entirely on your local machine.</p>
       </div>
 
@@ -23,7 +23,7 @@ function renderWelcome(container: HTMLElement, onComplete: () => void): void {
 
         <div class="form-group">
           <label>Server URL</label>
-          <input type="text" id="ob-url" placeholder="http://192.168.8.155:1234" value="" autocomplete="off">
+          <input type="text" id="ob-url" placeholder="http://localhost:1234/v1" value="" autocomplete="off">
         </div>
 
         <div class="form-group">

@@ -32,7 +32,7 @@ export async function initSettings(container: HTMLElement): Promise<void> {
         <div class="form-group">
           <label>Server URL</label>
           <div class="input-row-inline">
-            <input type="text" id="lm-url" value="${esc(s.lmStudioUrl ?? '')}" placeholder="http://192.168.8.155:1234">
+            <input type="text" id="lm-url" value="${esc(s.lmStudioUrl ?? '')}" placeholder="http://localhost:1234/v1">
             <button id="btn-test-connection" class="btn-small">Test</button>
           </div>
           <p id="connection-status" class="hint-text"></p>
@@ -371,11 +371,11 @@ async function refreshMicPermissionStatusLine(container: HTMLElement): Promise<v
 
 function renderConnectionInfo(s: Settings): string {
   const caps = s.apiCapabilities
-  if (!caps) return ''
+  if (!caps) return '<div id="connection-info-bar" class="connection-info"></div>'
   return `
-    <div class="connection-info">
+    <div id="connection-info-bar" class="connection-info">
       <span class="connection-badge connected">Connected</span>
-      <span class="hint-text">${esc(caps.serverType)} &middot; ${caps.availableModels.length} model(s) &middot; ${caps.apiFormat}</span>
+      <span class="hint-text" id="provider-status">${esc(caps.serverType)} &middot; ${caps.availableModels.length} model(s) &middot; ${caps.apiFormat}</span>
     </div>
   `
 }
@@ -439,6 +439,22 @@ function wireSettingsEvents(container: HTMLElement, s: Settings): void {
     if (res.models?.length > 0) {
       statusEl.textContent = `Connected! ${res.models.length} model(s) available.`
       statusEl.style.color = 'var(--color-success)'
+      // Also probe capabilities and update the status bar
+      const probe = await chrome.runtime.sendMessage({ type: MSG.PROBE_ENDPOINT, url, authToken: token || undefined }) as { ok: boolean; capabilities?: APICapabilities }
+      if (probe.ok && probe.capabilities) {
+        await chrome.runtime.sendMessage({ type: MSG.SETTINGS_SET, partial: { apiCapabilities: probe.capabilities } })
+        const probeEl = container.querySelector('#probe-status') as HTMLElement
+        if (probeEl) {
+          probeEl.textContent = `Detected: ${probe.capabilities.serverType}, ${probe.capabilities.availableModels.length} models, format: ${probe.capabilities.apiFormat}`
+          probeEl.style.color = 'var(--color-success)'
+        }
+        // Update the header status
+        const headerStatus = container.querySelector('#provider-status') as HTMLElement
+        if (headerStatus) {
+          headerStatus.textContent = `${probe.capabilities.serverType} · ${res.models.length} model(s) · ${probe.capabilities.apiFormat}`
+          headerStatus.style.color = 'var(--color-success)'
+        }
+      }
     } else {
       statusEl.textContent = 'Could not connect. Check URL and server.'
       statusEl.style.color = 'var(--color-error)'
@@ -465,6 +481,15 @@ function wireSettingsEvents(container: HTMLElement, s: Settings): void {
       statusEl.textContent = `Detected: ${res.capabilities.serverType}, ${res.capabilities.availableModels.length} models, format: ${res.capabilities.apiFormat}`
       statusEl.style.color = 'var(--color-success)'
       await chrome.runtime.sendMessage({ type: MSG.SETTINGS_SET, partial: { apiCapabilities: res.capabilities } })
+      // Update the header bar
+      const headerStatus = container.querySelector('#provider-status') as HTMLElement
+      if (headerStatus) {
+        headerStatus.textContent = `${res.capabilities.serverType} · ${res.capabilities.availableModels.length} model(s) · ${res.capabilities.apiFormat}`
+      }
+      const infoBar = container.querySelector('#connection-info-bar') as HTMLElement
+      if (infoBar && !infoBar.querySelector('.connection-badge')) {
+        infoBar.innerHTML = `<span class="connection-badge connected">Connected</span><span class="hint-text" id="provider-status">${res.capabilities.serverType} · ${res.capabilities.availableModels.length} model(s) · ${res.capabilities.apiFormat}</span>`
+      }
     } else {
       statusEl.textContent = `Failed: ${res.error || 'Unknown'}`
       statusEl.style.color = 'var(--color-error)'
@@ -563,7 +588,7 @@ function wireSettingsEvents(container: HTMLElement, s: Settings): void {
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `localai-memory-${new Date().toISOString().slice(0, 10)}.json`
+      a.download = `orion-memory-${new Date().toISOString().slice(0, 10)}.json`
       a.click()
       URL.revokeObjectURL(url)
     }

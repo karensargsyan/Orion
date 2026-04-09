@@ -27,7 +27,7 @@ const SKIP_TAGS = new Set([
   'META', 'LINK', 'HEAD', 'BR', 'HR', 'DEFS', 'CLIPPATH', 'TEMPLATE',
 ])
 
-const MARKER_CLASS = '__localai-marker'
+const MARKER_CLASS = '__orion-marker'
 
 // ─── Visibility check ──────────────────────────────────────────────────────────
 

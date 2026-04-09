@@ -103,12 +103,12 @@ export const tabState = {
     }
 
     if (snap.completePageText) {
-      parts.push(`\nFull document text (excerpt, includes off-screen/hidden-in-DOM):\n${snap.completePageText.slice(0, 1400)}`)
+      parts.push(`\nFull document text (excerpt, includes off-screen/hidden-in-DOM):\n${snap.completePageText.slice(0, 3000)}`)
     }
     if (snap.visibleText) {
-      parts.push(`\nVisible viewport text (excerpt):\n${snap.visibleText.slice(0, 600)}`)
+      parts.push(`\nVisible viewport text (excerpt):\n${snap.visibleText.slice(0, 800)}`)
     } else if (snap.pageText) {
-      parts.push(`\nMain region text (excerpt):\n${snap.pageText.slice(0, 800)}`)
+      parts.push(`\nMain region text (excerpt):\n${snap.pageText.slice(0, 1000)}`)
     }
 
     if (snap.selectedText) {

@@ -98,6 +98,10 @@ export const MSG = {
   HIDE_ACTIVITY_BORDER: 'HIDE_ACTIVITY_BORDER',
   STOP_AUTOMATION: 'STOP_AUTOMATION',
 
+  // Form Coach — step-by-step guided form filling
+  FORM_COACH_START: 'FORM_COACH_START',
+  FORM_COACH_DONE: 'FORM_COACH_DONE',
+
   // Element markers / accessibility tree
   INJECT_MARKERS: 'INJECT_MARKERS',
   REMOVE_MARKERS: 'REMOVE_MARKERS',
@@ -182,7 +186,7 @@ export const LOCAL_MIC_PERMISSION_KEY = 'stt_mic_permission_granted_at'
 
 export const DEFAULTS = {
   ACTIVE_PROVIDER: 'local' as const,
-  LM_STUDIO_URL: '',
+  LM_STUDIO_URL: 'http://localhost:1234/v1',
   LM_STUDIO_MODEL: '',
   AUTH_TOKEN: '',
   RATE_LIMIT_RPM: 10,

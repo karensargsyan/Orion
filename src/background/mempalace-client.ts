@@ -91,7 +91,7 @@ export async function storeMempalace(settings: Settings, mem: PalaceMemory): Pro
         room: mem.room,
         content: mem.content,
         source: mem.source ?? 'extension',
-        agent: mem.agent ?? 'localai_assistant',
+        agent: mem.agent ?? 'orion',
       }),
       signal: AbortSignal.timeout(30_000),
     })

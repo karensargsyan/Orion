@@ -10,7 +10,7 @@ const MALFORMED_ACTION_RE = /call:[\w]*:?[\w]*\{[^}]*\}/gi
 const ABILITY_MARKER_RE = /ability:\s*\[?\s*(?:ACTION_?RESULT|ACTIONRESULT)\s*\]?/gi
 const TOOLCALL_RE = /<\|?tool_?(?:call|response)\|?>(?:[^<]*<\|?\/?\s*tool_?(?:call|response)\|?>)?/gi
 const ACTIONRESULT_INLINE_RE = /\[?\s*ACTIONRESULT\s*\]?/gi
-const INTERNAL_PROTOCOL_RE = /call:LocalAI[^\n]*/gi
+const INTERNAL_PROTOCOL_RE = /call:(?:LocalAI|Orion)[^\n]*/gi
 
 export function stripMalformedActions(text: string): string {
   return text

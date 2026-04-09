@@ -3,6 +3,7 @@ import type { FillAssignment, AIAction, PageSnapshot, FieldOption } from '../sha
 import { buildSnapshot, snapshotChanged } from './dom-analyzer'
 import { fillAssignments, highlightFilledFields, fillField } from './form-filler'
 import { setupActionMonitor } from './action-monitor'
+import { startCoach, type CoachField } from './form-coach'
 import { extractPageText, extractVisibleText, extractCompletePageText, extractSelectedText, extractStructuredContent, extractSemanticLandmarks } from './page-extractor'
 import { setupTextMonitor } from './text-monitor'
 import { findLabel, getUniqueSelector } from './dom-analyzer'
@@ -103,10 +104,14 @@ document.addEventListener('selectionchange', () => {
 
 // ─── Message handler (SW -> Content) ──────────────────────────────────────────
 
-chrome.runtime.onMessage.addListener((msg: Record<string, unknown>, _sender, sendResponse) => {
-  handleContentMessage(msg).then(sendResponse).catch((err: Error) => sendResponse({ ok: false, error: err.message }))
-  return true
-})
+try {
+  chrome.runtime.onMessage.addListener((msg: Record<string, unknown>, _sender, sendResponse) => {
+    handleContentMessage(msg).then(sendResponse).catch((err: Error) => sendResponse({ ok: false, error: err.message }))
+    return true
+  })
+} catch {
+  // Extension context invalidated after reload/update — content script is stale
+}
 
 async function handleContentMessage(msg: Record<string, unknown>): Promise<unknown> {
   switch (msg.type) {
@@ -156,6 +161,18 @@ async function handleContentMessage(msg: Record<string, unknown>): Promise<unkno
         el.focus()
       }
       return { ok: !!el }
+    }
+
+    case MSG.FORM_COACH_START: {
+      const fields = msg.fields as CoachField[]
+      startCoach(fields, (summary) => {
+        // Notify service worker that coaching is done
+        chrome.runtime.sendMessage({
+          type: MSG.FORM_COACH_DONE,
+          ...summary,
+        }).catch(() => {})
+      })
+      return { ok: true }
     }
 
     case MSG.SHOW_ACTIVITY_BORDER: {
@@ -472,9 +489,15 @@ function redirectToNearbyControl(el: HTMLElement): HTMLElement {
 // ─── Click ────────────────────────────────────────────────────────────────────
 
 async function handleClick(action: AIAction): Promise<{ ok: boolean; result?: string; error?: string }> {
-  const selector = action.selector ?? ''
+  let selector = action.selector ?? ''
+
+  // If selector is empty, try to find the primary action button (Search, Done, Submit, etc.)
   if (!selector.trim()) {
-    return { ok: false, error: `Empty selector — you must specify which element to click. Use visible text, CSS selector, or element_id. Available: ${listClickableElements()}` }
+    const primaryBtn = findPrimaryButton()
+    if (primaryBtn) {
+      return performClick(primaryBtn)
+    }
+    return { ok: false, error: `Empty selector — specify which element to click. Available: ${listClickableElements()}` }
   }
 
   let el = findByVisibleText(selector) ?? resolveElement(selector)
@@ -668,7 +691,11 @@ async function performClick(el: HTMLElement): Promise<{ ok: boolean; result?: st
     return { ok: true, result: `Clicked "${label}" → content updated` }
   }
 
-  return { ok: true, result: `Clicked "${label}" — WARNING: no visible page change detected. The click may not have had effect. Try a different element, use element_id from the accessibility tree, or scroll to reveal the target.` }
+  // Return coordinates so the service worker can retry with CDP (trusted events)
+  return {
+    ok: true,
+    result: `Clicked "${label}" — WARNING: no visible page change detected. [COORDS:${Math.round(cx)},${Math.round(cy)}]`,
+  }
 }
 
 async function handleClickElement(el: HTMLElement): Promise<{ ok: boolean; result?: string; error?: string }> {
@@ -689,19 +716,78 @@ function cleanResultText(el: HTMLElement): string {
 
 // ─── Type ─────────────────────────────────────────────────────────────────────
 
+/** Find an input/textarea/select by label, placeholder, aria-label, name, or role */
+function findInputField(text: string): HTMLElement | null {
+  const clean = text.replace(/^["']|["']$/g, '').trim().toLowerCase()
+  if (!clean) return null
+
+  // Strategy 1: inputs/textareas/selects by placeholder, aria-label, name, title
+  const inputs = document.querySelectorAll<HTMLElement>(
+    'input, textarea, select, [contenteditable="true"], [role="textbox"], [role="combobox"], [role="searchbox"], [role="spinbutton"]'
+  )
+  // Exact match first
+  for (const el of inputs) {
+    if (!isVisible(el)) continue
+    const ph = (el.getAttribute('placeholder') ?? '').toLowerCase()
+    const aria = (el.getAttribute('aria-label') ?? '').toLowerCase()
+    const name = (el.getAttribute('name') ?? '').toLowerCase()
+    const title = (el.getAttribute('title') ?? '').toLowerCase()
+    const id = (el.id ?? '').toLowerCase()
+    if (ph === clean || aria === clean || name === clean || title === clean || id === clean) return el
+  }
+  // Partial match
+  for (const el of inputs) {
+    if (!isVisible(el)) continue
+    const ph = (el.getAttribute('placeholder') ?? '').toLowerCase()
+    const aria = (el.getAttribute('aria-label') ?? '').toLowerCase()
+    const name = (el.getAttribute('name') ?? '').toLowerCase()
+    const title = (el.getAttribute('title') ?? '').toLowerCase()
+    if (ph.includes(clean) || aria.includes(clean) || name.includes(clean) || title.includes(clean)) return el
+  }
+
+  // Strategy 2: find by associated <label> text
+  const labels = document.querySelectorAll<HTMLLabelElement>('label')
+  for (const label of labels) {
+    const labelText = (label.textContent ?? '').trim().toLowerCase()
+    if (labelText === clean || labelText.includes(clean)) {
+      if (label.htmlFor) {
+        const target = document.getElementById(label.htmlFor)
+        if (target && isVisible(target as HTMLElement)) return target as HTMLElement
+      }
+      // Label might wrap the input
+      const inner = label.querySelector<HTMLElement>('input, textarea, select')
+      if (inner && isVisible(inner)) return inner
+    }
+  }
+
+  return null
+}
+
 async function handleType(action: AIAction): Promise<{ ok: boolean; result?: string; error?: string }> {
   const selector = action.selector ?? ''
   if (!selector.trim()) {
     return { ok: false, error: 'Empty selector — specify which field to type into (CSS selector or field name).' }
   }
 
-  let el = findByVisibleText(selector) ?? resolveElement(selector)
+  // Try input-specific finding first (placeholder, aria-label, name, label text)
+  let el = findInputField(selector) ?? findByVisibleText(selector) ?? resolveElement(selector)
 
   if (!el) {
     el = await findElementWithScroll(selector, 3)
   }
 
-  if (!el) return { ok: false, error: `Field not found: ${selector}` }
+  // Last resort: TreeWalker and XPath (same as handleClick)
+  if (!el) el = findByTreeWalker(selector)
+  if (!el) el = findByXPath(selector)
+
+  if (!el) return { ok: false, error: `Field not found: ${selector}. Try using a CSS selector like textarea, input[name="q"], or the field's placeholder text.` }
+
+  // If we found a label or container, look for the actual input inside it
+  if (!['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName) && !el.isContentEditable
+      && !el.getAttribute('role')?.match(/textbox|combobox|searchbox/)) {
+    const inner = el.querySelector<HTMLElement>('input, textarea, select, [contenteditable="true"], [role="textbox"], [role="combobox"]')
+    if (inner) el = inner
+  }
 
   const inputType = (el as HTMLInputElement).type || el.tagName.toLowerCase()
   const ok = await fillField(el, action.value ?? '', inputType)
@@ -1257,7 +1343,8 @@ function findInSet(selector: string, cleanText: string, exactOnly: boolean): HTM
     const elText = (el.textContent?.trim() ?? '').toLowerCase()
     const ariaLabel = (el.getAttribute('aria-label') ?? '').toLowerCase()
     const title = (el.getAttribute('title') ?? '').toLowerCase()
-    const value = ((el as HTMLInputElement).value ?? '').toLowerCase()
+    const rawVal = (el as HTMLInputElement).value
+    const value = (typeof rawVal === 'string' ? rawVal : '').toLowerCase()
     const directText = getDirectText(el).toLowerCase()
 
     if (elText === cleanText || ariaLabel === cleanText || title === cleanText || value === cleanText || directText === cleanText) {
@@ -1295,6 +1382,29 @@ function getDirectText(el: HTMLElement): string {
   return text.trim()
 }
 
+/** When click has no selector, find the most likely primary action button */
+function findPrimaryButton(): HTMLElement | null {
+  // Look for common submit/search/done buttons by text, role, and type
+  const primaryTexts = ['search', 'done', 'submit', 'go', 'apply', 'ok', 'confirm', 'next', 'continue',
+    'suche', 'suchen', 'fertig', 'weiter', 'ok', 'bestätigen', 'explore']
+  const buttons = document.querySelectorAll<HTMLElement>(
+    'button, [role="button"], input[type="submit"], input[type="button"], a[role="button"]'
+  )
+  for (const btn of buttons) {
+    if (!isVisible(btn)) continue
+    const text = (btn.textContent?.trim() ?? '').toLowerCase()
+    const aria = (btn.getAttribute('aria-label') ?? '').toLowerCase()
+    const val = ((btn as HTMLInputElement).value ?? '').toLowerCase()
+    for (const pt of primaryTexts) {
+      if (text === pt || aria === pt || val === pt || text.includes(pt)) return btn
+    }
+  }
+  // Also try the first visible submit button
+  const submit = document.querySelector<HTMLElement>('button[type="submit"]:not([disabled])')
+  if (submit && isVisible(submit)) return submit
+  return null
+}
+
 function listClickableElements(): string {
   const allSelectors = `${HIGH_PRIORITY_SELECTOR}, ${ROW_SELECTOR}, ${WIDE_SELECTOR}`
   const elements = document.querySelectorAll<HTMLElement>(allSelectors)
@@ -1314,8 +1424,8 @@ function listClickableElements(): string {
 
 // ─── Activity overlay with stop button ──────────────────────────────────────
 
-const BORDER_ID = '__localai-activity-border'
-const STOP_BTN_ID = '__localai-stop-btn'
+const BORDER_ID = '__orion-activity-border'
+const STOP_BTN_ID = '__orion-stop-btn'
 
 function showActivityBorder(): void {
   if (document.getElementById(BORDER_ID)) return
@@ -1327,7 +1437,7 @@ function showActivityBorder(): void {
     position:fixed;inset:0;pointer-events:none;z-index:2147483646;
     border:2px solid rgba(108,92,231,0.6);
     box-shadow:inset 0 0 30px rgba(108,92,231,0.08);
-    border-radius:0;animation:__localai-pulse 2s ease-in-out infinite;
+    border-radius:0;animation:__orion-pulse 2s ease-in-out infinite;
   `
 
   // Floating stop button — top-right corner
@@ -1355,7 +1465,7 @@ function showActivityBorder(): void {
   const style = document.createElement('style')
   style.id = `${BORDER_ID}-style`
   style.textContent = `
-    @keyframes __localai-pulse {
+    @keyframes __orion-pulse {
       0%,100%{border-color:rgba(108,92,231,0.6);box-shadow:inset 0 0 20px rgba(108,92,231,0.05)}
       50%{border-color:rgba(108,92,231,0.9);box-shadow:inset 0 0 40px rgba(108,92,231,0.12)}
     }

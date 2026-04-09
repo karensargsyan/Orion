@@ -5,7 +5,7 @@
 
 export type SafetyLevel = 'safe' | 'warn' | 'danger'
 
-const BORDER_ID = '__localai-safety-border'
+const BORDER_ID = '__orion-safety-border'
 const STYLE_ID = `${BORDER_ID}-style`
 
 const COLORS: Record<SafetyLevel, { border: string; glow: string; label: string }> = {
@@ -53,10 +53,10 @@ export function showSafetyBorder(level: SafetyLevel, detail?: string): void {
   const style = document.createElement('style')
   style.id = STYLE_ID
   style.textContent = `
-    @keyframes __localai-safety-pulse {
+    @keyframes __orion-safety-pulse {
       0%,100%{opacity:1} 50%{opacity:0.92}
     }
-    #${BORDER_ID} { animation: __localai-safety-pulse 4s ease-in-out infinite; }
+    #${BORDER_ID} { animation: __orion-safety-pulse 4s ease-in-out infinite; }
   `
 
   document.head.appendChild(style)

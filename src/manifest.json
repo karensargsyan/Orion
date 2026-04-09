@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "LocalAI Assistant",
+  "name": "Orion",
   "version": "0.6.0",
   "description": "AI-powered browser assistant using your local AI model. Reads pages, fills forms, analyzes emails, remembers context, all 100% local and private.",
 
@@ -15,7 +15,8 @@
     "webNavigation",
     "alarms",
     "offscreen",
-    "debugger"
+    "debugger",
+    "contextMenus"
   ],
 
   "host_permissions": [
@@ -43,6 +44,6 @@
   },
 
   "action": {
-    "default_title": "Open LocalAI Assistant"
+    "default_title": "Open Orion"
   }
 }

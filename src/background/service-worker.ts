@@ -23,6 +23,7 @@ import { matchVaultToForm, matchCredentialsToForm, describeForm } from './form-i
 import { probeEndpoint, quickHealthCheck } from './api-detector'
 import { startScreenshotLoop, stopScreenshotLoop, captureScreenshot } from './screenshot-loop'
 import { executeActionsFromText, parseActionsFromText, executeWithFollowUp, ensureContentScript, requestFreshSnapshot, cancelAutomation } from './action-executor'
+import { addTabToAIGroup } from './web-researcher'
 import { analyzeHabits, getHabitPatterns } from './habit-tracker'
 import { getAllCalendarEvents } from './calendar-detector'
 import { detectPersonalData, storeDetectedPII } from './pii-detector'
@@ -59,6 +60,7 @@ import { getAllPlaybooks, deletePlaybook } from './memory-manager'
 import { getCDPAccessibilityTree, type CDPTreeResult } from './cdp-accessibility'
 import { captureMiniMap, type MiniMapResult } from './minimap-screenshot'
 import { recordPageVisit, getSitemapForPrompt, persistDirtySitemaps } from './visual-sitemap'
+import { getPersonaForPrompt } from './page-persona'
 
 // ─── Background AI call failure tracking ─────────────────────────────────────
 
@@ -110,7 +112,7 @@ function resetBgCallFailures(): void {
 
 let settings: Settings | null = null
 const sessionId = `session_${Date.now()}`
-const sidePanelEnabledTabs = new Set<number>()
+// Side panel is always enabled globally via setPanelBehavior + setOptions
 
 async function getSettings(): Promise<Settings> {
   if (!settings) {
@@ -160,7 +162,6 @@ async function initSW(): Promise<void> {
     } as Settings
   }
   await rateLimiter.load(settings!.rateLimitRpm)
-  await chrome.sidePanel.setOptions({ enabled: false }).catch(() => {})
   await chrome.alarms.create('bg-summarize', {
     periodInMinutes: DEFAULTS.BG_SUMMARIZE_INTERVAL_MINUTES,
   })
@@ -247,23 +248,31 @@ function relayToSttPort(msg: Record<string, unknown>): void {
   try { sttRelayPort.postMessage(msg) } catch { sttRelayPort = null }
 }
 
-// ─── Side panel per-tab activation ────────────────────────────────────────────
+// ─── Side panel ──────────────────────────────────────────────────────────────
 
-chrome.action.onClicked.addListener(async (tab) => {
-  if (!tab.id) return
-  const tabId = tab.id
-  if (sidePanelEnabledTabs.has(tabId)) {
-    sidePanelEnabledTabs.delete(tabId)
-    await chrome.sidePanel.setOptions({ tabId, enabled: false }).catch(() => {})
-    return
+// Chrome handles icon click → open sidebar. Always enabled globally.
+// This is the same mechanism as Chrome's built-in "Open side panel" menu item.
+chrome.sidePanel.setOptions({
+  path: 'sidepanel/sidepanel.html',
+  enabled: true,
+}).catch(() => {})
+chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {})
+
+// Track tabs in the Orion group
+const orionTabs = new Set<number>()
+
+/** Register a tab as part of the Orion group */
+async function activateOrionForTab(tabId: number): Promise<void> {
+  orionTabs.add(tabId)
+  await addTabToAIGroup(tabId).catch(() => {})
+}
+
+// Screenshot on tab switch
+chrome.tabs.onActivated.addListener(async (info) => {
+  const s = await getSettings()
+  if (s.onboardingComplete) {
+    await captureScreenshot(info.tabId).catch(() => {})
   }
-  sidePanelEnabledTabs.add(tabId)
-  await chrome.sidePanel.setOptions({
-    tabId,
-    path: 'sidepanel/sidepanel.html',
-    enabled: true,
-  }).catch(() => {})
-  await chrome.sidePanel.open({ tabId }).catch(() => {})
 })
 
 // ─── Alarms ───────────────────────────────────────────────────────────────────
@@ -412,18 +421,11 @@ async function runMempalaceLearningCycle(s: Settings): Promise<void> {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   tabState.delete(tabId)
-  sidePanelEnabledTabs.delete(tabId)
+  orionTabs.delete(tabId)
   flushBuffer(tabId).then(() => clearTabBuffer(tabId)).catch(() => {})
 })
 
-chrome.tabs.onActivated.addListener(async (info) => {
-  const s = await getSettings()
-  if (s.onboardingComplete) {
-    await captureScreenshot(info.tabId).catch(() => {})
-  }
-  const enabled = sidePanelEnabledTabs.has(info.tabId)
-  await chrome.sidePanel.setOptions({ tabId: info.tabId, enabled }).catch(() => {})
-})
+// Tab activation screenshot handled in the side panel onActivated listener above
 
 chrome.webNavigation.onCommitted.addListener(async (details) => {
   if (details.frameId !== 0) return
@@ -557,7 +559,17 @@ async function handleAIChat(
   let accessibilityTree: string | undefined
   let viewportMeta: { width: number; height: number; devicePixelRatio: number } | undefined
 
+  // Detect if the tab is blank or restricted (no DOM interaction possible)
+  let isBlankTab = false
   if (tabId > 0) {
+    try {
+      const tab = await chrome.tabs.get(tabId)
+      const tabUrl = tab.url ?? ''
+      isBlankTab = !tabUrl || tabUrl.startsWith('chrome://') || tabUrl.startsWith('chrome-extension://') || tabUrl.startsWith('about:') || tabUrl.startsWith('edge://') || tabUrl.startsWith('brave://') || tabUrl.startsWith('devtools://')
+    } catch { isBlankTab = true }
+  }
+
+  if (tabId > 0 && !isBlankTab) {
     let cdpResult: CDPTreeResult | null = null
     try {
       cdpResult = await getCDPAccessibilityTree(tabId)
@@ -565,7 +577,7 @@ async function handleAIChat(
 
     if (cdpResult) {
       accessibilityTree = cdpResult.treeText
-      viewportMeta = { ...cdpResult.viewport, devicePixelRatio: globalThis.devicePixelRatio ?? 1 }
+      viewportMeta = { ...cdpResult.viewport, devicePixelRatio: cdpResult.viewport.devicePixelRatio ?? 1 }
     } else {
       try {
         const markerResult = await chrome.tabs.sendMessage(tabId, { type: MSG.INJECT_MARKERS }) as { ok: boolean; accessibilityTree?: string }
@@ -590,20 +602,31 @@ async function handleAIChat(
     }
   }
 
-      const pageContext = tabState.summarize(tabId)
+      let pageContext = tabState.summarize(tabId)
+      if (isBlankTab) {
+        pageContext = `This is a BLANK TAB — no website is loaded. You CANNOT type, click, or interact with any page elements.\nTo fulfill the user's request, use these background actions:\n- [ACTION:SEARCH query="..."] — Google search (works without a loaded page)\n- [ACTION:NAVIGATE url="..."] — open a website\n- [ACTION:OPEN_TAB url="..."] — open a URL in a research tab\nDo NOT use CLICK, TYPE, or other DOM actions until you have navigated to a real website.`
+      }
       const history = await getSessionMessages(chatSessionId, s.maxContextMessages)
-  const tabMem = await getTabMemory(tabId, 5)
-      const recentMem = await getRecentSessionMemory(5)
-  let memText = [...tabMem, ...recentMem]
-    .map(m => m.content)
+  // Tab-isolated memory: only this tab's memory, no cross-tab leaking
+  const tabMem = await getTabMemory(tabId, 8)
+  let memText = tabMem
+    .map(m => {
+      const date = new Date(m.timestamp)
+      const dateStr = date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
+      return `[${dateStr}] ${m.content}`
+    })
     .filter((v, i, a) => a.indexOf(v) === i)
     .join('\n')
-    .slice(0, 1200)
+    .slice(0, 1400)
 
   const actionInsights = await getGlobalMemoryByDomain('ai_action_insights', 2)
   if (actionInsights.length > 0) {
-    const insightBlock = actionInsights.map(e => e.summary).join('\n').slice(0, 700)
-    memText = `${memText}\n\nAI-learned activity hints:\n${insightBlock}`.slice(0, 1800)
+    const insightBlock = actionInsights.map(e => {
+      const date = new Date(e.timestamp)
+      const dateStr = date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
+      return `[${dateStr}] ${e.summary}`
+    }).join('\n').slice(0, 700)
+    memText = `${memText}\n\nAI-learned activity hints:\n${insightBlock}`.slice(0, 2000)
   }
 
   let knownUserData: string | undefined
@@ -639,9 +662,22 @@ async function handleAIChat(
   // Build sitemap context for the current domain
   const sitemapText = await getSitemapForPrompt(currentDomain)
 
+  // Extract full page text so the AI can read the page content directly
+  const currentSnap = tabState.get(tabId)
+  const maxPageText = s.liteMode ? 4000 : 10000
+  const pageTextForPrompt = (currentSnap?.completePageText ?? currentSnap?.pageText ?? '').slice(0, maxPageText)
+
+  // Detect page type and generate expert persona
+  const personaBlock = getPersonaForPrompt(
+    currentSnap?.url ?? '',
+    currentSnap?.title ?? '',
+    currentSnap?.headings ?? [],
+    currentSnap?.completePageText ?? currentSnap?.pageText ?? ''
+  )
+
   // Choose system prompt based on lite mode (for small local models)
   const systemPrompt = s.liteMode
-    ? buildCompactSystemPrompt(pageContext, accessibilityTree, viewportMeta)
+    ? buildCompactSystemPrompt(pageContext, accessibilityTree, viewportMeta, pageTextForPrompt || undefined, personaBlock || undefined)
     : buildSystemPrompt(
         pageContext,
         memText,
@@ -653,7 +689,9 @@ async function handleAIChat(
         userInstructionsText || undefined,
         mempalaceBlock,
         viewportMeta,
-        sitemapText || undefined
+        sitemapText || undefined,
+        pageTextForPrompt || undefined,
+        personaBlock || undefined
       )
 
   let messages: Pick<ChatMessage, 'role' | 'content' | 'imageData'>[] = [
@@ -679,8 +717,10 @@ async function handleAIChat(
     ),
   ]
 
-  // Always attach screenshot — the AI needs visual context for page navigation
-  if (screenshotData) {
+  // Only attach screenshot when vision is supported (text-only local models reject image_url format)
+  const isExternalMultimodal = isExternalProvider
+  const visionCapable = s.visionEnabled || isExternalMultimodal || (effectiveCapabilities?.supportsVision ?? false)
+  if (screenshotData && visionCapable) {
     const lastIdx = messages.reduce((acc, m, i) => m.role === 'user' ? i : acc, -1)
     if (lastIdx >= 0) messages[lastIdx].imageData = screenshotData
   }
@@ -697,17 +737,21 @@ async function handleAIChat(
     })
 
     const actions = parseActionsFromText(fullText)
-    if (actions.length > 0 && tabId > 0) {
-      const risk = classifyActionRisk(actions)
-      const domain = extractDomain(tabState.get(tabId)?.url ?? '')
-      const shouldConfirm = await needsConfirmation(risk, actions, domain)
+    if (tabId > 0) {
+      // Always try executeWithFollowUp — it has auto-kickstart logic
+      // that can detect user intent and inject actions even when the AI didn't emit any
+      if (actions.length > 0) {
+        const risk = classifyActionRisk(actions)
+        const domain = extractDomain(tabState.get(tabId)?.url ?? '')
+        const shouldConfirm = await needsConfirmation(risk, actions, domain)
 
-      if (shouldConfirm) {
-        const confirmed = await requestConfirmation(port, actions, risk, tabId, chatSessionId)
-        if (!confirmed) {
-          port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '\n\n*Action declined by user.*\n' })
-          port.postMessage({ type: MSG.STREAM_END, fullText: fullText + '\n\n*Action declined by user.*' })
-          return
+        if (shouldConfirm) {
+          const confirmed = await requestConfirmation(port, actions, risk, tabId, chatSessionId)
+          if (!confirmed) {
+            port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '\n\n*Action declined by user.*\n' })
+            port.postMessage({ type: MSG.STREAM_END, fullText: fullText + '\n\n*Action declined by user.*' })
+            return
+          }
         }
       }
 
@@ -1019,6 +1063,7 @@ async function handleMessage(
     // ── PIN / Session ─────────────────────────────────────────────────────────
     case MSG.SETUP_PIN: {
       await setupPin(msg.pin as string)
+      await setSettings({ hasPinSetup: true })  // Sync to IDB
       settings = null
       return { ok: true }
     }
@@ -1036,6 +1081,7 @@ async function handleMessage(
     case MSG.CHANGE_PIN: {
       const { oldPin, newPin } = msg as { oldPin: string; newPin: string }
       const success = await changePin(oldPin, newPin)
+      if (success) settings = null  // Clear cache after re-encryption
       return { ok: success, error: success ? undefined : 'Wrong PIN' }
     }
 
@@ -1049,6 +1095,12 @@ async function handleMessage(
       settings = null
       // Reset background AI failure counter when settings change (e.g., new model, new endpoint)
       resetBgCallFailures()
+      return { ok: true }
+    }
+
+    case 'GROUP_ACTIVE_TAB': {
+      const tid = msg.tabId as number
+      if (tid > 0) await activateOrionForTab(tid)
       return { ok: true }
     }
 

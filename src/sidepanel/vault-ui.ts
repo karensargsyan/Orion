@@ -125,8 +125,13 @@ function renderSetupPin(): void {
     }
 
     const res = await chrome.runtime.sendMessage({ type: MSG.SETUP_PIN, pin: pin1 }) as { ok: boolean }
-    if (res.ok) await checkAndRender()
-    else showError(errEl, 'Setup failed. Try again.')
+    if (res.ok) {
+      // Sync hasPinSetup to IDB so it persists across sessions
+      await chrome.runtime.sendMessage({ type: MSG.SETTINGS_SET, partial: { hasPinSetup: true } }).catch(() => {})
+      await checkAndRender()
+    } else {
+      showError(errEl, 'Setup failed. Try again.')
+    }
   })
 }
 
@@ -152,7 +157,13 @@ function renderLockScreen(): void {
     const res = await chrome.runtime.sendMessage({ type: MSG.UNLOCK_SESSION, pin }) as { ok: boolean; error?: string }
     if (res.ok) {
       isUnlocked = true
-      await renderVaultList()
+      try {
+        await renderVaultList()
+      } catch (err) {
+        isUnlocked = false
+        showError(errEl, 'Unlocked but failed to load vault. Try again.')
+        console.error('[Vault] renderVaultList failed after unlock:', err)
+      }
     } else {
       showError(errEl, res.error ?? 'Wrong PIN')
       pinInput.value = ''
@@ -172,7 +183,7 @@ async function renderVaultList(): Promise<void> {
 
   if (!res.ok) {
     if (res.error === 'SESSION_LOCKED') { renderLockScreen(); return }
-    container.innerHTML = `<p class="error-text">Error: ${res.error}</p>`
+    container.innerHTML = `<p class="error-text">Error: ${escHtml(res.error ?? 'Unknown error')}</p>`
     return
   }
 
