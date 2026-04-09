@@ -250,32 +250,35 @@ function relayToSttPort(msg: Record<string, unknown>): void {
 
 // ─── Side panel ──────────────────────────────────────────────────────────────
 //
-// Panel is DISABLED globally. Only enabled per-tab when the user clicks the icon.
-// When user switches to a non-Orion tab, panel stays disabled (invisible).
-// When user closes the panel, the tab is ungrouped.
+// Panel is globally ENABLED so the icon click works on any tab.
+// openPanelOnActionClick opens it when user clicks the icon.
+// On tab switch: if the tab is NOT a panel tab, briefly disable per-tab
+// to force-close the panel, then re-enable so the icon still works there.
 
-// Disable panel globally — only enabled per-tab via GROUP_ACTIVE_TAB
-chrome.sidePanel.setOptions({ enabled: false }).catch(() => {})
+chrome.sidePanel.setOptions({ path: 'sidepanel/sidepanel.html', enabled: true }).catch(() => {})
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {})
 
 // Track tabs where the panel is open
 const panelOpenTabs = new Set<number>()
 
-// When user switches tabs: enable panel only on tabs that have it open
+// When user switches tabs: hide panel on non-panel tabs, keep on panel tabs
 chrome.tabs.onActivated.addListener(async (info) => {
   const tabId = info.tabId
 
   if (panelOpenTabs.has(tabId)) {
-    // This tab has the panel — enable it and set as active origin for research
+    // Panel tab — ensure enabled, set as active origin for research
     await chrome.sidePanel.setOptions({
       tabId, path: 'sidepanel/sidepanel.html', enabled: true,
     }).catch(() => {})
     setActiveOriginTab(tabId)
   } else {
-    // Not a panel tab — ensure panel is disabled
-    await chrome.sidePanel.setOptions({
-      tabId, enabled: false,
-    }).catch(() => {})
+    // Not a panel tab — briefly disable to force-close, then re-enable for icon
+    await chrome.sidePanel.setOptions({ tabId, enabled: false }).catch(() => {})
+    setTimeout(() => {
+      chrome.sidePanel.setOptions({
+        tabId, path: 'sidepanel/sidepanel.html', enabled: true,
+      }).catch(() => {})
+    }, 300)
   }
 
   // Capture screenshot for page context
@@ -1214,10 +1217,14 @@ async function handleMessage(
       const tid = msg.tabId as number
       if (tid > 0) {
         panelOpenTabs.delete(tid)
-        await chrome.sidePanel.setOptions({
-          tabId: tid, enabled: false,
-        }).catch(() => {})
         await ungroupTab(tid)
+        // Briefly disable to close the panel, then re-enable so icon still works
+        await chrome.sidePanel.setOptions({ tabId: tid, enabled: false }).catch(() => {})
+        setTimeout(() => {
+          chrome.sidePanel.setOptions({
+            tabId: tid, path: 'sidepanel/sidepanel.html', enabled: true,
+          }).catch(() => {})
+        }, 300)
       }
       return { ok: true }
     }
