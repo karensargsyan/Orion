@@ -47,7 +47,12 @@ function getPort(state: TabChatState): chrome.runtime.Port {
   })
   p.onDisconnect.addListener(() => {
     const s = getTabState(tabId)
-    if (s) s.port = null
+    if (!s) return
+    s.port = null
+    // If streaming was active when port disconnected, clean up UI
+    if (s.isStreaming) {
+      finalizeMessage(s, s.currentBubbleRaw || '')
+    }
   })
   return p
 }
@@ -843,6 +848,15 @@ function handleWidgetChoice(state: TabChatState, value: string): void {
 }
 
 function showError(state: TabChatState, error: string): void {
+  // Clean up streaming bubble if one exists
+  if (state.currentBubble) {
+    state.currentBubble.classList.remove('streaming')
+    const cancelEl = state.currentBubble.querySelector('.stream-cancel-btn')
+    if (cancelEl) cancelEl.remove()
+    state.currentBubble = null
+    state.currentBubbleRaw = ''
+    state.streamBuffer = ''
+  }
   const messagesEl = getMessages(state)
   const div = document.createElement('div')
   div.className = 'message message-error'
