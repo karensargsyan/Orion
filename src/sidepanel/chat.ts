@@ -386,6 +386,15 @@ function getTypingIndicator(state: TabChatState): HTMLElement {
   return state.container.querySelector('.typing-indicator-tab')!
 }
 
+/** Smart auto-scroll: only scrolls to bottom if user is already near the bottom.
+ *  force=true always scrolls (used for user's own messages). */
+function scrollToBottom(el: HTMLElement, force = false): void {
+  const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+  if (force || distFromBottom < 100) {
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+  }
+}
+
 // ─── Page context ─────────────────────────────────────────────────────────────
 
 async function updatePageContext(state: TabChatState): Promise<void> {
@@ -560,7 +569,7 @@ function addBubble(state: TabChatState, role: 'user' | 'assistant', text: string
   }
 
   messagesEl.appendChild(div)
-  messagesEl.scrollTop = messagesEl.scrollHeight
+  scrollToBottom(messagesEl, role === 'user')  // force for user messages, smart for assistant
   return div
 }
 
@@ -582,7 +591,7 @@ function showConfirmationCard(
   const messagesEl = getMessages(state)
   const cardEl = createActionConfirmElement(id, description, risk, actions)
   messagesEl.appendChild(cardEl)
-  messagesEl.scrollTop = messagesEl.scrollHeight
+  scrollToBottom(messagesEl, true)  // always scroll for confirmation cards
 
   attachWidgetHandlers(
     cardEl,
@@ -657,7 +666,7 @@ function appendChunk(state: TabChatState, chunk: string): void {
   state.currentBubble.innerHTML = html
   renderWidgetsInContainer(state.currentBubble, widgets)
   attachWidgetHandlers(state.currentBubble, (_wid, val) => handleWidgetChoice(state, val))
-  messagesEl.scrollTop = messagesEl.scrollHeight
+  scrollToBottom(messagesEl)  // smart: only if user is near bottom
 }
 
 function finalizeMessage(state: TabChatState, fullText: string): void {
@@ -691,7 +700,7 @@ function showError(state: TabChatState, error: string): void {
   div.className = 'message message-error'
   div.textContent = `Error: ${error}`
   messagesEl.appendChild(div)
-  messagesEl.scrollTop = messagesEl.scrollHeight
+  scrollToBottom(messagesEl, true)  // always scroll for errors
   setStreaming(state, false)
 }
 
