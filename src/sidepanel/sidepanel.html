@@ -324,13 +324,67 @@
 
     .input-row {
       display: flex;
-      gap: 8px;
+      gap: 6px;
       padding: 10px 12px;
       background: var(--bg-elevated);
       border-top: 1px solid var(--border);
       flex-shrink: 0;
       align-items: flex-end;
     }
+    .input-row.drag-over {
+      border-color: var(--accent);
+      background: rgba(108,92,231,0.08);
+    }
+
+    /* Mic & attach icon buttons */
+    .btn-icon {
+      background: none;
+      border: none;
+      color: var(--text-dim);
+      cursor: pointer;
+      padding: 6px;
+      border-radius: 8px;
+      flex-shrink: 0;
+      transition: color 0.15s, background 0.15s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .btn-icon:hover { color: var(--text-bright); background: var(--bg-surface); }
+    .btn-icon.recording {
+      color: #e74c3c;
+      animation: micPulse 0.8s ease-in-out infinite;
+    }
+    @keyframes micPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+    /* Attachment preview bar */
+    .attachment-preview-tab {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      background: var(--bg-surface);
+      border-top: 1px solid var(--border);
+      font-size: 12px;
+      color: var(--text-dim);
+    }
+    .attachment-thumb {
+      width: 40px;
+      height: 40px;
+      border-radius: 6px;
+      object-fit: cover;
+    }
+    .attachment-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .attachment-remove {
+      background: none;
+      border: none;
+      color: var(--text-dim);
+      cursor: pointer;
+      font-size: 18px;
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+    .attachment-remove:hover { color: var(--color-error); background: rgba(231,76,60,0.1); }
     textarea#chat-input,
     textarea.chat-input-tab {
       flex: 1;

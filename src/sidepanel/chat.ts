@@ -3,6 +3,7 @@ import { renderMarkdown, sanitizeHtml } from './markdown'
 import { parseWidgets, parseActionResults, renderWidgetsInContainer, attachWidgetHandlers, createActionConfirmElement } from './chat-widgets'
 import { sanitizeModelOutput, stripMalformedActions } from '../shared/sanitize-output'
 import type { Widget } from './chat-widgets'
+import * as speech from './speech-service'
 
 // ─── Per-tab chat state ────────────────────────────────────────────────────────
 
@@ -18,6 +19,7 @@ interface TabChatState {
   streamBuffer: string
   container: HTMLElement
   historyLoaded: boolean
+  pendingImageData: string | null
 }
 
 const tabStates = new Map<number, TabChatState>()
@@ -127,7 +129,19 @@ export async function initChat(parentContainer: HTMLElement, tabId: number): Pro
     <div class="typing-indicator typing-indicator-tab" style="display:none">
       <span></span><span></span><span></span>
     </div>
+    <div class="attachment-preview-tab" style="display:none">
+      <img class="attachment-thumb">
+      <span class="attachment-name"></span>
+      <button class="attachment-remove" title="Remove">&times;</button>
+    </div>
     <div class="input-row">
+      <button class="btn-icon btn-mic-tab" title="Hold to speak">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>
+      </button>
+      <button class="btn-icon btn-attach-tab" title="Attach image">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>
+      </button>
+      <input type="file" class="file-input-tab" accept="image/*,.pdf,.txt,.csv" style="display:none">
       <textarea class="chat-input-tab" placeholder="Ask anything..." rows="1"></textarea>
       <div class="send-buttons">
         <button class="btn-primary btn-send btn-send-tab">
@@ -150,6 +164,7 @@ export async function initChat(parentContainer: HTMLElement, tabId: number): Pro
     streamBuffer: '',
     container: wrapper,
     historyLoaded: false,
+    pendingImageData: null,
   }
   tabStates.set(tabId, state)
 
@@ -158,11 +173,7 @@ export async function initChat(parentContainer: HTMLElement, tabId: number): Pro
 
   wireEvents(state)
   updatePageContext(state)
-  loadTabHistory(state).then(() => {
-    if (!hasExistingMessages(state)) {
-      triggerPageAnalysis(state)
-    }
-  })
+  loadTabHistory(state)
 }
 
 // ─── Wire DOM events ──────────────────────────────────────────────────────────
@@ -251,6 +262,114 @@ function wireEvents(state: TabChatState): void {
       sendMessage(state)
     })
   })
+
+  // ── Microphone: press-and-hold to speak ────────────────────────────────────
+  const micBtn = c.querySelector<HTMLButtonElement>('.btn-mic-tab')
+  if (micBtn) {
+    const nm = micBtn.cloneNode(true) as HTMLButtonElement
+    micBtn.parentNode!.replaceChild(nm, micBtn)
+
+    speech.onTranscript((text, isFinal) => {
+      const input = getInput(state)
+      if (isFinal) {
+        input.value = (input.value ? input.value + ' ' : '') + text
+        input.style.height = 'auto'
+        input.style.height = Math.min(input.scrollHeight, 120) + 'px'
+      }
+    })
+
+    const startMic = () => {
+      nm.classList.add('recording')
+      speech.startListening().catch(() => nm.classList.remove('recording'))
+    }
+    const stopMic = () => {
+      nm.classList.remove('recording')
+      speech.stopListening()
+    }
+
+    nm.addEventListener('mousedown', startMic)
+    nm.addEventListener('mouseup', stopMic)
+    nm.addEventListener('mouseleave', stopMic)
+    nm.addEventListener('touchstart', (e) => { e.preventDefault(); startMic() })
+    nm.addEventListener('touchend', stopMic)
+  }
+
+  // ── File/image upload ──────────────────────────────────────────────────────
+  const attachBtn = c.querySelector<HTMLButtonElement>('.btn-attach-tab')
+  const fileInput = c.querySelector<HTMLInputElement>('.file-input-tab')
+  const previewBar = c.querySelector<HTMLElement>('.attachment-preview-tab')
+  const previewThumb = c.querySelector<HTMLImageElement>('.attachment-thumb')
+  const previewName = c.querySelector<HTMLElement>('.attachment-name')
+  const previewRemove = c.querySelector<HTMLButtonElement>('.attachment-remove')
+  const inputRow = c.querySelector<HTMLElement>('.input-row')
+
+  function attachImage(file: File): void {
+    if (file.size > 10 * 1024 * 1024) { alert('File too large (max 10MB)'); return }
+    const reader = new FileReader()
+    reader.onload = () => {
+      state.pendingImageData = reader.result as string
+      if (previewThumb) {
+        previewThumb.src = file.type.startsWith('image/') ? reader.result as string : ''
+        previewThumb.style.display = file.type.startsWith('image/') ? '' : 'none'
+      }
+      if (previewName) previewName.textContent = file.name
+      if (previewBar) previewBar.style.display = 'flex'
+    }
+    reader.readAsDataURL(file)
+  }
+
+  function clearAttachment(): void {
+    state.pendingImageData = null
+    if (previewBar) previewBar.style.display = 'none'
+    if (previewThumb) previewThumb.src = ''
+    if (previewName) previewName.textContent = ''
+  }
+
+  if (attachBtn && fileInput) {
+    const na = attachBtn.cloneNode(true) as HTMLButtonElement
+    attachBtn.parentNode!.replaceChild(na, attachBtn)
+    na.addEventListener('click', () => fileInput.click())
+    fileInput.addEventListener('change', () => {
+      const file = fileInput.files?.[0]
+      if (file) attachImage(file)
+      fileInput.value = ''
+    })
+  }
+
+  if (previewRemove) {
+    const nr = previewRemove.cloneNode(true) as HTMLButtonElement
+    previewRemove.parentNode!.replaceChild(nr, previewRemove)
+    nr.addEventListener('click', clearAttachment)
+  }
+
+  // Paste image from clipboard
+  newInput.addEventListener('paste', (e) => {
+    const items = e.clipboardData?.items
+    if (!items) return
+    for (const item of items) {
+      if (item.type.startsWith('image/')) {
+        e.preventDefault()
+        const file = item.getAsFile()
+        if (file) attachImage(file)
+        return
+      }
+    }
+  })
+
+  // Drag & drop
+  if (inputRow) {
+    inputRow.addEventListener('dragover', (e) => { e.preventDefault(); inputRow.classList.add('drag-over') })
+    inputRow.addEventListener('dragleave', () => inputRow.classList.remove('drag-over'))
+    inputRow.addEventListener('drop', (e) => {
+      e.preventDefault()
+      inputRow.classList.remove('drag-over')
+      const file = e.dataTransfer?.files[0]
+      if (file) attachImage(file)
+    })
+  }
+
+  // Store clearAttachment on state for sendMessage to call
+  ;(state as any)._clearAttachment = clearAttachment
 }
 
 // ─── DOM accessors ────────────────────────────────────────────────────────────
@@ -588,9 +707,23 @@ async function sendMessage(state: TabChatState): Promise<void> {
     state.pendingAbort = null
   }
 
+  const imageData = state.pendingImageData
+
   inputEl.value = ''
   inputEl.style.height = 'auto'
-  addBubble(state, 'user', text)
+
+  // Show user message with optional image thumbnail
+  const bubble = addBubble(state, 'user', text)
+  if (imageData && imageData.startsWith('data:image/')) {
+    const img = document.createElement('img')
+    img.src = imageData
+    img.style.cssText = 'max-width:100%;max-height:120px;border-radius:8px;margin-top:6px;display:block;'
+    bubble.appendChild(img)
+  }
+
+  // Clear attachment after capturing
+  if ((state as any)._clearAttachment) (state as any)._clearAttachment()
+
   setStreaming(state, true)
   showTypingIndicator(state, true)
 
@@ -605,6 +738,7 @@ async function sendMessage(state: TabChatState): Promise<void> {
       text,
       sessionId: state.sessionId,
       tabId: state.tabId,
+      imageData: imageData || undefined,
     })
   } catch (err) {
     showError(state, `Failed to connect to AI: ${err}`)

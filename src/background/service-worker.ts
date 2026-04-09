@@ -547,6 +547,7 @@ async function handleAIChat(
   const userText = msg.text as string ?? ''
   const chatSessionId = msg.sessionId as string ?? sessionId
   const tabId = msg.tabId as number ?? 0
+  const userImageData = msg.imageData as string | undefined
 
       await appendChatMessage({
         sessionId: chatSessionId,
@@ -752,12 +753,13 @@ async function handleAIChat(
     ),
   ]
 
-  // Only attach screenshot when vision is supported (text-only local models reject image_url format)
+  // Attach image: user-uploaded image takes priority over auto-screenshot
   const isExternalMultimodal = isExternalProvider
   const visionCapable = s.visionEnabled || isExternalMultimodal || (effectiveCapabilities?.supportsVision ?? false)
-  if (screenshotData && visionCapable) {
+  const imageToAttach = userImageData || screenshotData
+  if (imageToAttach && visionCapable) {
     const lastIdx = messages.reduce((acc, m, i) => m.role === 'user' ? i : acc, -1)
-    if (lastIdx >= 0) messages[lastIdx].imageData = screenshotData
+    if (lastIdx >= 0) messages[lastIdx].imageData = imageToAttach
   }
 
   const fullText = await streamChat(messages, s, port, tabId)
