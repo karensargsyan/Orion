@@ -100,17 +100,17 @@ async function init(): Promise<void> {
   const res = await chrome.runtime.sendMessage({ type: MSG.SETTINGS_GET }) as { ok: boolean; settings: Settings }
   const s = res.ok ? res.settings : null
 
+  // Skip onboarding — mark as complete if not already
   if (!s?.onboardingComplete) {
-    showOnboarding()
-    return
+    chrome.runtime.sendMessage({ type: MSG.SETTINGS_SET, partial: { onboardingComplete: true } }).catch(() => {})
   }
 
   // Check if a model is configured — if not, open settings first
   const hasModel = !!(
-    (s.activeProvider === 'local' && s.lmStudioUrl) ||
-    (s.activeProvider === 'gemini' && s.geminiApiKey) ||
-    (s.activeProvider === 'openai' && s.openaiApiKey) ||
-    (s.activeProvider === 'anthropic' && s.anthropicApiKey)
+    (s?.activeProvider === 'local' && s?.lmStudioUrl) ||
+    (s?.activeProvider === 'gemini' && s?.geminiApiKey) ||
+    (s?.activeProvider === 'openai' && s?.openaiApiKey) ||
+    (s?.activeProvider === 'anthropic' && s?.anthropicApiKey)
   )
 
   showMainUI(hasModel ? 'chat' : 'settings')

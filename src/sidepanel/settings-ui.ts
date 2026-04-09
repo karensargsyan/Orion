@@ -9,9 +9,27 @@ export async function initSettings(container: HTMLElement): Promise<void> {
   const s = res.ok ? res.settings : {} as Settings
   const provider = s.activeProvider || 'local'
 
+  // Check if model is configured
+  const needsSetup = !(
+    (provider === 'local' && s.lmStudioUrl) ||
+    (provider === 'gemini' && s.geminiApiKey) ||
+    (provider === 'openai' && s.openaiApiKey) ||
+    (provider === 'anthropic' && s.anthropicApiKey)
+  )
+
   container.innerHTML = `
     <div class="settings-form">
       <h2>Settings</h2>
+
+      ${needsSetup ? `
+      <div class="setup-banner">
+        <div class="setup-banner-icon">⚡</div>
+        <div class="setup-banner-text">
+          <strong>Set up your AI model to get started</strong>
+          <p>Select a provider below and enter your server URL or API key. Without a model, Orion can't help you.</p>
+        </div>
+      </div>
+      ` : ''}
 
       <section class="settings-section">
         <h3>AI Provider</h3>
