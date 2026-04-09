@@ -254,7 +254,9 @@ function relayToSttPort(msg: Record<string, unknown>): void {
 // openPanelOnActionClick is FALSE — we handle it ourselves.
 // Per-tab enabled/disabled controls visibility: only panel tabs have enabled=true.
 
-chrome.sidePanel.setOptions({ path: 'sidepanel/sidepanel.html', enabled: true }).catch(() => {})
+// GLOBAL default: panel DISABLED everywhere. No tab sees the panel unless
+// we explicitly enable it per-tab when the user clicks the icon.
+chrome.sidePanel.setOptions({ path: 'sidepanel/sidepanel.html', enabled: false }).catch(() => {})
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false }).catch(() => {})
 
 // Track tabs where the panel is open
@@ -271,7 +273,7 @@ chrome.action.onClicked.addListener(async (tab) => {
     await chrome.sidePanel.setOptions({ tabId, enabled: false }).catch(() => {})
     await ungroupTab(tabId)
   } else {
-    // Open on this tab
+    // Open ONLY on this specific tab
     panelOpenTabs.add(tabId)
     await chrome.sidePanel.setOptions({
       tabId, path: 'sidepanel/sidepanel.html', enabled: true,
@@ -281,19 +283,13 @@ chrome.action.onClicked.addListener(async (tab) => {
   }
 })
 
-// Tab switch: disable panel on non-panel tabs, enable on panel tabs
+// Tab switch: only set active origin for research tabs — nothing else needed
+// because global default is disabled, so non-panel tabs never show the panel.
 chrome.tabs.onActivated.addListener(async (info) => {
   const tabId = info.tabId
 
   if (panelOpenTabs.has(tabId)) {
-    // Panel tab — ensure enabled, set as active origin for research
-    await chrome.sidePanel.setOptions({
-      tabId, path: 'sidepanel/sidepanel.html', enabled: true,
-    }).catch(() => {})
     setActiveOriginTab(tabId)
-  } else {
-    // Not a panel tab — disable per-tab to hide the panel
-    await chrome.sidePanel.setOptions({ tabId, enabled: false }).catch(() => {})
   }
 
   // Capture screenshot for page context

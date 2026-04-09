@@ -10,9 +10,15 @@ import { recordActionFailure, recordActionSuccess, recallRelevantMemories } from
 import { getAllSettings } from './memory-manager'
 import { classifyField } from './form-intelligence'
 import { mempalaceEnabled, searchMempalace } from './mempalace-client'
-import { getCDPAccessibilityTree } from './cdp-accessibility'
+import { getCDPAccessibilityTree, getCDPAccessibilityTreeCached, resolveElementCoords, invalidateTreeCache } from './cdp-accessibility'
 import { captureMiniMap, captureAutomationScreenshot } from './minimap-screenshot'
 import { recordPageVisit, getPageScreenshot } from './visual-sitemap'
+import { acquireSession, releaseSession, isSessionActive } from './cdp-session'
+import {
+  cdpClickAt, cdpDoubleClickAt, cdpHoverAt, cdpTypeText, cdpPressKey,
+  cdpFocusNode, cdpScrollPage, cdpScrollIntoView, cdpClearField,
+  cdpWaitForNavigation, cdpWaitForDOMStable, cdpScreenshot,
+} from './cdp-actions'
 
 const ACTION_PATTERN = /\[ACTION:(\w+)([^\]]*)\]/g
 const MAX_INJECT_RETRIES = 2
@@ -418,10 +424,15 @@ async function executeAIActions(allActions: AIAction[], tabId: number): Promise<
         const isNavAction = NAV_ACTIONS.has(action.action) ||
           (action.action === 'click' && result.result?.includes('Navigat'))
         if (isNavAction) {
-          // Wait for the new page to load, then re-inject the content script
-          await sleep(2000)
+          // Wait for navigation: event-based if CDP is active, else fixed delay
+          if (isSessionActive(tabId)) {
+            await cdpWaitForNavigation(tabId, 5000)
+            invalidateTreeCache()
+          } else {
+            await sleep(2000)
+          }
           await ensureContentScript(tabId).catch(() => false)
-          await sleep(500)
+          await sleep(300)
         }
       }
     } else {
@@ -437,35 +448,187 @@ async function executeAIActions(allActions: AIAction[], tabId: number): Promise<
     if (lastResult?.success) {
       await requestFreshSnapshot(tabId)
       try {
-        const verifyShot = await captureAutomationScreenshot(tabId).catch(() => null)
-        if (verifyShot) {
-          tabState.setScreenshot(tabId, verifyShot.dataUrl)
+        // Use CDP screenshot when session is active (faster, no extra API call)
+        const shotUrl = isSessionActive(tabId)
+          ? await cdpScreenshot(tabId, 20)
+          : (await captureAutomationScreenshot(tabId).catch(() => null))?.dataUrl ?? null
+        if (shotUrl) {
+          tabState.setScreenshot(tabId, shotUrl)
           const snap = tabState.get(tabId)
           if (snap?.url) {
             const domain = extractDomainFromUrl(snap.url)
-            recordPageVisit(domain, snap.url, snap, verifyShot.dataUrl).catch(() => {})
+            recordPageVisit(domain, snap.url, snap, shotUrl).catch(() => {})
           }
         }
       } catch { /* screenshot not critical */ }
     }
-    await sleep(200)
+    await sleep(100) // reduced from 200ms
   }
 
   return results
 }
 
-/** Click at exact pixel coordinates using CDP — produces trusted browser events */
-async function cdpClick(tabId: number, x: number, y: number): Promise<void> {
-  try {
-    await chrome.debugger.attach({ tabId }, '1.3').catch(() => {})
-    await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
-      type: 'mousePressed', x, y, button: 'left', clickCount: 1,
+// ─── CDP-first action execution ─────────────────────────────────────────────
+// Tries to execute DOM-interactive actions via CDP (trusted events) first.
+// Returns null if CDP is unavailable or the action can't be handled via CDP,
+// causing automatic fallback to the content script path.
+
+const CDP_CLICK_ACTIONS = new Set(['click', 'doubleclick', 'toggle', 'check'])
+const CDP_INPUT_ACTIONS = new Set(['type', 'clear'])
+const CDP_OTHER_ACTIONS = new Set(['hover', 'focus', 'scroll', 'scroll_to', 'select_option', 'keypress'])
+
+async function executeSingleActionCDP(action: AIAction, tabId: number): Promise<AIActionResult | null> {
+  if (!isSessionActive(tabId)) return null
+
+  // ── Click / DoubleClick / Toggle / Check ───────────────────────────────
+  if (CDP_CLICK_ACTIONS.has(action.action)) {
+    const coords = await resolveElementCoords(tabId, {
+      aiId: action.markerId,
+      selector: action.selector,
+      text: action.value,
     })
-    await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
-      type: 'mouseReleased', x, y, button: 'left', clickCount: 1,
+    if (!coords) return null // can't find element → fallback
+
+    // Scroll into view if we have a backendNodeId
+    if (coords.backendNodeId) {
+      await cdpScrollIntoView(tabId, coords.backendNodeId)
+      // Re-fetch coordinates after scroll
+      const fresh = await resolveElementCoords(tabId, {
+        aiId: action.markerId,
+        selector: action.selector,
+        text: action.value,
+      })
+      if (fresh) {
+        coords.x = fresh.x
+        coords.y = fresh.y
+      }
+    }
+
+    const clickFn = action.action === 'doubleclick' ? cdpDoubleClickAt : cdpClickAt
+    const ok = await clickFn(tabId, coords.x, coords.y)
+    if (!ok) return null
+
+    // Wait for DOM to stabilize (event-based, not fixed sleep)
+    await cdpWaitForDOMStable(tabId, 1500)
+
+    return { action: action.action, success: true, result: `${action.action} via CDP at (${coords.x}, ${coords.y})` }
+  }
+
+  // ── Type ───────────────────────────────────────────────────────────────
+  if (action.action === 'type') {
+    // Focus the target element first
+    if (action.markerId || action.selector) {
+      const coords = await resolveElementCoords(tabId, {
+        aiId: action.markerId,
+        selector: action.selector,
+      })
+      if (coords) {
+        if (coords.backendNodeId) {
+          await cdpFocusNode(tabId, coords.backendNodeId)
+        } else {
+          await cdpClickAt(tabId, coords.x, coords.y)
+        }
+        await sleep(100) // brief pause after focus
+      } else {
+        return null // can't find target → fallback
+      }
+    }
+
+    const ok = await cdpTypeText(tabId, action.value ?? '')
+    if (!ok) return null
+    return { action: 'type', success: true, result: `Typed "${(action.value ?? '').slice(0, 50)}" via CDP` }
+  }
+
+  // ── Clear ──────────────────────────────────────────────────────────────
+  if (action.action === 'clear') {
+    if (action.markerId || action.selector) {
+      const coords = await resolveElementCoords(tabId, {
+        aiId: action.markerId,
+        selector: action.selector,
+      })
+      if (coords) {
+        if (coords.backendNodeId) {
+          await cdpFocusNode(tabId, coords.backendNodeId)
+        } else {
+          await cdpClickAt(tabId, coords.x, coords.y)
+        }
+      }
+    }
+    const ok = await cdpClearField(tabId)
+    if (!ok) return null
+    return { action: 'clear', success: true, result: 'Field cleared via CDP' }
+  }
+
+  // ── Hover ──────────────────────────────────────────────────────────────
+  if (action.action === 'hover') {
+    const coords = await resolveElementCoords(tabId, {
+      aiId: action.markerId,
+      selector: action.selector,
+      text: action.value,
     })
-    await chrome.debugger.detach({ tabId }).catch(() => {})
-  } catch { /* debugger may already be attached/detached */ }
+    if (!coords) return null
+    const ok = await cdpHoverAt(tabId, coords.x, coords.y)
+    if (!ok) return null
+    return { action: 'hover', success: true, result: `Hovered via CDP at (${coords.x}, ${coords.y})` }
+  }
+
+  // ── Focus ──────────────────────────────────────────────────────────────
+  if (action.action === 'focus') {
+    const coords = await resolveElementCoords(tabId, {
+      aiId: action.markerId,
+      selector: action.selector,
+    })
+    if (!coords?.backendNodeId) return null
+    const ok = await cdpFocusNode(tabId, coords.backendNodeId)
+    if (!ok) return null
+    return { action: 'focus', success: true, result: 'Focused via CDP' }
+  }
+
+  // ── Scroll ─────────────────────────────────────────────────────────────
+  if (action.action === 'scroll') {
+    const direction = (action.value ?? 'down').toLowerCase() as 'up' | 'down'
+    const ok = await cdpScrollPage(tabId, direction)
+    if (!ok) return null
+    return { action: 'scroll', success: true, result: `Scrolled ${direction} via CDP` }
+  }
+
+  // ── Scroll To (specific element) ───────────────────────────────────────
+  if (action.action === 'scroll_to') {
+    const coords = await resolveElementCoords(tabId, {
+      aiId: action.markerId,
+      selector: action.selector,
+      text: action.value,
+    })
+    if (!coords?.backendNodeId) return null
+    const ok = await cdpScrollIntoView(tabId, coords.backendNodeId)
+    if (!ok) return null
+    return { action: 'scroll_to', success: true, result: 'Scrolled to element via CDP' }
+  }
+
+  // ── Keypress ───────────────────────────────────────────────────────────
+  if (action.action === 'keypress') {
+    const key = action.value ?? action.selector ?? 'Enter'
+    const ok = await cdpPressKey(tabId, key)
+    if (!ok) return null
+    return { action: 'keypress', success: true, result: `Pressed ${key} via CDP` }
+  }
+
+  // ── Select Option ──────────────────────────────────────────────────────
+  if (action.action === 'select_option') {
+    // Click the select, then try to find and click the option
+    const coords = await resolveElementCoords(tabId, {
+      aiId: action.markerId,
+      selector: action.selector,
+    })
+    if (coords) {
+      await cdpClickAt(tabId, coords.x, coords.y)
+      await sleep(200) // wait for dropdown
+    }
+    // Fall through to content script for actual option selection
+    return null
+  }
+
+  return null // action not handled by CDP → fallback
 }
 
 async function executeSingleAction(action: AIAction, tabId: number): Promise<AIActionResult> {
@@ -669,8 +832,14 @@ async function executeSingleAction(action: AIAction, tabId: number): Promise<AIA
     }
   }
 
+  // ── CDP-FIRST: try trusted browser events before content script ──────
+  // CDP clicks are isTrusted:true — they work on Gmail, React, Angular, etc.
+  const cdpResult = await executeSingleActionCDP(action, tabId)
+  if (cdpResult) return cdpResult
+
+  // ── Content script fallback path ────────────────────────────────────────
   if (action.action === 'scroll') {
-    // Scroll can work via CDP even without content script
+    // Scroll can work via CDP even without content script (standalone fallback)
     try {
       const direction = (action.value ?? 'down').toLowerCase()
       const deltaY = direction === 'up' ? -500 : 500
@@ -729,14 +898,28 @@ async function executeSingleAction(action: AIAction, tabId: number): Promise<AIA
       }
 
       // If click reported "no visible change" with coordinates, retry via CDP
-      // CDP produces trusted browser events that frameworks like Google Flights respond to
+      // CDP produces trusted browser events that frameworks like Gmail respond to
       if (action.action === 'click' && response.ok && response.result?.includes('[COORDS:')) {
         const coordMatch = response.result.match(/\[COORDS:(\d+),(\d+)\]/)
         if (coordMatch) {
           const cx = parseInt(coordMatch[1])
           const cy = parseInt(coordMatch[2])
-          await cdpClick(tabId, cx, cy)
-          await sleep(500)
+          // Use CDP actions module if session active, else standalone
+          if (isSessionActive(tabId)) {
+            await cdpClickAt(tabId, cx, cy)
+          } else {
+            try {
+              await chrome.debugger.attach({ tabId }, '1.3').catch(() => {})
+              await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
+                type: 'mousePressed', x: cx, y: cy, button: 'left', clickCount: 1,
+              })
+              await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
+                type: 'mouseReleased', x: cx, y: cy, button: 'left', clickCount: 1,
+              })
+              await chrome.debugger.detach({ tabId }).catch(() => {})
+            } catch { /* ok */ }
+          }
+          await sleep(300)
           result.result = result.result?.replace(/\[COORDS:\d+,\d+\]/, '').replace('WARNING:', 'retried with CDP click.')
         }
       }
@@ -987,6 +1170,15 @@ export async function executeWithFollowUp(
   // Clear any stale cancellation for this tab, then show stop overlay
   clearCancellation(tabId)
   signalActivity(tabId, true)
+
+  // ── Acquire CDP session for the entire automation sequence ──────────
+  // This attaches the debugger ONCE and keeps it attached for all rounds,
+  // avoiding ~100ms attach/detach overhead per action.
+  const cdpSession = await acquireSession(tabId).catch(() => null)
+  if (cdpSession) {
+    console.log(`[LocalAI] CDP session acquired for tab ${tabId} — using trusted events`)
+    invalidateTreeCache() // fresh tree for new sequence
+  }
 
   // Helper: check if current tab is restricted (no DOM interaction possible)
   async function isTabRestricted(): Promise<boolean> {
@@ -1352,6 +1544,12 @@ export async function executeWithFollowUp(
 
   clearCancellation(tabId)
   signalActivity(tabId, false)
+
+  // ── Release CDP session ──────────────────────────────────────────────
+  if (cdpSession) {
+    await releaseSession(tabId).catch(() => {})
+    console.log(`[LocalAI] CDP session released for tab ${tabId}`)
+  }
 
   learnFromExecution(tabId, sessionMessages, allParsedActions, allResults, hadSuccess, hadFailure)
 }

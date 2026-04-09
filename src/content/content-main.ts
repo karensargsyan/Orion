@@ -673,7 +673,7 @@ async function performClick(el: HTMLElement): Promise<{ ok: boolean; result?: st
     }
   }
 
-  await sleep(800)
+  await sleep(200) // reduced from 800ms — CDP is now the primary click path
 
   const postUrl = location.href
   const postTitle = document.title
