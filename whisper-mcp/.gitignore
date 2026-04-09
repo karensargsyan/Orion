@@ -1,0 +1,5 @@
+.venv/
+mlx_models/
+__pycache__/
+*.pyc
+.DS_Store

@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.localai.mempalace-bridge</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/s/my/PrivateWebAssistent/bridge/.venv/bin/python3</string>
+        <string>/Users/s/my/PrivateWebAssistent/bridge/mempalace_bridge.py</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/tmp/mempalace-bridge.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/mempalace-bridge.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>MEMPALACE_PALACE_PATH</key>
+        <string>/Users/s/.mempalace/palace</string>
+    </dict>
+</dict>
+</plist>
