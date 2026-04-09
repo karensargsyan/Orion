@@ -28,15 +28,14 @@ export async function isBraveBrowserAsync(): Promise<boolean> {
  */
 export function getWebSpeechNetworkBlockedMessage(): string {
   const generic =
-    'Web Speech uses Google’s online recognition service; this browser blocked the connection (network, VPN, firewall, or Shields). '
-    + 'Switch to Settings → Speech Recognition → Local Whisper Server for STT on your machine, or fix the connection and retry.'
+    `Web Speech uses Google\u2019s online recognition service; this browser blocked the connection (network, VPN, firewall, or Shields). `
+    + `Switch to Settings \u2192 Speech Recognition \u2192 Local Whisper Server for STT on your machine, or fix the connection and retry.`
 
   if (isLikelyBraveBrowser()) {
     return (
-      'Brave does not provide a different built-in speech-to-text API for extensions—Web Speech still reaches Google’s servers, and Shields often blocks that. '
-      + 'Practical options: (1) Settings → Speech Recognition → Local Whisper Server (recommended; audio stays local and works in Brave). '
-      + '(2) Address bar Brave icon → Shields → turn off for this extension, then retry Web Speech. '
-      + '(3) Use Chrome for Web Speech if you are not running a local Whisper server.'
+      `Brave blocks Google\u2019s speech service by default (even with Shields off). `
+      + `To enable Web Speech in Brave: open brave://flags, search "Web Speech API", set it to Enabled, then restart Brave. `
+      + `Alternative: use Local Whisper Server in Settings \u2192 Speech Recognition (recommended \u2014 audio stays on your machine).`
     )
   }
   return generic

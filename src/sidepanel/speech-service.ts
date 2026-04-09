@@ -57,6 +57,7 @@ function sttErrorDedupeKey(raw: string, formatted: string): string {
 let whisperRecorder: WhisperRecorder | null = null
 let visibleRecognition: BrowserSpeechRecognition | null = null
 let usingVisibleWebSpeech = false
+let fatalSpeechError = false  // set on non-recoverable errors (network, not-allowed) to stop auto-restart
 let microphonePermissionPrimed = false
 let permissionRequestPromise: Promise<void> | null = null
 
@@ -187,6 +188,7 @@ function startVisibleWebSpeech(): void {
   }
 
   usingVisibleWebSpeech = true
+  fatalSpeechError = false
   let pendingTranscript = ''
 
   visibleRecognition.continuous = true
@@ -224,10 +226,24 @@ function startVisibleWebSpeech(): void {
   visibleRecognition.onerror = (event) => {
     const message = event.error ?? 'unknown'
     if (message === 'no-speech' || message === 'aborted') return
+
+    // Network / not-allowed errors are fatal — don't auto-restart
+    if (message === 'network' || message.startsWith('network:')
+        || message === 'service-not-allowed' || message === 'not-allowed') {
+      fatalSpeechError = true
+    }
+
     emitFormattedSttError(String(message))
   }
 
   visibleRecognition.onend = () => {
+    if (fatalSpeechError) {
+      // Fatal error occurred — stop trying, clean up
+      state.listening = false
+      usingVisibleWebSpeech = false
+      visibleRecognition = null
+      return
+    }
     if (state.listening && usingVisibleWebSpeech) {
       try { visibleRecognition?.start() } catch { /* already running */ }
     }

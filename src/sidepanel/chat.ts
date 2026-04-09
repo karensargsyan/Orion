@@ -293,13 +293,25 @@ function wireEvents(state: TabChatState): void {
       }
     })
 
+    // Surface speech errors as dismissible toast above input
+    speech.onError((error) => {
+      nm.classList.remove('recording')
+      lockedRecording = false
+      holdActive = false
+      if (holdTimer) { clearTimeout(holdTimer); holdTimer = null }
+      nm.innerHTML = micSvg
+      nm.title = 'Hold to speak, double-click to lock'
+      showChatToast(state, error, 'error')
+    })
+
     const startMic = () => {
       nm.classList.add('recording')
-      speech.startListening().catch(() => {
+      speech.startListening().catch((err) => {
         nm.classList.remove('recording')
         lockedRecording = false
         nm.innerHTML = micSvg
         nm.title = 'Hold to speak, double-click to lock'
+        showChatToast(state, err.message || 'Failed to start microphone', 'error')
       })
     }
 
@@ -943,6 +955,40 @@ function setStreaming(state: TabChatState, streaming: boolean): void {
 function showTypingIndicator(state: TabChatState, show: boolean): void {
   const el = getTypingIndicator(state)
   if (el) el.style.display = show ? 'flex' : 'none'
+}
+
+/** Show a dismissible toast notification above the input row */
+function showChatToast(state: TabChatState, message: string, type: 'error' | 'info' = 'error'): void {
+  // Remove any existing toast
+  state.container.querySelector('.chat-toast')?.remove()
+
+  const toast = document.createElement('div')
+  toast.className = `chat-toast chat-toast-${type}`
+
+  const icon = type === 'error'
+    ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>'
+    : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>'
+
+  const textEl = document.createElement('span')
+  textEl.className = 'chat-toast-text'
+  textEl.textContent = message
+
+  const closeBtn = document.createElement('button')
+  closeBtn.className = 'chat-toast-close'
+  closeBtn.innerHTML = '&times;'
+  closeBtn.addEventListener('click', () => toast.remove())
+
+  toast.innerHTML = icon
+  toast.appendChild(textEl)
+  toast.appendChild(closeBtn)
+
+  const inputRow = state.container.querySelector('.input-row')
+  if (inputRow) {
+    inputRow.parentNode!.insertBefore(toast, inputRow)
+  }
+
+  // Auto-dismiss after 12 seconds (longer for error messages that may contain instructions)
+  setTimeout(() => { if (toast.parentNode) toast.remove() }, 12000)
 }
 
 // ─── Session management ───────────────────────────────────────────────────────

@@ -398,6 +398,40 @@
       background: rgba(108,92,231,0.08);
     }
 
+    /* Chat toast notifications (errors, info) */
+    .chat-toast {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      padding: 8px 12px;
+      background: rgba(231,76,60,0.08);
+      border-top: 1px solid rgba(231,76,60,0.2);
+      color: #e07060;
+      font-size: 12px;
+      line-height: 1.45;
+      animation: fadeIn 0.2s ease-out;
+      flex-shrink: 0;
+    }
+    .chat-toast svg { flex-shrink: 0; margin-top: 1px; }
+    .chat-toast-info {
+      background: rgba(108,92,231,0.08);
+      border-top-color: rgba(108,92,231,0.2);
+      color: var(--accent);
+    }
+    .chat-toast-text { flex: 1; }
+    .chat-toast-close {
+      background: none;
+      border: none;
+      color: inherit;
+      cursor: pointer;
+      font-size: 16px;
+      padding: 0 2px;
+      opacity: 0.6;
+      flex-shrink: 0;
+      line-height: 1;
+    }
+    .chat-toast-close:hover { opacity: 1; }
+
     /* Mic & attach icon buttons */
     .btn-icon {
       background: none;
