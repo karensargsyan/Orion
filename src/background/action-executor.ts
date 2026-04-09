@@ -3,7 +3,7 @@ import type { AIAction, AIActionResult, Settings, ChatMessage, PageSnapshot, Fil
 import { callAI } from './ai-client'
 import type { StreamPort } from './ai-client'
 import { tabState } from './tab-state'
-import { searchGoogle, openAndReadTab, closeAllResearchTabs, openAndReadMultipleTabs, getResearchTabCount, addTabToAIGroup, removeTabFromAIGroup } from './web-researcher'
+import { searchGoogle, openAndReadTab, closeAllResearchTabs, openAndReadMultipleTabs, getResearchTabCount } from './web-researcher'
 import { sanitizeModelOutput, stripMalformedActions } from '../shared/sanitize-output'
 import { extractTaskPattern, buildCompactSequence, saveOrReinforceSkill, recordSkillFailure } from './skill-manager'
 import { recordActionFailure, recordActionSuccess, recallRelevantMemories } from './mempalace-learner'
@@ -988,9 +988,6 @@ export async function executeWithFollowUp(
   clearCancellation(tabId)
   signalActivity(tabId, true)
 
-  // Add the working tab to the AI tab group so the user can see which tabs the AI is using
-  await addTabToAIGroup(tabId)
-
   // Helper: check if current tab is restricted (no DOM interaction possible)
   async function isTabRestricted(): Promise<boolean> {
     if (tabId <= 0) return true
@@ -1355,9 +1352,6 @@ export async function executeWithFollowUp(
 
   clearCancellation(tabId)
   signalActivity(tabId, false)
-
-  // Remove the working tab from the AI group when automation is done
-  await removeTabFromAIGroup(tabId)
 
   learnFromExecution(tabId, sessionMessages, allParsedActions, allResults, hadSuccess, hadFailure)
 }

@@ -254,16 +254,6 @@ function relayToSttPort(msg: Record<string, unknown>): void {
 // The panel stays open only on tabs where the user opened it; Chrome manages this natively.
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {})
 
-/** Enable sidebar for a specific tab (used by research tabs) */
-async function activateOrionForTab(tabId: number): Promise<void> {
-  await addTabToAIGroup(tabId).catch(() => {})
-  await chrome.sidePanel.setOptions({
-    tabId,
-    path: 'sidepanel/sidepanel.html',
-    enabled: true,
-  }).catch(() => {})
-}
-
 // Capture screenshot when user switches tabs (for page context)
 chrome.tabs.onActivated.addListener(async (info) => {
   const s = await getSettings()
@@ -1184,7 +1174,8 @@ async function handleMessage(
     }
 
     case 'GROUP_ACTIVE_TAB': {
-      // No-op: panel lifecycle is managed by Chrome via openPanelOnActionClick
+      const tid = msg.tabId as number
+      if (tid > 0) await addTabToAIGroup(tid)
       return { ok: true }
     }
 
