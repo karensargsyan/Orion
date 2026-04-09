@@ -121,10 +121,6 @@ export async function initChat(parentContainer: HTMLElement, tabId: number): Pro
       <button class="chip" data-action="rewrite">Rewrite text</button>
     </div>
     <div class="messages chat-messages-tab">
-      <div class="analyzing-state analyzing-state-tab">
-        <div class="analyzing-spinner"></div>
-        <p>Analyzing page capabilities...</p>
-      </div>
     </div>
     <div class="typing-indicator typing-indicator-tab" style="display:none">
       <span></span><span></span><span></span>

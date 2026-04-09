@@ -479,18 +479,204 @@
 
     /* ─── Memory ──────────────────────────────────────────────────────── */
     .memory-container { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
-    .memory-header {
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 12px 14px; border-bottom: 1px solid var(--border);
+
+    /* Search header */
+    .memory-search-header {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-elevated);
+      flex-shrink: 0;
     }
-    .memory-tabs { display: flex; padding: 8px 14px 0; gap: 8px; border-bottom: 1px solid var(--border); }
-    .mem-tab {
-      background: none; border: none; color: var(--text-dim); cursor: pointer;
-      padding: 4px 10px 8px; font-size: 13px; border-bottom: 2px solid transparent;
+    .memory-search-row {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+    .memory-search-input {
+      flex: 1;
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      padding: 9px 12px;
+      font-family: var(--font);
+      font-size: 13px;
+      outline: none;
+      transition: border-color var(--transition);
+    }
+    .memory-search-input:focus { border-color: var(--border-focus); }
+    .memory-search-input::placeholder { color: var(--text-dim); }
+    .btn-memory-search {
+      width: 38px;
+      height: 38px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: var(--radius);
+      padding: 0;
+      flex-shrink: 0;
+    }
+
+    /* View toggle bar */
+    .memory-view-bar {
+      display: flex;
+      padding: 0 12px;
+      gap: 0;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      background: var(--bg-elevated);
+    }
+    .memory-view-btn {
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      color: var(--text-dim);
+      cursor: pointer;
+      padding: 8px 14px;
+      font-size: 12px;
+      font-weight: 500;
       transition: color var(--transition), border-color var(--transition);
     }
-    .mem-tab:hover { color: var(--text); }
-    .mem-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .memory-view-btn:hover { color: var(--text); }
+    .memory-view-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+    /* View panels */
+    .memory-view-panel { display: none; flex: 1; overflow: hidden; flex-direction: column; }
+    .memory-view-panel.active { display: flex; }
+
+    /* AI search area */
+    .memory-ai-area {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    /* Empty state */
+    .memory-empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 40px 20px;
+      flex: 1;
+      color: var(--text-dim);
+    }
+    .memory-empty-icon { margin-bottom: 12px; }
+    .memory-empty-state p { margin: 0 0 6px; font-size: 13px; }
+    .memory-empty-examples { font-size: 11px; color: var(--text-dim); opacity: 0.7; }
+
+    /* Searching indicator */
+    .memory-searching {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 32px 20px;
+      gap: 12px;
+      color: var(--text-dim);
+    }
+    .memory-searching p { margin: 0; font-size: 13px; }
+
+    /* AI response */
+    .memory-ai-response {
+      background: var(--assistant-bubble);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 14px 16px;
+      font-size: 13px;
+      line-height: 1.6;
+      color: var(--text);
+      animation: fadeIn 0.2s ease-out;
+    }
+    .memory-ai-response h1, .memory-ai-response h2, .memory-ai-response h3 { color: var(--text-bright); margin: 8px 0 4px; }
+    .memory-ai-response h1 { font-size: 15px; }
+    .memory-ai-response h2 { font-size: 14px; }
+    .memory-ai-response h3 { font-size: 13px; }
+    .memory-ai-response p { margin: 4px 0; }
+    .memory-ai-response ul, .memory-ai-response ol { padding-left: 18px; margin: 4px 0; }
+    .memory-ai-response code {
+      background: rgba(255,255,255,0.07);
+      padding: 1px 5px;
+      border-radius: 4px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+    }
+    .memory-ai-response a {
+      color: var(--accent);
+      text-decoration: none;
+      word-break: break-all;
+    }
+    .memory-ai-response a:hover { text-decoration: underline; }
+    .memory-ai-response strong { color: var(--text-bright); }
+
+    /* Raw sources (collapsible) */
+    .memory-raw-sources {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    .memory-raw-sources summary {
+      padding: 8px 12px;
+      font-size: 12px;
+      color: var(--text-dim);
+      cursor: pointer;
+      background: var(--bg-surface);
+      transition: color var(--transition);
+    }
+    .memory-raw-sources summary:hover { color: var(--accent); }
+    .memory-raw-sources[open] summary { border-bottom: 1px solid var(--border); }
+    .memory-raw-content { padding: 8px; max-height: 300px; overflow-y: auto; }
+    .memory-raw-entry {
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      margin-bottom: 6px;
+      background: var(--bg-elevated);
+      font-size: 11px;
+    }
+    .raw-entry-meta { display: flex; gap: 6px; align-items: center; margin-bottom: 4px; flex-wrap: wrap; }
+    .raw-entry-url {
+      display: block;
+      color: var(--accent);
+      font-size: 11px;
+      text-decoration: none;
+      word-break: break-all;
+      margin-bottom: 2px;
+      cursor: pointer;
+    }
+    .raw-entry-url:hover { text-decoration: underline; }
+    .raw-entry-content { color: var(--text-dim); font-size: 11px; line-height: 1.4; }
+    .raw-section { margin-top: 8px; }
+    .raw-section-label {
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      margin-bottom: 4px;
+      letter-spacing: 0.04em;
+    }
+    .raw-section-text {
+      font-size: 10px;
+      color: var(--text-dim);
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: rgba(0,0,0,0.2);
+      padding: 8px;
+      border-radius: var(--radius-sm);
+      max-height: 150px;
+      overflow-y: auto;
+    }
+
+    /* Browse view */
+    .memory-browse-header {
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
     .memory-list { flex: 1; overflow-y: auto; padding: 8px; }
     .memory-entry {
       padding: 9px 12px; border-radius: var(--radius); border: 1px solid var(--border);
@@ -508,8 +694,19 @@
     .memory-type-calendar_detected { background: rgba(155,89,182,0.15); color: #9b59b6; }
     .memory-type-learning_snapshot { background: rgba(231,76,60,0.15); color: #e74c3c; }
     .memory-domain { color: var(--text-dim); font-size: 11px; }
+    .memory-importance { color: var(--text-dim); font-size: 11px; }
     .memory-time { color: var(--text-dim); font-size: 11px; margin-left: auto; }
     .memory-content { font-size: 12px; color: var(--text); line-height: 1.5; }
+    .memory-entry-link {
+      display: block;
+      font-size: 11px;
+      color: var(--accent);
+      text-decoration: none;
+      margin-top: 4px;
+      word-break: break-all;
+      cursor: pointer;
+    }
+    .memory-entry-link:hover { text-decoration: underline; }
     .memory-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
     .tag { background: rgba(255,255,255,0.06); border-radius: 4px; padding: 1px 6px; font-size: 10px; color: var(--text-dim); }
 
@@ -958,7 +1155,83 @@
       font-size: 10px;
     }
 
-    /* ─── Analyzing State ────────────────────────────────────── */
+    /* ─── Capability Badges ─────────────────────────────────── */
+    .capability-badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 12px;
+    }
+    .cap-badge {
+      font-size: 11px;
+      padding: 3px 10px;
+      border-radius: 12px;
+      font-weight: 500;
+      letter-spacing: 0.02em;
+    }
+    .cap-badge.cap-yes {
+      background: rgba(46,204,113,0.12);
+      color: var(--color-success);
+      border: 1px solid rgba(46,204,113,0.25);
+    }
+    .cap-badge.cap-no {
+      background: rgba(107,112,132,0.1);
+      color: var(--text-dim);
+      border: 1px solid var(--border);
+    }
+    .cap-badge.cap-info {
+      background: var(--accent-bg);
+      color: var(--accent);
+      border: 1px solid rgba(108,92,231,0.25);
+    }
+
+    /* ─── Settings enhancements ──────────────────────────────── */
+    .url-format-hint {
+      margin-top: 4px !important;
+      line-height: 1.5;
+    }
+    .url-format-hint code {
+      background: rgba(255,255,255,0.07);
+      padding: 1px 5px;
+      border-radius: 4px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+    }
+    .url-format-hint strong {
+      color: var(--color-warning);
+    }
+    .optional-tag {
+      font-size: 9px;
+      color: var(--text-dim);
+      text-transform: none;
+      font-weight: 400;
+      letter-spacing: 0;
+      margin-left: 4px;
+    }
+    .disconnected-bar {
+      border: 1px dashed var(--border);
+      background: transparent;
+    }
+    .connection-badge.disconnected {
+      background: rgba(107,112,132,0.15);
+      color: var(--text-dim);
+    }
+    .btn-test-action {
+      min-width: 60px;
+      text-align: center;
+      transition: background var(--transition), color var(--transition), border-color var(--transition);
+    }
+    .btn-test-action:disabled {
+      opacity: 0.6;
+      cursor: wait;
+    }
+    .settings-form a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+    .settings-form a:hover {
+      text-decoration: underline;
+    }
 
     /* ─── Learning Mode ──────────────────────────────────────── */
     .learning-bar {

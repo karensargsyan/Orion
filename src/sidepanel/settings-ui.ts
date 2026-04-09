@@ -50,26 +50,28 @@ export async function initSettings(container: HTMLElement): Promise<void> {
         <div class="form-group">
           <label>Server URL</label>
           <div class="input-row-inline">
-            <input type="text" id="lm-url" value="${esc(s.lmStudioUrl ?? '')}" placeholder="http://localhost:1234/v1">
-            <button id="btn-test-connection" class="btn-small">Test</button>
+            <input type="text" id="lm-url" value="${esc(normalizeLocalUrl(s.lmStudioUrl ?? ''))}" placeholder="http://localhost:1234">
+            <button id="btn-test-connection" class="btn-small btn-test-action">Test</button>
           </div>
+          <p class="hint-text url-format-hint">Enter your server's base URL <strong>without</strong> <code>/v1</code> &mdash; Orion adds it automatically.<br>Examples: <code>http://localhost:1234</code> &middot; <code>http://localhost:11434</code> (Ollama)</p>
           <p id="connection-status" class="hint-text"></p>
         </div>
         <div class="form-group">
-          <label>Auth Token</label>
-          <input type="password" id="auth-token" value="${esc(s.authToken ?? '')}" placeholder="Optional">
+          <label>Auth Token <span class="optional-tag">optional</span></label>
+          <input type="password" id="auth-token" value="${esc(s.authToken ?? '')}" placeholder="Leave empty if not required">
         </div>
         <div class="form-group">
           <label>Model</label>
           <div class="input-row-inline">
             <select id="lm-model">
               <option value="${esc(s.lmStudioModel ?? '')}">
-                ${s.lmStudioModel ? esc(s.lmStudioModel) : '- click Refresh -'}
+                ${s.lmStudioModel ? esc(s.lmStudioModel) : '- Test connection first -'}
               </option>
             </select>
             <button id="btn-refresh-models" class="btn-small">Refresh</button>
           </div>
         </div>
+        ${renderCapabilityBadges(s.apiCapabilities)}
         <div class="form-actions">
           <button id="btn-re-probe" class="btn-small">Re-detect Capabilities</button>
           <p id="probe-status" class="hint-text"></p>
@@ -82,8 +84,9 @@ export async function initSettings(container: HTMLElement): Promise<void> {
           <label>API Key</label>
           <div class="input-row-inline">
             <input type="password" id="gemini-api-key" value="${esc(s.geminiApiKey ?? '')}" placeholder="AIza...">
-            <button id="btn-test-gemini" class="btn-small">Test</button>
+            <button id="btn-test-gemini" class="btn-small btn-test-action">Test</button>
           </div>
+          <p class="hint-text">Get a key at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com</a></p>
           <p id="gemini-status" class="hint-text"></p>
         </div>
         <div class="form-group">
@@ -101,7 +104,12 @@ export async function initSettings(container: HTMLElement): Promise<void> {
         <h3>OpenAI</h3>
         <div class="form-group">
           <label>API Key</label>
-          <input type="password" id="openai-api-key" value="${esc(s.openaiApiKey ?? '')}" placeholder="sk-...">
+          <div class="input-row-inline">
+            <input type="password" id="openai-api-key" value="${esc(s.openaiApiKey ?? '')}" placeholder="sk-...">
+            <button id="btn-test-openai" class="btn-small btn-test-action">Test</button>
+          </div>
+          <p class="hint-text">Get a key at <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">platform.openai.com</a></p>
+          <p id="openai-status" class="hint-text"></p>
         </div>
         <div class="form-group">
           <label>Model</label>
@@ -115,7 +123,12 @@ export async function initSettings(container: HTMLElement): Promise<void> {
         <h3>Anthropic Claude</h3>
         <div class="form-group">
           <label>API Key</label>
-          <input type="password" id="anthropic-api-key" value="${esc(s.anthropicApiKey ?? '')}" placeholder="sk-ant-...">
+          <div class="input-row-inline">
+            <input type="password" id="anthropic-api-key" value="${esc(s.anthropicApiKey ?? '')}" placeholder="sk-ant-...">
+            <button id="btn-test-anthropic" class="btn-small btn-test-action">Test</button>
+          </div>
+          <p class="hint-text">Get a key at <a href="https://console.anthropic.com/" target="_blank" rel="noopener">console.anthropic.com</a></p>
+          <p id="anthropic-status" class="hint-text"></p>
         </div>
         <div class="form-group">
           <label>Model</label>
@@ -387,15 +400,34 @@ async function refreshMicPermissionStatusLine(container: HTMLElement): Promise<v
   }
 }
 
+function normalizeLocalUrl(url: string): string {
+  return url.replace(/\/v1\/?$/, '').replace(/\/+$/, '')
+}
+
 function renderConnectionInfo(s: Settings): string {
   const caps = s.apiCapabilities
-  if (!caps) return '<div id="connection-info-bar" class="connection-info"></div>'
+  if (!caps) return '<div id="connection-info-bar" class="connection-info disconnected-bar"><span class="connection-badge disconnected">Not connected</span><span class="hint-text" id="provider-status">Click Test to check your server</span></div>'
   return `
     <div id="connection-info-bar" class="connection-info">
       <span class="connection-badge connected">Connected</span>
       <span class="hint-text" id="provider-status">${esc(caps.serverType)} &middot; ${caps.availableModels.length} model(s) &middot; ${caps.apiFormat}</span>
     </div>
   `
+}
+
+function renderCapabilityBadges(caps?: APICapabilities): string {
+  if (!caps || caps.availableModels.length === 0) return '<div id="capability-badges" class="capability-badges"></div>'
+  const badges: string[] = []
+  if (caps.supportsVision) badges.push('<span class="cap-badge cap-yes" title="Model supports image input">&#x1f441; Vision</span>')
+  else badges.push('<span class="cap-badge cap-no" title="Model does not support images">Vision</span>')
+  if (caps.supportsReasoning) badges.push('<span class="cap-badge cap-yes" title="Model supports reasoning/thinking">&#x1f9e0; Reasoning</span>')
+  if ((caps as unknown as Record<string, unknown>).contextWindowTokens) {
+    const ctx = (caps as unknown as Record<string, number>).contextWindowTokens
+    const label = ctx >= 1024 ? `${Math.round(ctx / 1024)}K` : `${ctx}`
+    badges.push(`<span class="cap-badge cap-info" title="Context window">${label} ctx</span>`)
+  }
+  if (badges.length === 0) return '<div id="capability-badges" class="capability-badges"></div>'
+  return `<div id="capability-badges" class="capability-badges">${badges.join('')}</div>`
 }
 
 function renderGeminiModelOptions(selected?: string): string {
@@ -449,38 +481,63 @@ function wireSTTProviderToggle(container: HTMLElement): void {
 
 function wireSettingsEvents(container: HTMLElement, s: Settings): void {
   container.querySelector('#btn-test-connection')?.addEventListener('click', async () => {
-    const url = (container.querySelector('#lm-url') as HTMLInputElement).value.trim()
+    const rawUrl = (container.querySelector('#lm-url') as HTMLInputElement).value.trim()
+    const url = normalizeLocalUrl(rawUrl)
+    // Auto-fix the input field if user entered /v1
+    if (rawUrl !== url) (container.querySelector('#lm-url') as HTMLInputElement).value = url
     const token = (container.querySelector('#auth-token') as HTMLInputElement).value.trim()
     const statusEl = container.querySelector('#connection-status') as HTMLElement
+    const testBtn = container.querySelector('#btn-test-connection') as HTMLButtonElement
     statusEl.textContent = 'Testing...'
-    const res = await chrome.runtime.sendMessage({ type: MSG.MODELS_LIST, url, authToken: token }) as { ok: boolean; models: string[] }
-    if (res.models?.length > 0) {
-      statusEl.textContent = `Connected! ${res.models.length} model(s) available.`
-      statusEl.style.color = 'var(--color-success)'
-      // Also probe capabilities and update the status bar
-      const probe = await chrome.runtime.sendMessage({ type: MSG.PROBE_ENDPOINT, url, authToken: token || undefined }) as { ok: boolean; capabilities?: APICapabilities }
-      if (probe.ok && probe.capabilities) {
-        await chrome.runtime.sendMessage({ type: MSG.SETTINGS_SET, partial: { apiCapabilities: probe.capabilities } })
-        const probeEl = container.querySelector('#probe-status') as HTMLElement
-        if (probeEl) {
-          probeEl.textContent = `Detected: ${probe.capabilities.serverType}, ${probe.capabilities.availableModels.length} models, format: ${probe.capabilities.apiFormat}`
-          probeEl.style.color = 'var(--color-success)'
+    statusEl.style.color = ''
+    testBtn.disabled = true
+    testBtn.textContent = 'Testing...'
+    try {
+      const res = await chrome.runtime.sendMessage({ type: MSG.MODELS_LIST, url, authToken: token }) as { ok: boolean; models: string[] }
+      if (res.models?.length > 0) {
+        statusEl.textContent = `Connected! ${res.models.length} model(s) available.`
+        statusEl.style.color = 'var(--color-success)'
+        // Auto-populate model dropdown
+        const select = container.querySelector('#lm-model') as HTMLSelectElement
+        select.innerHTML = res.models.map(m =>
+          `<option value="${esc(m)}" ${m === s.lmStudioModel ? 'selected' : ''}>${esc(m)}</option>`
+        ).join('')
+        // Also probe capabilities and update the status bar
+        const probe = await chrome.runtime.sendMessage({ type: MSG.PROBE_ENDPOINT, url, authToken: token || undefined }) as { ok: boolean; capabilities?: APICapabilities }
+        if (probe.ok && probe.capabilities) {
+          await chrome.runtime.sendMessage({ type: MSG.SETTINGS_SET, partial: { apiCapabilities: probe.capabilities } })
+          const probeEl = container.querySelector('#probe-status') as HTMLElement
+          if (probeEl) {
+            probeEl.textContent = `Detected: ${probe.capabilities.serverType}, ${probe.capabilities.availableModels.length} models, format: ${probe.capabilities.apiFormat}`
+            probeEl.style.color = 'var(--color-success)'
+          }
+          // Update the header status
+          const infoBar = container.querySelector('#connection-info-bar') as HTMLElement
+          if (infoBar) {
+            infoBar.className = 'connection-info'
+            infoBar.innerHTML = `<span class="connection-badge connected">Connected</span><span class="hint-text" id="provider-status">${esc(probe.capabilities.serverType)} · ${res.models.length} model(s) · ${esc(probe.capabilities.apiFormat)}</span>`
+          }
+          // Update capability badges
+          const badgesEl = container.querySelector('#capability-badges') as HTMLElement
+          if (badgesEl) {
+            badgesEl.outerHTML = renderCapabilityBadges(probe.capabilities)
+          }
         }
-        // Update the header status
-        const headerStatus = container.querySelector('#provider-status') as HTMLElement
-        if (headerStatus) {
-          headerStatus.textContent = `${probe.capabilities.serverType} · ${res.models.length} model(s) · ${probe.capabilities.apiFormat}`
-          headerStatus.style.color = 'var(--color-success)'
-        }
+      } else {
+        statusEl.innerHTML = 'Could not connect. Make sure your server is running and the URL is correct.<br><small>Expected: <code>http://localhost:1234</code> (no <code>/v1</code> suffix)</small>'
+        statusEl.style.color = 'var(--color-error)'
       }
-    } else {
-      statusEl.textContent = 'Could not connect. Check URL and server.'
+    } catch (e) {
+      statusEl.textContent = `Connection failed: ${e instanceof Error ? e.message : String(e)}`
       statusEl.style.color = 'var(--color-error)'
+    } finally {
+      testBtn.disabled = false
+      testBtn.textContent = 'Test'
     }
   })
 
   container.querySelector('#btn-refresh-models')?.addEventListener('click', async () => {
-    const url = (container.querySelector('#lm-url') as HTMLInputElement).value.trim()
+    const url = normalizeLocalUrl((container.querySelector('#lm-url') as HTMLInputElement).value.trim())
     const token = (container.querySelector('#auth-token') as HTMLInputElement).value.trim()
     const res = await chrome.runtime.sendMessage({ type: MSG.MODELS_LIST, url, authToken: token }) as { ok: boolean; models: string[] }
     const select = container.querySelector('#lm-model') as HTMLSelectElement
@@ -490,23 +547,26 @@ function wireSettingsEvents(container: HTMLElement, s: Settings): void {
   })
 
   container.querySelector('#btn-re-probe')?.addEventListener('click', async () => {
-    const url = (container.querySelector('#lm-url') as HTMLInputElement).value.trim()
+    const url = normalizeLocalUrl((container.querySelector('#lm-url') as HTMLInputElement).value.trim())
     const token = (container.querySelector('#auth-token') as HTMLInputElement).value.trim()
     const statusEl = container.querySelector('#probe-status') as HTMLElement
     statusEl.textContent = 'Probing...'
+    statusEl.style.color = ''
     const res = await chrome.runtime.sendMessage({ type: MSG.PROBE_ENDPOINT, url, authToken: token || undefined }) as { ok: boolean; capabilities?: APICapabilities; error?: string }
     if (res.ok && res.capabilities) {
       statusEl.textContent = `Detected: ${res.capabilities.serverType}, ${res.capabilities.availableModels.length} models, format: ${res.capabilities.apiFormat}`
       statusEl.style.color = 'var(--color-success)'
       await chrome.runtime.sendMessage({ type: MSG.SETTINGS_SET, partial: { apiCapabilities: res.capabilities } })
       // Update the header bar
-      const headerStatus = container.querySelector('#provider-status') as HTMLElement
-      if (headerStatus) {
-        headerStatus.textContent = `${res.capabilities.serverType} · ${res.capabilities.availableModels.length} model(s) · ${res.capabilities.apiFormat}`
-      }
       const infoBar = container.querySelector('#connection-info-bar') as HTMLElement
-      if (infoBar && !infoBar.querySelector('.connection-badge')) {
-        infoBar.innerHTML = `<span class="connection-badge connected">Connected</span><span class="hint-text" id="provider-status">${res.capabilities.serverType} · ${res.capabilities.availableModels.length} model(s) · ${res.capabilities.apiFormat}</span>`
+      if (infoBar) {
+        infoBar.className = 'connection-info'
+        infoBar.innerHTML = `<span class="connection-badge connected">Connected</span><span class="hint-text" id="provider-status">${esc(res.capabilities.serverType)} · ${res.capabilities.availableModels.length} model(s) · ${esc(res.capabilities.apiFormat)}</span>`
+      }
+      // Update capability badges
+      const badgesEl = container.querySelector('#capability-badges') as HTMLElement
+      if (badgesEl) {
+        badgesEl.outerHTML = renderCapabilityBadges(res.capabilities)
       }
     } else {
       statusEl.textContent = `Failed: ${res.error || 'Unknown'}`
@@ -549,10 +609,67 @@ function wireSettingsEvents(container: HTMLElement, s: Settings): void {
     }
   })
 
+  container.querySelector('#btn-test-openai')?.addEventListener('click', async () => {
+    const apiKey = (container.querySelector('#openai-api-key') as HTMLInputElement).value.trim()
+    const statusEl = container.querySelector('#openai-status') as HTMLElement
+    if (!apiKey) { statusEl.textContent = 'Enter an API key first.'; statusEl.style.color = 'var(--color-error)'; return }
+    statusEl.textContent = 'Testing...'
+    statusEl.style.color = ''
+    try {
+      const res = await fetch('https://api.openai.com/v1/models', { headers: { 'Authorization': `Bearer ${apiKey}` } })
+      if (res.ok) {
+        const data = await res.json()
+        const count = data?.data?.length ?? 0
+        statusEl.textContent = `Connected! ${count} models available.`
+        statusEl.style.color = 'var(--color-success)'
+      } else {
+        const text = await res.text()
+        statusEl.textContent = `Error ${res.status}: ${text.slice(0, 100)}`
+        statusEl.style.color = 'var(--color-error)'
+      }
+    } catch (e) {
+      statusEl.textContent = `Connection failed: ${e instanceof Error ? e.message : String(e)}`
+      statusEl.style.color = 'var(--color-error)'
+    }
+  })
+
+  container.querySelector('#btn-test-anthropic')?.addEventListener('click', async () => {
+    const apiKey = (container.querySelector('#anthropic-api-key') as HTMLInputElement).value.trim()
+    const statusEl = container.querySelector('#anthropic-status') as HTMLElement
+    if (!apiKey) { statusEl.textContent = 'Enter an API key first.'; statusEl.style.color = 'var(--color-error)'; return }
+    statusEl.textContent = 'Testing...'
+    statusEl.style.color = ''
+    try {
+      const model = (container.querySelector('#anthropic-model') as HTMLSelectElement).value || 'claude-3-5-haiku-20241022'
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json',
+          'anthropic-dangerous-direct-browser-access': 'true',
+        },
+        body: JSON.stringify({ model, max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] }),
+      })
+      if (res.ok) {
+        statusEl.textContent = 'Connected! API key is valid.'
+        statusEl.style.color = 'var(--color-success)'
+      } else {
+        const text = await res.text()
+        statusEl.textContent = `Error ${res.status}: ${text.slice(0, 100)}`
+        statusEl.style.color = 'var(--color-error)'
+      }
+    } catch (e) {
+      statusEl.textContent = `Connection failed: ${e instanceof Error ? e.message : String(e)}`
+      statusEl.style.color = 'var(--color-error)'
+    }
+  })
+
   container.querySelector('#btn-save-settings')?.addEventListener('click', async () => {
+    const rawLocalUrl = (container.querySelector('#lm-url') as HTMLInputElement).value.trim()
     const partial: Partial<Settings> = {
       activeProvider: (container.querySelector('#active-provider') as HTMLSelectElement).value as Settings['activeProvider'],
-      lmStudioUrl: (container.querySelector('#lm-url') as HTMLInputElement).value.trim(),
+      lmStudioUrl: normalizeLocalUrl(rawLocalUrl),
       lmStudioModel: (container.querySelector('#lm-model') as HTMLSelectElement).value,
       authToken: (container.querySelector('#auth-token') as HTMLInputElement).value.trim(),
       rateLimitRpm: Number((container.querySelector('#rate-limit') as HTMLInputElement).value),

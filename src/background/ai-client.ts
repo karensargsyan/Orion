@@ -127,7 +127,7 @@ function resolveProvider(settings: Settings): { format: 'openai' | 'anthropic' |
     default: {
       const caps = settings.apiCapabilities
       const format = caps?.apiFormat === 'anthropic' ? 'anthropic' as const : 'openai' as const
-      const baseUrl = (caps?.baseUrl || settings.lmStudioUrl).replace(/\/+$/, '')
+      const baseUrl = (caps?.baseUrl || settings.lmStudioUrl).replace(/\/v1\/?$/, '').replace(/\/+$/, '')
       return {
         format,
         baseUrl,
@@ -548,7 +548,7 @@ export async function callAI(
 // ─── Fetch models ─────────────────────────────────────────────────────────────
 
 export async function fetchModels(baseUrl: string, authToken?: string): Promise<string[]> {
-  const url = baseUrl.replace(/\/+$/, '')
+  const url = baseUrl.replace(/\/v1\/?$/, '').replace(/\/+$/, '')
   const headers: Record<string, string> = {}
   if (authToken) headers['Authorization'] = `Bearer ${authToken}`
 

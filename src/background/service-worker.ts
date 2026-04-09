@@ -513,10 +513,15 @@ chrome.runtime.onConnect.addListener((port) => {
         await handleAIRewrite(msg, s, streamPort)
       }
 
+      if (msg.type === MSG.AI_MEMORY_SEARCH) {
+        await handleAIMemorySearch(msg, s, streamPort)
+      }
+
       if (msg.type === MSG.AI_ABORT) {
         const abortTabId = msg.tabId as number ?? 0
         abortStream(abortTabId)
         abortStream(`recall_${abortTabId}`)
+        abortStream(`memsearch_${abortTabId}`)
         cancelAutomation(abortTabId)
       }
 
@@ -899,6 +904,88 @@ async function handleAIRecall(
 
       await streamChat(messages, s, port, `recall_${tabId}`)
     }
+
+// ── AI Memory Search ─────────────────────────────────────────────────────────
+
+const MEMORY_SEARCH_SYSTEM_PROMPT = `You are a memory search assistant for the Orion browser assistant.
+The user is searching their browsing history and saved memories. Your job is to find and present the most relevant results.
+
+RULES:
+- Format every URL as a clickable markdown link: [Page Title or description](url)
+- Include when the page was visited (date/time) if available
+- NEVER fabricate or guess URLs — only use URLs that appear in the provided context
+- When the query is vague, use all context clues (domain names, page content, timestamps) to identify the best match
+- Present the BEST match first, then alternatives if any exist
+- If nothing matches, say so honestly — do not make up results
+- Be concise — the user wants the link/data, not a long explanation
+- If multiple results match, present them as a numbered list with dates and domains`
+
+async function handleAIMemorySearch(
+  msg: Record<string, unknown>,
+  s: Settings,
+  port: StreamPort
+): Promise<void> {
+  const query = msg.query as string ?? ''
+  const tabId = msg.tabId as number ?? 0
+
+  if (!query.trim()) {
+    port.postMessage({ type: MSG.STREAM_ERROR, error: 'Please enter a search query.' })
+    return
+  }
+
+  // Parallel search: IDB text search + MemPalace semantic search + URL-rich session memory
+  const [idbResults, mempalaceResults, sessionEntries] = await Promise.all([
+    searchAllHistory(query).catch(() => ''),
+    mempalaceEnabled(s)
+      ? searchMempalace(s, query, { limit: 8 }).catch(() => '')
+      : Promise.resolve(''),
+    getRecentSessionMemory(80).catch(() => [] as Awaited<ReturnType<typeof getRecentSessionMemory>>),
+  ])
+
+  // Build URL context from session entries
+  const urlEntries = sessionEntries
+    .filter(e => e.url && e.url.startsWith('http'))
+    .map(e => ({
+      date: new Date(e.timestamp).toLocaleDateString(),
+      type: e.type,
+      domain: extractDomain(e.url),
+      url: e.url,
+      content: e.content.slice(0, 200),
+    }))
+
+  const urlContext = urlEntries
+    .map(e => `[${e.date} | ${e.type} | ${e.domain}] ${e.url} -- ${e.content}`)
+    .join('\n')
+    .slice(0, 4000)
+
+  // Send raw results to UI for collapsible display
+  port.postMessage({
+    type: MSG.MEMORY_SEARCH_CONTEXT,
+    idbResults: idbResults.slice(0, 3000),
+    mempalaceResults: mempalaceResults.slice(0, 3000),
+    urlEntries: urlEntries.slice(0, 30),
+  })
+
+  // Build combined context for AI
+  const sections: string[] = []
+  if (urlContext) sections.push(`## Browsing History (URLs and pages visited)\n${urlContext}`)
+  if (idbResults) sections.push(`## Text Search Results\n${idbResults.slice(0, 2500)}`)
+  if (mempalaceResults) sections.push(`## Semantic Memory (MemPalace)\n${mempalaceResults.slice(0, 2500)}`)
+
+  const combinedContext = sections.join('\n\n').slice(0, 8000)
+
+  if (!combinedContext.trim()) {
+    port.postMessage({ type: MSG.STREAM_END, fullText: 'No results found in your browsing history or memory for this query.' })
+    return
+  }
+
+  const messages: Pick<ChatMessage, 'role' | 'content'>[] = [
+    { role: 'system', content: MEMORY_SEARCH_SYSTEM_PROMPT },
+    { role: 'user', content: `Memory context:\n${combinedContext}\n\nSearch query: ${query}` },
+  ]
+
+  await streamChat(messages, s, port, `memsearch_${tabId}`)
+}
 
 async function handleAIRewrite(
   msg: Record<string, unknown>,

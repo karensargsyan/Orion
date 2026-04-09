@@ -4,12 +4,11 @@ import { initSettings } from './settings-ui'
 import { initMemory } from './memory-ui'
 import { initOnboarding } from './onboarding-ui'
 import { initStats } from './stats-ui'
-import { initSearch } from './search-ui'
 import { MSG } from '../shared/constants'
 import type { Settings } from '../shared/types'
 import * as speech from './speech-service'
 
-type TabId = 'chat' | 'search' | 'history' | 'vault' | 'memory' | 'insights' | 'settings'
+type TabId = 'chat' | 'history' | 'vault' | 'memory' | 'insights' | 'settings'
 let activeTab: TabId = 'chat'
 let currentTabId = 0
 
@@ -25,10 +24,9 @@ function switchTab(tab: TabId): void {
   })
 
   if (tab === 'chat') initChat(document.getElementById('panel-chat')!, currentTabId)
-  if (tab === 'search') initSearch(document.getElementById('panel-search')!, currentTabId)
   if (tab === 'history') initHistory()
   if (tab === 'vault') initVault(document.getElementById('panel-vault')!)
-  if (tab === 'memory') initMemory(document.getElementById('panel-memory')!)
+  if (tab === 'memory') initMemory(document.getElementById('panel-memory')!, currentTabId)
   if (tab === 'insights') initStats(document.getElementById('panel-insights')!)
   if (tab === 'settings') initSettings(document.getElementById('panel-settings')!)
 }
@@ -97,8 +95,11 @@ async function init(): Promise<void> {
     }
   } catch { /* sidepanel context */ }
 
-  const res = await chrome.runtime.sendMessage({ type: MSG.SETTINGS_GET }) as { ok: boolean; settings: Settings }
-  const s = res.ok ? res.settings : null
+  let s: Settings | null = null
+  try {
+    const res = await chrome.runtime.sendMessage({ type: MSG.SETTINGS_GET }) as { ok: boolean; settings: Settings }
+    s = res.ok ? res.settings : null
+  } catch { /* settings not available yet */ }
 
   // Skip onboarding — mark as complete if not already
   if (!s?.onboardingComplete) {
@@ -106,11 +107,13 @@ async function init(): Promise<void> {
   }
 
   // Check if a model is configured — if not, open settings first
+  // When s is null (first ever launch), or no provider configured → go to settings
+  const provider = s?.activeProvider || 'local'
   const hasModel = !!(
-    (s?.activeProvider === 'local' && s?.lmStudioUrl) ||
-    (s?.activeProvider === 'gemini' && s?.geminiApiKey) ||
-    (s?.activeProvider === 'openai' && s?.openaiApiKey) ||
-    (s?.activeProvider === 'anthropic' && s?.anthropicApiKey)
+    (provider === 'local' && s?.lmStudioUrl) ||
+    (provider === 'gemini' && s?.geminiApiKey) ||
+    (provider === 'openai' && s?.openaiApiKey) ||
+    (provider === 'anthropic' && s?.anthropicApiKey)
   )
 
   showMainUI(hasModel ? 'chat' : 'settings')
@@ -155,16 +158,12 @@ function showMainUI(startTab: TabId = 'chat'): void {
       <button type="button" class="btn-small btn-primary" id="btn-learning-feedback-dismiss">Got it</button>
     </div>
     <nav class="tab-bar">
-      <button class="tab-btn active" data-tab="chat" title="Chat">
+      <button class="tab-btn${startTab === 'chat' ? ' active' : ''}" data-tab="chat" title="Chat">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
         <span>Chat</span>
       </button>
-      <button class="tab-btn" data-tab="search" title="Search & Ask">
+      <button class="tab-btn" data-tab="memory" title="Memory & Search">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
-        <span>Search</span>
-      </button>
-      <button class="tab-btn" data-tab="memory" title="Memory">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z"></path><path d="M12 6v6l4 2"></path></svg>
         <span>Memory</span>
       </button>
       <button class="tab-btn" data-tab="insights" title="Insights">
@@ -179,7 +178,7 @@ function showMainUI(startTab: TabId = 'chat'): void {
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg>
         <span>History</span>
       </button>
-      <button class="tab-btn" data-tab="settings" title="Settings">
+      <button class="tab-btn${startTab === 'settings' ? ' active' : ''}" data-tab="settings" title="Settings">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"></path></svg>
         <span>Settings</span>
       </button>
@@ -188,13 +187,12 @@ function showMainUI(startTab: TabId = 'chat'): void {
         <span>Learn</span>
       </button>
     </nav>
-    <div id="panel-chat" class="panel active"></div>
-    <div id="panel-search" class="panel"></div>
+    <div id="panel-chat" class="panel${startTab === 'chat' ? ' active' : ''}"></div>
     <div id="panel-memory" class="panel"></div>
     <div id="panel-insights" class="panel"></div>
     <div id="panel-vault" class="panel"></div>
     <div id="panel-history" class="panel"></div>
-    <div id="panel-settings" class="panel"></div>
+    <div id="panel-settings" class="panel${startTab === 'settings' ? ' active' : ''}"></div>
   `
 
   document.querySelectorAll<HTMLElement>('.tab-btn:not(.learning-btn)').forEach(btn => {
