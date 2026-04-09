@@ -272,6 +272,46 @@
     }
     .msg-action:hover { color: var(--text-bright); }
 
+    /* Inline cancel/stop button on streaming AI response */
+    .stream-cancel-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      margin-top: 8px;
+      padding: 4px 12px;
+      background: rgba(231,76,60,0.08);
+      border: 1px solid rgba(231,76,60,0.25);
+      border-radius: var(--radius-sm);
+      color: #e07060;
+      font-size: 11px;
+      font-family: var(--font);
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+      animation: fadeIn 0.3s ease-out;
+    }
+    .stream-cancel-btn:hover {
+      background: rgba(231,76,60,0.18);
+      color: #ff6b6b;
+    }
+    .message.streaming {
+      border-color: var(--accent);
+      border-style: solid;
+    }
+
+    /* Message timestamp on hover */
+    .message[data-time]::after {
+      content: attr(data-time);
+      display: block;
+      font-size: 10px;
+      color: var(--text-dim);
+      opacity: 0;
+      transition: opacity 0.15s;
+      margin-top: 2px;
+    }
+    .message-user[data-time]::after { text-align: right; }
+    .message-assistant[data-time]::after { text-align: left; }
+    .message[data-time]:hover::after { opacity: 0.6; }
+
     .typing-indicator {
       display: flex;
       gap: 4px;
@@ -309,8 +349,30 @@
       border-radius: var(--radius-sm);
       overflow-x: auto;
       margin: 6px 0;
+      position: relative;
     }
     .message-assistant pre code { background: none; padding: 0; }
+    /* Copy button on code blocks */
+    .code-copy-btn {
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 3px 6px;
+      cursor: pointer;
+      color: var(--text-dim);
+      font-size: 11px;
+      opacity: 0;
+      transition: opacity 0.15s, color 0.15s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      line-height: 1;
+    }
+    pre:hover .code-copy-btn { opacity: 1; }
+    .code-copy-btn:hover { color: var(--accent); border-color: var(--accent); }
     .message-assistant a { color: var(--accent); text-decoration: none; }
     .message-assistant a:hover { text-decoration: underline; }
     .message-assistant strong { color: var(--text-bright); }
@@ -355,17 +417,43 @@
       color: #e74c3c;
       animation: micPulse 0.8s ease-in-out infinite;
     }
-    /* Locked recording (double-click): solid red bg with stop icon */
+    /* Locked recording (double-click): red bg with sound waves + glow */
     .btn-icon.recording[title="Click to stop recording"] {
       background: #e74c3c;
       color: white;
       border-radius: 8px;
-      animation: micPulseLocked 1.5s ease-in-out infinite;
+      animation: micGlowLocked 1.5s ease-in-out infinite;
+      box-shadow: 0 0 8px rgba(231,76,60,0.5);
     }
     @keyframes micPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
-    @keyframes micPulseLocked {
-      0%,100% { background: #e74c3c; }
-      50% { background: #c0392b; }
+    @keyframes micGlowLocked {
+      0%,100% { box-shadow: 0 0 6px rgba(231,76,60,0.4); background: #e74c3c; }
+      50% { box-shadow: 0 0 16px rgba(231,76,60,0.8), 0 0 28px rgba(231,76,60,0.3); background: #c0392b; }
+    }
+    /* Sound wave bars for locked mic recording */
+    .mic-waves {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 2px;
+      width: 16px;
+      height: 16px;
+    }
+    .mic-waves span {
+      width: 2.5px;
+      height: 14px;
+      background: currentColor;
+      border-radius: 1px;
+      transform-origin: center;
+      animation: micWave 1.2s ease-in-out infinite;
+    }
+    .mic-waves span:nth-child(1) { animation-delay: 0s; }
+    .mic-waves span:nth-child(2) { animation-delay: 0.15s; }
+    .mic-waves span:nth-child(3) { animation-delay: 0.3s; }
+    .mic-waves span:nth-child(4) { animation-delay: 0.45s; }
+    @keyframes micWave {
+      0%, 100% { transform: scaleY(0.3); }
+      50% { transform: scaleY(1); }
     }
 
     /* Attachment preview bar */

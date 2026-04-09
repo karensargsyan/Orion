@@ -199,6 +199,11 @@ function wireEvents(state: TabChatState): void {
       sendMessage(state)
       return
     }
+    if (e.key === 'Escape' && state.isStreaming) {
+      e.preventDefault()
+      stopStream(state)
+      return
+    }
     if (e.key === 'ArrowUp' && newInput.value === '' && !state.isStreaming) {
       e.preventDefault()
       editLastUserMessage(state)
@@ -267,7 +272,7 @@ function wireEvents(state: TabChatState): void {
 
     // Save original mic SVG for restoring later
     const micSvg = nm.innerHTML
-    const stopSvg = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="4" y="4" width="16" height="16" rx="2"></rect></svg>'
+    const wavesHtml = '<span class="mic-waves"><span></span><span></span><span></span><span></span></span>'
 
     let lockedRecording = false   // true = permanent recording mode (double-click)
     let holdActive = false        // true = press-and-hold active
@@ -301,13 +306,16 @@ function wireEvents(state: TabChatState): void {
       nm.title = 'Hold to speak, double-click to lock'
     }
 
+    // Expose stopMic so sendMessage can auto-stop recording
+    ;(state as any)._stopMic = stopMic
+
     const enterLockedMode = () => {
       // Cancel any pending hold
       if (holdTimer) { clearTimeout(holdTimer); holdTimer = null }
       // If already in hold recording, it's fine — just switch to locked
       lockedRecording = true
       holdActive = false
-      nm.innerHTML = stopSvg
+      nm.innerHTML = wavesHtml
       nm.title = 'Click to stop recording'
       // Start mic if not already recording
       if (!nm.classList.contains('recording')) {
@@ -652,6 +660,7 @@ function addBubble(state: TabChatState, role: 'user' | 'assistant', text: string
 
   const div = document.createElement('div')
   div.className = `message message-${role}`
+  div.dataset.time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 
   if (role === 'assistant') {
     const { html, widgets } = renderAssistantHTML(text)
@@ -659,6 +668,7 @@ function addBubble(state: TabChatState, role: 'user' | 'assistant', text: string
     renderWidgetsInContainer(div, widgets)
     attachWidgetHandlers(div, (_wid, val) => handleWidgetChoice(state, val))
     addMessageActions(state, div, text)
+    addCodeBlockCopyButtons(div)
   } else {
     div.textContent = text
   }
@@ -738,11 +748,32 @@ function addMessageActions(state: TabChatState, bubble: HTMLElement, text: strin
   bubble.appendChild(actions)
 }
 
+/** Add copy buttons to code blocks in assistant messages */
+function addCodeBlockCopyButtons(el: HTMLElement): void {
+  el.querySelectorAll('pre').forEach(pre => {
+    if (pre.querySelector('.code-copy-btn')) return
+    const btn = document.createElement('button')
+    btn.className = 'code-copy-btn'
+    btn.title = 'Copy code'
+    btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>'
+    btn.addEventListener('click', () => {
+      const code = pre.querySelector('code')?.textContent ?? pre.textContent ?? ''
+      navigator.clipboard.writeText(code).catch(() => {})
+      btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>'
+      setTimeout(() => {
+        btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>'
+      }, 1500)
+    })
+    pre.appendChild(btn)
+  })
+}
+
 function appendChunk(state: TabChatState, chunk: string): void {
   const messagesEl = getMessages(state)
   if (!state.currentBubble) {
     state.currentBubble = document.createElement('div')
-    state.currentBubble.className = 'message message-assistant'
+    state.currentBubble.className = 'message message-assistant streaming'
+    state.currentBubble.dataset.time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     messagesEl.appendChild(state.currentBubble)
     state.currentBubbleRaw = ''
     state.streamBuffer = ''
@@ -761,7 +792,21 @@ function appendChunk(state: TabChatState, chunk: string): void {
   state.currentBubble.innerHTML = html
   renderWidgetsInContainer(state.currentBubble, widgets)
   attachWidgetHandlers(state.currentBubble, (_wid, val) => handleWidgetChoice(state, val))
+
+  // Re-add cancel button after innerHTML replacement
+  ensureStreamCancelButton(state)
+
   scrollToBottom(messagesEl)  // smart: only if user is near bottom
+}
+
+/** Adds or re-adds an inline cancel/stop button to the streaming bubble */
+function ensureStreamCancelButton(state: TabChatState): void {
+  if (!state.currentBubble || state.currentBubble.querySelector('.stream-cancel-btn')) return
+  const btn = document.createElement('button')
+  btn.className = 'stream-cancel-btn'
+  btn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg> Stop`
+  btn.addEventListener('click', (e) => { e.stopPropagation(); stopStream(state) })
+  state.currentBubble.appendChild(btn)
 }
 
 function finalizeMessage(state: TabChatState, fullText: string): void {
@@ -770,12 +815,20 @@ function finalizeMessage(state: TabChatState, fullText: string): void {
     state.currentBubbleRaw += remaining
   }
 
+  // Remove streaming UI (cancel button, streaming class)
+  if (state.currentBubble) {
+    state.currentBubble.classList.remove('streaming')
+    const cancelEl = state.currentBubble.querySelector('.stream-cancel-btn')
+    if (cancelEl) cancelEl.remove()
+  }
+
   if (state.currentBubble && fullText) {
     const { html, widgets } = renderAssistantHTML(fullText)
     state.currentBubble.innerHTML = html
     renderWidgetsInContainer(state.currentBubble, widgets)
     attachWidgetHandlers(state.currentBubble, (_wid, val) => handleWidgetChoice(state, val))
     addMessageActions(state, state.currentBubble, fullText)
+    addCodeBlockCopyButtons(state.currentBubble)
   }
   state.currentBubble = null
   state.currentBubbleRaw = ''
@@ -805,6 +858,9 @@ async function sendMessage(state: TabChatState): Promise<void> {
   const inputEl = getInput(state)
   const text = inputEl.value.trim()
   if (!text || state.isStreaming) return
+
+  // Auto-stop mic recording if active
+  if ((state as any)._stopMic) (state as any)._stopMic()
 
   if (state.pendingAbort) {
     state.pendingAbort.abort()
