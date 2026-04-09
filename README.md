@@ -127,6 +127,48 @@ npx playwright test --headed  # Watch tests run in a real browser
 - **Cloud model = direct connection** — data goes only to your chosen provider, nowhere else
 - **Open source** — audit the code yourself
 
+## Optional Services
+
+Orion integrates with additional local services for extended capabilities. All are optional — the extension works without them.
+
+### MemPalace (Long-Term Memory Bridge)
+
+A local Python service that gives Orion persistent long-term memory across sessions using vector embeddings. It stores learned lessons, past mistakes, action insights, and domain knowledge so the AI gets smarter over time.
+
+- **Location:** `bridge/` directory
+- **Requires:** Python 3.10+, runs locally on your machine
+- **How:** `cd bridge && pip install -r requirements.txt && python mempalace_bridge.py`
+- **What it stores:** Action errors and recovery strategies, per-domain knowledge, habit patterns, user instructions
+- **Privacy:** Everything stored locally in SQLite + vector embeddings
+
+### Voice Input (Speech-to-Text)
+
+Two options for voice control:
+
+| Method | Setup | Privacy |
+|--------|-------|---------|
+| **Chrome Web Speech API** | Built-in, no setup needed | Uses Google's servers |
+| **Local Whisper** | Run `whisper-mcp/` service locally | 100% local, no data leaves your machine |
+
+The local Whisper service uses OpenAI's Whisper model (or MLX-optimized variants on Apple Silicon) running entirely on your hardware.
+
+- **Location:** `whisper-mcp/` directory
+- **Requires:** Python 3.10+, ~1-2GB for the model
+- **How:** `cd whisper-mcp && pip install -r requirements.txt && python server.py`
+- **Recommended model:** `distil-large-v3` (fast + accurate)
+
+### Background Intelligence
+
+When enabled, Orion runs background tasks to learn from your browsing:
+
+- **Page summarization** — periodically summarizes visited pages for memory
+- **Action learning** — analyzes successful/failed actions to improve over time
+- **Calendar detection** — finds dates/events on pages, exports to .ics
+- **PII detection** — detects personal data and offers to store it securely in the vault
+- **Habit tracking** — learns your browsing patterns to be more helpful
+
+All background features are toggleable in Settings and run 100% locally when using a local model.
+
 ## Tested Models
 
 | Model | Type | Performance |
@@ -135,6 +177,28 @@ npx playwright test --headed  # Watch tests run in a real browser
 | **Gemini 2.5 Pro** | Cloud (Google) | Excellent. Fast and reliable for complex multi-step tasks. |
 | **GPT-4o / Claude** | Cloud | Should work (OpenAI/Anthropic API compatible). |
 | **Llama / Mistral / Qwen** | Local | Should work via LM Studio/Ollama (untested). |
+
+## Status
+
+**This project is experimental.** It works, it's tested (27 E2E tests), but it's evolving fast. Some things that need improvement:
+
+- Click reliability on complex SPAs (Google Flights, etc.)
+- Local model action format consistency
+- More robust error recovery
+- Better UX for the Form Coach overlay
+- File/image upload in the chat
+
+## Contributing
+
+Contributions are welcome! This is a solo project and I'd love help making it better. Areas where contributors would be especially valuable:
+
+- **Action reliability** — improving click/type accuracy on complex websites
+- **Local model optimization** — better prompts for small/local models
+- **New features** — file upload, better voice UI, multi-language support
+- **Testing** — more E2E tests, edge case coverage
+- **Documentation** — tutorials, setup guides, video demos
+
+Feel free to open issues, submit PRs, or just try it out and report what breaks.
 
 ## License
 

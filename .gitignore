@@ -3,6 +3,9 @@ dist/
 .DS_Store
 *.log
 
+# Claude Code config
+.claude/
+
 # Secrets & environment
 .env
 .env.*
