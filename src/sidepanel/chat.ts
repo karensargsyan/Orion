@@ -131,7 +131,7 @@ export async function initChat(parentContainer: HTMLElement, tabId: number): Pro
       <button class="attachment-remove" title="Remove">&times;</button>
     </div>
     <div class="input-row">
-      <button class="btn-icon btn-mic-tab" title="Hold to speak">
+      <button class="btn-icon btn-mic-tab" title="Hold to speak, double-click to lock">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>
       </button>
       <button class="btn-icon btn-attach-tab" title="Attach image">
@@ -259,11 +259,20 @@ function wireEvents(state: TabChatState): void {
     })
   })
 
-  // ── Microphone: press-and-hold to speak ────────────────────────────────────
+  // ── Microphone: press-and-hold OR double-click to toggle ──────────────────
   const micBtn = c.querySelector<HTMLButtonElement>('.btn-mic-tab')
   if (micBtn) {
     const nm = micBtn.cloneNode(true) as HTMLButtonElement
     micBtn.parentNode!.replaceChild(nm, micBtn)
+
+    // Save original mic SVG for restoring later
+    const micSvg = nm.innerHTML
+    const stopSvg = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="4" y="4" width="16" height="16" rx="2"></rect></svg>'
+
+    let lockedRecording = false   // true = permanent recording mode (double-click)
+    let holdActive = false        // true = press-and-hold active
+    let holdTimer: ReturnType<typeof setTimeout> | null = null
+    const HOLD_DELAY = 200        // ms to wait before starting hold (to allow dblclick)
 
     speech.onTranscript((text, isFinal) => {
       const input = getInput(state)
@@ -276,18 +285,108 @@ function wireEvents(state: TabChatState): void {
 
     const startMic = () => {
       nm.classList.add('recording')
-      speech.startListening().catch(() => nm.classList.remove('recording'))
+      speech.startListening().catch(() => {
+        nm.classList.remove('recording')
+        lockedRecording = false
+        nm.innerHTML = micSvg
+        nm.title = 'Hold to speak, double-click to lock'
+      })
     }
+
     const stopMic = () => {
       nm.classList.remove('recording')
       speech.stopListening()
+      lockedRecording = false
+      nm.innerHTML = micSvg
+      nm.title = 'Hold to speak, double-click to lock'
     }
 
-    nm.addEventListener('mousedown', startMic)
-    nm.addEventListener('mouseup', stopMic)
-    nm.addEventListener('mouseleave', stopMic)
-    nm.addEventListener('touchstart', (e) => { e.preventDefault(); startMic() })
-    nm.addEventListener('touchend', stopMic)
+    const enterLockedMode = () => {
+      // Cancel any pending hold
+      if (holdTimer) { clearTimeout(holdTimer); holdTimer = null }
+      // If already in hold recording, it's fine — just switch to locked
+      lockedRecording = true
+      holdActive = false
+      nm.innerHTML = stopSvg
+      nm.title = 'Click to stop recording'
+      // Start mic if not already recording
+      if (!nm.classList.contains('recording')) {
+        startMic()
+      }
+    }
+
+    // Double-click: toggle permanent recording
+    nm.addEventListener('dblclick', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      if (lockedRecording) {
+        stopMic()
+      } else {
+        enterLockedMode()
+      }
+    })
+
+    // Single click: if locked, stop recording
+    nm.addEventListener('click', () => {
+      if (lockedRecording) {
+        stopMic()
+      }
+    })
+
+    // Press-and-hold (mousedown/mouseup) — delayed to allow double-click
+    nm.addEventListener('mousedown', () => {
+      if (lockedRecording) return
+      // Delay start so double-click can cancel it
+      holdTimer = setTimeout(() => {
+        holdTimer = null
+        holdActive = true
+        startMic()
+      }, HOLD_DELAY)
+    })
+    nm.addEventListener('mouseup', () => {
+      // Cancel pending hold start if released quickly (single click or dblclick first click)
+      if (holdTimer) { clearTimeout(holdTimer); holdTimer = null }
+      if (lockedRecording || !holdActive) return
+      holdActive = false
+      stopMic()
+    })
+    nm.addEventListener('mouseleave', () => {
+      if (holdTimer) { clearTimeout(holdTimer); holdTimer = null }
+      if (lockedRecording || !holdActive) return
+      holdActive = false
+      stopMic()
+    })
+
+    // Touch: double-tap for locked, hold for temporary
+    let lastTapTime = 0
+    nm.addEventListener('touchstart', (e) => {
+      e.preventDefault()
+      const now = Date.now()
+      if (now - lastTapTime < 350) {
+        // Double-tap
+        lastTapTime = 0
+        if (lockedRecording) {
+          stopMic()
+        } else {
+          enterLockedMode()
+        }
+        return
+      }
+      lastTapTime = now
+
+      if (lockedRecording) return
+      holdTimer = setTimeout(() => {
+        holdTimer = null
+        holdActive = true
+        startMic()
+      }, HOLD_DELAY)
+    })
+    nm.addEventListener('touchend', () => {
+      if (holdTimer) { clearTimeout(holdTimer); holdTimer = null }
+      if (lockedRecording || !holdActive) return
+      holdActive = false
+      stopMic()
+    })
   }
 
   // ── File/image upload ──────────────────────────────────────────────────────

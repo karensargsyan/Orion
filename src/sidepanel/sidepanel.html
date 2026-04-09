@@ -355,7 +355,18 @@
       color: #e74c3c;
       animation: micPulse 0.8s ease-in-out infinite;
     }
+    /* Locked recording (double-click): solid red bg with stop icon */
+    .btn-icon.recording[title="Click to stop recording"] {
+      background: #e74c3c;
+      color: white;
+      border-radius: 8px;
+      animation: micPulseLocked 1.5s ease-in-out infinite;
+    }
     @keyframes micPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+    @keyframes micPulseLocked {
+      0%,100% { background: #e74c3c; }
+      50% { background: #c0392b; }
+    }
 
     /* Attachment preview bar */
     .attachment-preview-tab {
