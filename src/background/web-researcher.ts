@@ -9,75 +9,111 @@ import { MSG } from '../shared/constants'
 import type { SearchResult, PageContent } from '../shared/types'
 
 const researchTabIds = new Set<number>()
-let aiGroupId: number | null = null
 const TAB_LOAD_TIMEOUT = 15_000
 const MAX_RESEARCH_TABS = 8
 
 // ─── Tab Group Management ────────────────────────────────────────────────────
+//
+// Each tab where the user opens the panel gets its OWN group with a unique color.
+// Research tabs opened by the extension join the group of the tab that triggered them.
+// Tabs the user didn't open the panel on are NEVER grouped.
 
 const AI_GROUP_TITLE = 'Orion'
-const AI_GROUP_COLOR: chrome.tabGroups.ColorEnum = 'blue'
+const GROUP_COLORS: chrome.tabGroups.ColorEnum[] = ['blue', 'cyan', 'green', 'yellow', 'orange', 'pink', 'purple', 'red']
+let colorIndex = 0
 
-async function getOrCreateAIGroup(windowId?: number): Promise<number | null> {
-  // Reuse existing group if still alive
-  if (aiGroupId !== null) {
+/** Maps an origin tabId → its group id */
+const tabGroupMap = new Map<number, number>()
+
+/** The "active" origin tab whose research tabs should be grouped together */
+let activeOriginTabId: number | null = null
+
+function nextGroupColor(): chrome.tabGroups.ColorEnum {
+  const color = GROUP_COLORS[colorIndex % GROUP_COLORS.length]
+  colorIndex++
+  return color
+}
+
+/**
+ * Create a new Orion group for a tab where the user opened the panel.
+ * Each panel-open gets its own uniquely colored group.
+ */
+export async function createGroupForTab(tabId: number): Promise<void> {
+  // If this tab already has a group, reuse it
+  const existingGroupId = tabGroupMap.get(tabId)
+  if (existingGroupId !== undefined) {
     try {
-      const group = await chrome.tabGroups.get(aiGroupId)
-      if (group) return aiGroupId
-    } catch { /* group was closed */ }
-    aiGroupId = null
+      await chrome.tabGroups.get(existingGroupId)
+      return // group still alive, nothing to do
+    } catch { tabGroupMap.delete(tabId) }
   }
 
-  // Find an existing "AI Working" group in this window
   try {
-    const groups = await chrome.tabGroups.query({ title: AI_GROUP_TITLE })
-    if (groups.length > 0) {
-      aiGroupId = groups[0].id
-      return aiGroupId
-    }
-  } catch { /* tabGroups API not available */ }
-
-  return null
+    const newGroupId = await chrome.tabs.group({ tabIds: [tabId] })
+    await chrome.tabGroups.update(newGroupId, {
+      title: AI_GROUP_TITLE,
+      color: nextGroupColor(),
+      collapsed: false,
+    })
+    tabGroupMap.set(tabId, newGroupId)
+    activeOriginTabId = tabId
+  } catch { /* tabGroups API may not be available */ }
 }
 
 /**
- * Add any tab to the shared AI tab group.
- * Used by both the web researcher (for research tabs) and the action executor (for the main working tab).
+ * Ungroup a tab and clean up its group tracking.
+ * Called when the user closes the panel on a tab.
  */
-export async function addTabToAIGroup(tabId: number): Promise<void> {
+export async function ungroupTab(tabId: number): Promise<void> {
+  tabGroupMap.delete(tabId)
   try {
     const tab = await chrome.tabs.get(tabId)
-    const groupId = await getOrCreateAIGroup(tab.windowId)
-
-    if (groupId !== null) {
-      // Add to existing group
-      await chrome.tabs.group({ tabIds: [tabId], groupId })
-    } else {
-      // Create new group
-      const newGroupId = await chrome.tabs.group({ tabIds: [tabId] })
-      aiGroupId = newGroupId
-      await chrome.tabGroups.update(newGroupId, {
-        title: AI_GROUP_TITLE,
-        color: AI_GROUP_COLOR,
-        collapsed: false,
-      })
-    }
-  } catch {
-    // tabGroups API may not be available — that's fine, tabs still work
-  }
-}
-
-/**
- * Remove a tab from the AI group (e.g., when automation finishes on the main tab).
- * If the tab was the last in the group, Chrome auto-removes the group.
- */
-export async function removeTabFromAIGroup(tabId: number): Promise<void> {
-  try {
-    const tab = await chrome.tabs.get(tabId)
-    if (tab.groupId !== undefined && tab.groupId !== -1 && tab.groupId === aiGroupId) {
+    if (tab.groupId !== undefined && tab.groupId !== -1) {
       await chrome.tabs.ungroup([tabId])
     }
-  } catch { /* tab already gone or API unavailable */ }
+  } catch { /* tab already gone */ }
+}
+
+/** Set which origin tab is currently active (research tabs join this group) */
+export function setActiveOriginTab(tabId: number): void {
+  activeOriginTabId = tabId
+}
+
+/** Get the group id for the currently active origin tab */
+function getActiveGroupId(): number | null {
+  if (activeOriginTabId === null) return null
+  const gid = tabGroupMap.get(activeOriginTabId)
+  if (gid === undefined) return null
+  return gid
+}
+
+/** Check if a tab has an Orion group */
+export function hasOrionGroup(tabId: number): boolean {
+  return tabGroupMap.has(tabId)
+}
+
+/** Clean up tracking when a tab is removed */
+export function cleanupTabGroup(tabId: number): void {
+  tabGroupMap.delete(tabId)
+  if (activeOriginTabId === tabId) activeOriginTabId = null
+}
+
+/**
+ * Add a tab to the active origin tab's group.
+ * Used by research tabs — they join the group of the tab that triggered the research.
+ */
+export async function addTabToAIGroup(tabId: number): Promise<void> {
+  const groupId = getActiveGroupId()
+  if (groupId === null) return
+
+  try {
+    await chrome.tabs.group({ tabIds: [tabId], groupId })
+  } catch { /* group gone or API unavailable */ }
+}
+
+/** @deprecated — kept for compatibility, use ungroupTab instead */
+export async function removeTabFromAIGroup(tabId: number): Promise<void> {
+  await ungroupTab(tabId)
 }
 
 async function createResearchTab(url: string): Promise<chrome.tabs.Tab> {
@@ -316,9 +352,6 @@ export async function closeAllResearchTabs(): Promise<void> {
   for (const tabId of tabIds) {
     try { await chrome.tabs.remove(tabId) } catch { /* already closed */ }
   }
-
-  // Reset group tracking (only if no other tabs remain in the group)
-  aiGroupId = null
 }
 
 /** Get the number of currently open research tabs. */

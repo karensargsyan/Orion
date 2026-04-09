@@ -23,7 +23,7 @@ import { matchVaultToForm, matchCredentialsToForm, describeForm } from './form-i
 import { probeEndpoint, quickHealthCheck } from './api-detector'
 import { startScreenshotLoop, stopScreenshotLoop, captureScreenshot } from './screenshot-loop'
 import { executeActionsFromText, parseActionsFromText, executeWithFollowUp, ensureContentScript, requestFreshSnapshot, cancelAutomation } from './action-executor'
-import { addTabToAIGroup } from './web-researcher'
+import { createGroupForTab, ungroupTab, hasOrionGroup, cleanupTabGroup, setActiveOriginTab } from './web-researcher'
 import { analyzeHabits, getHabitPatterns } from './habit-tracker'
 import { getAllCalendarEvents } from './calendar-detector'
 import { detectPersonalData, storeDetectedPII } from './pii-detector'
@@ -249,16 +249,39 @@ function relayToSttPort(msg: Record<string, unknown>): void {
 }
 
 // ─── Side panel ──────────────────────────────────────────────────────────────
+//
+// Panel is DISABLED globally. Only enabled per-tab when the user clicks the icon.
+// When user switches to a non-Orion tab, panel stays disabled (invisible).
+// When user closes the panel, the tab is ungrouped.
 
-// openPanelOnActionClick: user clicks the extension icon → panel opens on THAT tab only.
-// The panel stays open only on tabs where the user opened it; Chrome manages this natively.
+// Disable panel globally — only enabled per-tab via GROUP_ACTIVE_TAB
+chrome.sidePanel.setOptions({ enabled: false }).catch(() => {})
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {})
 
-// Capture screenshot when user switches tabs (for page context)
+// Track tabs where the panel is open
+const panelOpenTabs = new Set<number>()
+
+// When user switches tabs: enable panel only on tabs that have it open
 chrome.tabs.onActivated.addListener(async (info) => {
+  const tabId = info.tabId
+
+  if (panelOpenTabs.has(tabId)) {
+    // This tab has the panel — enable it and set as active origin for research
+    await chrome.sidePanel.setOptions({
+      tabId, path: 'sidepanel/sidepanel.html', enabled: true,
+    }).catch(() => {})
+    setActiveOriginTab(tabId)
+  } else {
+    // Not a panel tab — ensure panel is disabled
+    await chrome.sidePanel.setOptions({
+      tabId, enabled: false,
+    }).catch(() => {})
+  }
+
+  // Capture screenshot for page context
   const s = await getSettings()
   if (s.onboardingComplete) {
-    await captureScreenshot(info.tabId).catch(() => {})
+    await captureScreenshot(tabId).catch(() => {})
   }
 })
 
@@ -408,6 +431,8 @@ async function runMempalaceLearningCycle(s: Settings): Promise<void> {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   tabState.delete(tabId)
+  panelOpenTabs.delete(tabId)
+  cleanupTabGroup(tabId)
   flushBuffer(tabId).then(() => clearTabBuffer(tabId)).catch(() => {})
 })
 
@@ -1175,7 +1200,25 @@ async function handleMessage(
 
     case 'GROUP_ACTIVE_TAB': {
       const tid = msg.tabId as number
-      if (tid > 0) await addTabToAIGroup(tid)
+      if (tid > 0) {
+        panelOpenTabs.add(tid)
+        await chrome.sidePanel.setOptions({
+          tabId: tid, path: 'sidepanel/sidepanel.html', enabled: true,
+        }).catch(() => {})
+        await createGroupForTab(tid)
+      }
+      return { ok: true }
+    }
+
+    case 'PANEL_CLOSED': {
+      const tid = msg.tabId as number
+      if (tid > 0) {
+        panelOpenTabs.delete(tid)
+        await chrome.sidePanel.setOptions({
+          tabId: tid, enabled: false,
+        }).catch(() => {})
+        await ungroupTab(tid)
+      }
       return { ok: true }
     }
 

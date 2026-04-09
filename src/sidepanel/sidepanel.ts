@@ -515,6 +515,13 @@ async function updateLearningStats(): Promise<void> {
 
 document.addEventListener('DOMContentLoaded', () => { init().catch(console.error) })
 
+// Notify background when the panel is closed so it can ungroup the tab
+window.addEventListener('beforeunload', () => {
+  if (currentTabId > 0) {
+    chrome.runtime.sendMessage({ type: 'PANEL_CLOSED', tabId: currentTabId }).catch(() => {})
+  }
+})
+
 function escHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
