@@ -105,7 +105,15 @@ async function init(): Promise<void> {
     return
   }
 
-  showMainUI()
+  // Check if a model is configured — if not, open settings first
+  const hasModel = !!(
+    (s.activeProvider === 'local' && s.lmStudioUrl) ||
+    (s.activeProvider === 'gemini' && s.geminiApiKey) ||
+    (s.activeProvider === 'openai' && s.openaiApiKey) ||
+    (s.activeProvider === 'anthropic' && s.anthropicApiKey)
+  )
+
+  showMainUI(hasModel ? 'chat' : 'settings')
 }
 
 function showOnboarding(): void {
@@ -116,7 +124,7 @@ function showOnboarding(): void {
   })
 }
 
-function showMainUI(): void {
+function showMainUI(startTab: TabId = 'chat'): void {
   const app = document.getElementById('app')!
   app.innerHTML = `
     <div class="learning-bar" id="learning-bar" style="display:none">
@@ -195,7 +203,7 @@ function showMainUI(): void {
 
   wireLearningButton()
   listenForTabChanges()
-  switchTab('chat')
+  switchTab(startTab)
 }
 
 function listenForTabChanges(): void {
