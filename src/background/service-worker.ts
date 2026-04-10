@@ -206,6 +206,144 @@ async function initSW(): Promise<void> {
   if (settings!.onboardingComplete) {
     startScreenshotLoop(settings!.screenshotIntervalSec)
   }
+
+  // Set up context menus
+  setupContextMenus()
+
+  // Set up vault auto-lock alarm
+  const lockTimeout = settings!.vaultLockTimeoutMin ?? 15
+  if (lockTimeout > 0) {
+    await chrome.alarms.create('vault-auto-lock', { periodInMinutes: 1 })
+  }
+
+  // Initial badge
+  updateBadge('idle')
+}
+
+// ─── Context Menus ──────────────────────────────────────────────────────────
+
+function setupContextMenus(): void {
+  chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create({ id: 'orion-ask', title: 'Ask Orion about this', contexts: ['selection'] })
+    chrome.contextMenus.create({ id: 'orion-summarize', title: 'Summarize this page', contexts: ['page'] })
+    chrome.contextMenus.create({ id: 'orion-explain', title: 'Explain this', contexts: ['selection'] })
+    chrome.contextMenus.create({ id: 'orion-research', title: 'Research this topic', contexts: ['selection'] })
+    chrome.contextMenus.create({ id: 'orion-separator', type: 'separator', contexts: ['all'] })
+    chrome.contextMenus.create({ id: 'orion-fill', title: 'Fill this form with Orion', contexts: ['page', 'editable'] })
+  })
+}
+
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  if (!tab?.id || tab.id < 0) return
+  const tabId = tab.id
+
+  // Ensure sidepanel is open for this tab
+  try {
+    await chrome.sidePanel.open({ tabId })
+  } catch { /* panel may already be open */ }
+
+  // Small delay to let sidepanel connect
+  await sleep(300)
+
+  const selectedText = info.selectionText?.trim() ?? ''
+  const pageUrl = tab.url ?? ''
+
+  switch (info.menuItemId) {
+    case 'orion-ask':
+      if (selectedText) {
+        broadcastToPanel({ type: 'CONTEXT_MENU_CHAT', text: `What is this: "${selectedText}"`, tabId })
+      }
+      break
+    case 'orion-summarize':
+      broadcastToPanel({ type: 'CONTEXT_MENU_CHAT', text: 'Summarize this page', tabId })
+      break
+    case 'orion-explain':
+      if (selectedText) {
+        broadcastToPanel({ type: 'CONTEXT_MENU_CHAT', text: `Explain this in simple terms: "${selectedText}"`, tabId })
+      }
+      break
+    case 'orion-research':
+      if (selectedText) {
+        broadcastToPanel({ type: 'CONTEXT_MENU_CHAT', text: `Research this topic thoroughly: ${selectedText}`, tabId })
+      }
+      break
+    case 'orion-fill':
+      broadcastToPanel({ type: 'CONTEXT_MENU_CHAT', text: 'Fill the form on this page using my vault data', tabId })
+      break
+  }
+})
+
+/** Send a message to all connected sidepanel ports. */
+function broadcastToPanel(msg: object): void {
+  for (const port of activePanelPorts) {
+    try { port.postMessage(msg) } catch { /* disconnected */ }
+  }
+}
+
+const activePanelPorts = new Set<chrome.runtime.Port>()
+
+// ─── Keyboard Shortcuts ─────────────────────────────────────────────────────
+
+chrome.commands.onCommand.addListener(async (command) => {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+  if (!tab?.id) return
+
+  switch (command) {
+    case 'quick-chat':
+      try { await chrome.sidePanel.open({ tabId: tab.id }) } catch {}
+      await sleep(300)
+      broadcastToPanel({ type: 'FOCUS_CHAT_INPUT' })
+      break
+    case 'memory-search':
+      try { await chrome.sidePanel.open({ tabId: tab.id }) } catch {}
+      await sleep(300)
+      broadcastToPanel({ type: 'SWITCH_TO_MEMORY' })
+      break
+  }
+})
+
+// ─── Badge Status ───────────────────────────────────────────────────────────
+
+type BadgeState = 'idle' | 'active' | 'error' | 'pending'
+
+function updateBadge(state: BadgeState, count?: number): void {
+  switch (state) {
+    case 'idle':
+      chrome.action.setBadgeText({ text: '' })
+      break
+    case 'active':
+      chrome.action.setBadgeText({ text: '...' })
+      chrome.action.setBadgeBackgroundColor({ color: '#6c5ce7' })
+      break
+    case 'error':
+      chrome.action.setBadgeText({ text: '!' })
+      chrome.action.setBadgeBackgroundColor({ color: '#e74c3c' })
+      break
+    case 'pending':
+      chrome.action.setBadgeText({ text: String(count ?? '') })
+      chrome.action.setBadgeBackgroundColor({ color: '#f39c12' })
+      break
+  }
+}
+
+// ─── Desktop Notifications ──────────────────────────────────────────────────
+
+function orionNotify(title: string, message: string): void {
+  chrome.notifications.create({
+    type: 'basic',
+    iconUrl: 'icons/icon-128.png',
+    title: `Orion: ${title}`,
+    message,
+    silent: true,
+  }).catch(() => {})
+}
+
+// ─── Vault Auto-Lock ────────────────────────────────────────────────────────
+
+let lastUserInteractionMs = Date.now()
+
+function touchUserActivity(): void {
+  lastUserInteractionMs = Date.now()
 }
 
 // ─── Lifecycle ────────────────────────────────────────────────────────────────
@@ -380,6 +518,20 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
       pollTelegramUpdates(s).catch(err => console.warn('[Telegram] Poll error:', err))
     }
   }
+  if (alarm.name === 'vault-auto-lock') {
+    const s = await getSettings()
+    const timeoutMin = s.vaultLockTimeoutMin ?? 15
+    if (timeoutMin > 0) {
+      const idleMs = Date.now() - lastUserInteractionMs
+      if (idleMs > timeoutMin * 60_000) {
+        const unlocked = await isSessionUnlocked()
+        if (unlocked) {
+          await chrome.storage.session.remove('sessionKey')
+          console.log('[Orion] Vault auto-locked after idle timeout')
+        }
+      }
+    }
+  }
 })
 
 async function runBackgroundSummarization(): Promise<void> {
@@ -547,8 +699,13 @@ chrome.runtime.onConnect.addListener((port) => {
 
   if (port.name !== PORT_AI_STREAM) return
 
+  // Track panel ports for broadcasting (context menus, keyboard shortcuts)
+  activePanelPorts.add(port)
+  touchUserActivity()
+
   const streamPort = wrapStreamPort(port)
   port.onDisconnect.addListener(() => {
+    activePanelPorts.delete(port)
     abortAllStreams()
   })
 
@@ -880,11 +1037,18 @@ async function handleAIChat(
         // pref === 'auto' → guided stays false
       }
 
-      await executeWithFollowUp(
-        fullText, tabId, s, port,
-        messages.map(m => ({ role: m.role, content: m.content })),
-        25, guided
-      )
+      updateBadge('active')
+      try {
+        await executeWithFollowUp(
+          fullText, tabId, s, port,
+          messages.map(m => ({ role: m.role, content: m.content })),
+          25, guided
+        )
+        updateBadge('idle')
+        orionNotify('Task Complete', `Finished automation on ${extractDomain(tabState.get(tabId)?.url ?? '')}`)
+      } catch {
+        updateBadge('error')
+      }
     }
   }
 }
@@ -1105,6 +1269,7 @@ async function handleAIRewrite(
 // ─── Regular messages ─────────────────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  touchUserActivity()
   handleMessage(msg, sender).then(sendResponse).catch((err: Error) => {
     sendResponse({ ok: false, error: err.message })
   })
@@ -1414,6 +1579,26 @@ async function handleMessage(
       } catch (err) {
         return { ok: false, error: String(err) }
       }
+    }
+
+    case MSG.AI_HEALTH_CHECK: {
+      const s = await getAllSettings()
+      const provider = s.activeProvider || 'local'
+      // For cloud providers, verify API key is set; for local, ping the endpoint
+      if (provider === 'gemini') {
+        return { ok: true, connected: !!s.geminiApiKey, provider }
+      }
+      if (provider === 'openai') {
+        return { ok: true, connected: !!s.openaiApiKey, provider }
+      }
+      if (provider === 'anthropic') {
+        return { ok: true, connected: !!s.anthropicApiKey, provider }
+      }
+      // Local: actually ping
+      const base = (s.apiCapabilities?.baseUrl || s.lmStudioUrl || '').replace(/\/v1\/?$/, '').replace(/\/+$/, '')
+      if (!base) return { ok: true, connected: false, provider }
+      const healthy = await quickHealthCheck(base, s.authToken)
+      return { ok: true, connected: healthy, provider }
     }
 
     // ── Chat history ──────────────────────────────────────────────────────────

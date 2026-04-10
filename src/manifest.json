@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Orion",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "AI browser assistant. Reads pages, fills forms, researches the web. Runs locally or via cloud APIs. Private and fast.",
 
   "permissions": [
@@ -16,8 +16,24 @@
     "alarms",
     "offscreen",
     "debugger",
-    "contextMenus"
+    "contextMenus",
+    "notifications"
   ],
+
+  "commands": {
+    "_execute_action": {
+      "suggested_key": { "default": "Alt+O", "mac": "Alt+O" },
+      "description": "Toggle Orion panel"
+    },
+    "quick-chat": {
+      "suggested_key": { "default": "Alt+Shift+A", "mac": "Alt+Shift+A" },
+      "description": "Focus Orion chat input"
+    },
+    "memory-search": {
+      "suggested_key": { "default": "Alt+Shift+M", "mac": "Alt+Shift+M" },
+      "description": "Search Orion memory"
+    }
+  },
 
   "host_permissions": [
     "http://localhost/*",

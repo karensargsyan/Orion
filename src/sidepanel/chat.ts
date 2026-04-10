@@ -119,6 +119,7 @@ export async function initChat(parentContainer: HTMLElement, tabId: number): Pro
   wrapper.style.cssText = 'display:flex;flex-direction:column;height:100%;'
   wrapper.innerHTML = `
     <div class="chat-status-bar" id="chat-status-bar-${tabId}">
+      <span id="ai-health-dot-${tabId}" class="ai-health-dot" title="Checking AI connection..."></span>
       <span id="page-context-label-${tabId}" class="context-label">Loading...</span>
       <span id="model-badge-${tabId}" class="model-badge"></span>
       <div class="chat-actions">
@@ -189,6 +190,7 @@ export async function initChat(parentContainer: HTMLElement, tabId: number): Pro
   updatePageContext(state)
   updateModelBadge(state)
   loadTabHistory(state)
+  startHealthCheckLoop(state)
 }
 
 // ─── Wire DOM events ──────────────────────────────────────────────────────────
@@ -594,6 +596,38 @@ async function updateModelBadge(state: TabChatState): Promise<void> {
   } catch {
     badge.style.display = 'none'
   }
+}
+
+// ─── AI Health Check ────────────────────────────────────────────────────────
+
+let healthCheckInterval: ReturnType<typeof setInterval> | null = null
+
+async function checkAIHealth(state: TabChatState): Promise<void> {
+  const dot = state.container.querySelector(`#ai-health-dot-${state.tabId}`) as HTMLElement | null
+  if (!dot) return
+  try {
+    const res = await chrome.runtime.sendMessage({ type: MSG.AI_HEALTH_CHECK }) as {
+      ok: boolean; connected?: boolean; provider?: string
+    }
+    if (res.ok && res.connected) {
+      dot.className = 'ai-health-dot connected'
+      dot.title = `AI connected (${res.provider || 'unknown'})`
+    } else {
+      dot.className = 'ai-health-dot disconnected'
+      dot.title = res.provider === 'local'
+        ? 'AI unreachable — check your local server'
+        : `AI not configured (${res.provider || 'no provider'})`
+    }
+  } catch {
+    dot.className = 'ai-health-dot disconnected'
+    dot.title = 'Cannot reach background service'
+  }
+}
+
+function startHealthCheckLoop(state: TabChatState): void {
+  if (healthCheckInterval) clearInterval(healthCheckInterval)
+  checkAIHealth(state)
+  healthCheckInterval = setInterval(() => checkAIHealth(state), 60_000)
 }
 
 async function loadTabHistory(state: TabChatState): Promise<void> {
@@ -1164,6 +1198,18 @@ export async function loadSession(sessionId: string): Promise<void> {
       addBubble(state, msg.role, msg.content)
     }
   }
+}
+
+/**
+ * Programmatically send a chat message (used by context menus + keyboard shortcuts).
+ * Injects text into the active session's input and triggers send.
+ */
+export function sendChatMessage(text: string): void {
+  const state = getActiveState()
+  if (!state) return
+  const inputEl = getInput(state)
+  inputEl.value = text
+  sendMessage(state)
 }
 
 export function cleanupClosedTab(tabId: number): void {

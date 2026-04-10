@@ -378,6 +378,10 @@ export interface Settings {
   automationPreference?: 'ask' | 'auto' | 'guided'
   /** Total Recall: capture all form inputs for later recall */
   inputJournalEnabled?: boolean
+  /** Vault auto-lock after idle minutes (0 = never) */
+  vaultLockTimeoutMin?: number
+  /** UI theme preference */
+  theme?: 'system' | 'dark' | 'light'
 }
 
 // ─── Confirmation ─────────────────────────────────────────────────────────────

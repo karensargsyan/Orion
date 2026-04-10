@@ -58,6 +58,8 @@ export async function getAllSettings(): Promise<Settings> {
     telegramPollIntervalSec: (map.telegramPollIntervalSec as number) ?? DEFAULTS.TELEGRAM_POLL_INTERVAL_SEC,
     automationPreference: (map.automationPreference as 'ask' | 'auto' | 'guided') ?? DEFAULTS.AUTOMATION_PREFERENCE,
     inputJournalEnabled: (map.inputJournalEnabled as boolean) ?? DEFAULTS.INPUT_JOURNAL_ENABLED,
+    vaultLockTimeoutMin: (map.vaultLockTimeoutMin as number) ?? DEFAULTS.VAULT_LOCK_TIMEOUT_MIN,
+    theme: (map.theme as 'system' | 'dark' | 'light') ?? DEFAULTS.THEME,
     calendarDetectionEnabled: (map.calendarDetectionEnabled as boolean) ?? DEFAULTS.CALENDAR_DETECTION_ENABLED,
     onboardingComplete: (map.onboardingComplete as boolean) ?? DEFAULTS.ONBOARDING_COMPLETE,
     learningModeActive: (map.learningModeActive as boolean) ?? DEFAULTS.LEARNING_MODE_ACTIVE,

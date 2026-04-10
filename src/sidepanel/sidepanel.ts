@@ -1,10 +1,10 @@
-import { initChat, newSession, loadSession, cleanupClosedTab } from './chat'
+import { initChat, newSession, loadSession, cleanupClosedTab, sendChatMessage } from './chat'
 import { initVault } from './vault-ui'
 import { initSettings } from './settings-ui'
 import { initMemory } from './memory-ui'
 import { initOnboarding } from './onboarding-ui'
 import { initStats } from './stats-ui'
-import { MSG } from '../shared/constants'
+import { MSG, PORT_AI_STREAM } from '../shared/constants'
 import type { Settings } from '../shared/types'
 import * as speech from './speech-service'
 
@@ -120,6 +120,41 @@ async function init(): Promise<void> {
   )
 
   showMainUI(hasModel ? 'chat' : 'settings')
+
+  // Connect a persistent port for receiving broadcasts from background (context menus, shortcuts)
+  setupBroadcastListener()
+}
+
+function setupBroadcastListener(): void {
+  const port = chrome.runtime.connect({ name: PORT_AI_STREAM })
+  port.onMessage.addListener((msg: Record<string, unknown>) => {
+    if (msg.type === 'CONTEXT_MENU_CHAT') {
+      // Switch to chat tab and inject the message
+      if (activeTab !== 'chat') switchTab('chat')
+      const text = msg.text as string
+      if (text) {
+        setTimeout(() => sendChatMessage(text), 200)
+      }
+    }
+    if (msg.type === 'FOCUS_CHAT_INPUT') {
+      if (activeTab !== 'chat') switchTab('chat')
+      setTimeout(() => {
+        const input = document.querySelector('.chat-input') as HTMLTextAreaElement
+        input?.focus()
+      }, 100)
+    }
+    if (msg.type === 'SWITCH_TO_MEMORY') {
+      switchTab('memory')
+      setTimeout(() => {
+        const input = document.querySelector('#memory-search-input') as HTMLInputElement
+        input?.focus()
+      }, 100)
+    }
+  })
+  port.onDisconnect.addListener(() => {
+    // Reconnect after a short delay (e.g. service worker restart)
+    setTimeout(setupBroadcastListener, 1000)
+  })
 }
 
 function showOnboarding(): void {

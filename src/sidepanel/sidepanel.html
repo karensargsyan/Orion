@@ -161,6 +161,23 @@
       flex-shrink: 0;
       gap: 8px;
     }
+    .ai-health-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      background: var(--text-dim);
+      transition: background 0.3s ease, box-shadow 0.3s ease;
+      cursor: default;
+    }
+    .ai-health-dot.connected {
+      background: var(--color-success);
+      box-shadow: 0 0 6px rgba(46,204,113,0.5);
+    }
+    .ai-health-dot.disconnected {
+      background: var(--color-error);
+      box-shadow: 0 0 6px rgba(231,76,60,0.4);
+    }
     .context-label {
       font-size: 11px;
       color: var(--text-dim);

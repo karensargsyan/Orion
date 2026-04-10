@@ -70,6 +70,7 @@ export const MSG = {
 
   // Endpoint probing
   PROBE_ENDPOINT: 'PROBE_ENDPOINT',
+  AI_HEALTH_CHECK: 'AI_HEALTH_CHECK',
 
   // Screenshot
   TAKE_SCREENSHOT: 'TAKE_SCREENSHOT',
@@ -231,6 +232,8 @@ export const DEFAULTS = {
   TELEGRAM_POLL_INTERVAL_SEC: 5,
   AUTOMATION_PREFERENCE: 'ask' as const,
   INPUT_JOURNAL_ENABLED: true,
+  VAULT_LOCK_TIMEOUT_MIN: 15,
+  THEME: 'dark' as const,
 } as const
 
 export const SESSION_KEY_STORAGE = 'sessionKey'

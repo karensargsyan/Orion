@@ -296,6 +296,11 @@ export async function initSettings(container: HTMLElement): Promise<void> {
 
       <section class="settings-section">
         <h3>Security</h3>
+        <div class="form-group">
+          <label>Vault auto-lock timeout (minutes)</label>
+          <input type="number" id="vault-lock-timeout" value="${s.vaultLockTimeoutMin ?? 15}" min="1" max="120">
+          <small style="color:var(--text-dim);font-size:11px">Lock the vault after this many minutes of inactivity. Default: 15 min.</small>
+        </div>
         ${s.hasPinSetup ? `
           <div class="form-group">
             <label>Change PIN</label>
@@ -817,6 +822,7 @@ function wireSettingsEvents(container: HTMLElement, s: Settings): void {
       telegramPollIntervalSec: Number((container.querySelector('#telegram-poll-interval') as HTMLInputElement).value),
       telegramAllowedChatIds: (container.querySelector('#telegram-chat-ids') as HTMLInputElement).value
         .split(',').map(s => s.trim()).filter(Boolean),
+      vaultLockTimeoutMin: Number((container.querySelector('#vault-lock-timeout') as HTMLInputElement).value),
     }
     await chrome.runtime.sendMessage({ type: MSG.SETTINGS_SET, partial })
     const statusEl = container.querySelector('#save-status') as HTMLElement
