@@ -1510,10 +1510,21 @@ export async function executeWithFollowUp(
       new Promise<string>(resolve => setTimeout(() => resolve(''), timeoutMs)),
     ])
 
-    if (!followUp && hasScreenshot) {
-      console.log(`[LocalAI] Follow-up empty with screenshot, retrying without image...`)
-      const noImageMsgs = followUpMessages.map(m => ({ ...m, imageData: undefined }))
-      followUp = await callAI(noImageMsgs, settings, followUpMaxTokens)
+    // ── Retry logic: up to 3 attempts on empty response ────────────────
+    const MAX_FOLLOWUP_RETRIES = 3
+    for (let retryAttempt = 0; retryAttempt < MAX_FOLLOWUP_RETRIES && !followUp; retryAttempt++) {
+      if (retryAttempt === 0 && hasScreenshot) {
+        // First retry: try without image (might be too large)
+        console.log(`[LocalAI] Follow-up empty with screenshot, retrying without image...`)
+        const noImageMsgs = followUpMessages.map(m => ({ ...m, imageData: undefined }))
+        followUp = await callAI(noImageMsgs, settings, followUpMaxTokens)
+      } else {
+        // Subsequent retries: wait briefly then try again with original messages
+        const retryDelay = (retryAttempt + 1) * 2000 // 2s, 4s, 6s
+        console.log(`[LocalAI] Follow-up empty, retry ${retryAttempt + 1}/${MAX_FOLLOWUP_RETRIES} after ${retryDelay}ms...`)
+        await new Promise(r => setTimeout(r, retryDelay))
+        followUp = await callAI(followUpMessages, settings, followUpMaxTokens, hasScreenshot)
+      }
     }
 
     if (followUp) {
@@ -1526,7 +1537,7 @@ export async function executeWithFollowUp(
       }
       response = followUp
     } else {
-      port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '\n\n> AI did not respond — model may be overloaded or request too large.\n\n' })
+      port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '\n\n> AI did not respond after multiple retries — model may be overloaded or request too large.\n\n' })
       break
     }
 
