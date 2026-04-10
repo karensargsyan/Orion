@@ -170,6 +170,20 @@
       flex: 1;
     }
     .chat-actions { display: flex; gap: 4px; flex-shrink: 0; }
+    .model-badge {
+      font-size: 10px;
+      color: var(--accent);
+      background: var(--accent-bg);
+      border: 1px solid rgba(108,92,231,0.2);
+      border-radius: 6px;
+      padding: 2px 8px;
+      white-space: nowrap;
+      flex-shrink: 0;
+      letter-spacing: 0.2px;
+      cursor: default;
+      transition: opacity var(--transition);
+    }
+    .model-badge:empty { display: none; }
 
     .quick-actions {
       display: flex;

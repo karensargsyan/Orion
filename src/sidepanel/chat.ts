@@ -99,6 +99,7 @@ export async function initChat(parentContainer: HTMLElement, tabId: number): Pro
     parentContainer.innerHTML = ''
     parentContainer.appendChild(existing.container)
     updatePageContext(existing)
+    updateModelBadge(existing)
     wireEvents(existing)
     return
   }
@@ -111,6 +112,7 @@ export async function initChat(parentContainer: HTMLElement, tabId: number): Pro
   wrapper.innerHTML = `
     <div class="chat-status-bar" id="chat-status-bar-${tabId}">
       <span id="page-context-label-${tabId}" class="context-label">Loading...</span>
+      <span id="model-badge-${tabId}" class="model-badge"></span>
       <div class="chat-actions">
         <button class="btn-small btn-describe" title="Describe page">Describe</button>
         <button class="btn-small btn-fill" title="Fill forms">Fill</button>
@@ -174,6 +176,7 @@ export async function initChat(parentContainer: HTMLElement, tabId: number): Pro
 
   wireEvents(state)
   updatePageContext(state)
+  updateModelBadge(state)
   loadTabHistory(state)
 }
 
@@ -528,6 +531,47 @@ async function updatePageContext(state: TabChatState): Promise<void> {
       label.title = tab.url ?? ''
     }
   } catch { label.textContent = 'No page loaded' }
+}
+
+/** Fetch current AI provider+model and update the model badge in the status bar. */
+async function updateModelBadge(state: TabChatState): Promise<void> {
+  const badge = state.container.querySelector(`#model-badge-${state.tabId}`) as HTMLElement | null
+  if (!badge) return
+  try {
+    const res = await chrome.runtime.sendMessage({ type: MSG.SETTINGS_GET }) as {
+      ok: boolean; settings?: { activeProvider?: string; lmStudioModel?: string; geminiModel?: string; openaiModel?: string; anthropicModel?: string }
+    }
+    if (!res.ok || !res.settings) return
+    const s = res.settings
+    const provider = s.activeProvider || 'local'
+    let model = ''
+    let providerIcon = ''
+    switch (provider) {
+      case 'local':
+        model = s.lmStudioModel || 'Local model'
+        providerIcon = '\u2699' // ⚙
+        break
+      case 'gemini':
+        model = s.geminiModel || 'gemini-2.0-flash'
+        providerIcon = '\u2728' // ✨
+        break
+      case 'openai':
+        model = s.openaiModel || 'gpt-4o'
+        providerIcon = '\u26A1' // ⚡
+        break
+      case 'anthropic':
+        model = s.anthropicModel || 'claude-sonnet'
+        providerIcon = '\u2B50' // ⭐
+        break
+    }
+    // Shorten long model names for display
+    const shortModel = model.length > 28 ? model.slice(0, 26) + '\u2026' : model
+    badge.textContent = `${providerIcon} ${shortModel}`
+    badge.title = `Provider: ${provider}\nModel: ${model}`
+    badge.style.display = ''
+  } catch {
+    badge.style.display = 'none'
+  }
 }
 
 async function loadTabHistory(state: TabChatState): Promise<void> {

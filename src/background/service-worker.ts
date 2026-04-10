@@ -23,7 +23,7 @@ import { matchVaultToForm, matchCredentialsToForm, describeForm } from './form-i
 import { probeEndpoint, quickHealthCheck } from './api-detector'
 import { startScreenshotLoop, stopScreenshotLoop, captureScreenshot } from './screenshot-loop'
 import { executeActionsFromText, parseActionsFromText, executeWithFollowUp, ensureContentScript, requestFreshSnapshot, cancelAutomation } from './action-executor'
-import { createGroupForTab, ungroupTab, hasOrionGroup, cleanupTabGroup, setActiveOriginTab } from './web-researcher'
+import { createGroupForTab, ungroupTab, hasOrionGroup, isOrionTab, cleanupTabGroup, setActiveOriginTab } from './web-researcher'
 import { analyzeHabits, getHabitPatterns } from './habit-tracker'
 import { getAllCalendarEvents } from './calendar-detector'
 import { detectPersonalData, storeDetectedPII } from './pii-detector'
@@ -283,16 +283,19 @@ chrome.action.onClicked.addListener(async (tab) => {
   }
 })
 
-// Tab switch: only set active origin for research tabs — nothing else needed
-// because global default is disabled, so non-panel tabs never show the panel.
+// Tab switch: only interact with tabs that belong to Orion's group.
+// Non-Orion tabs are completely off-limits (no screenshots, no monitoring).
 chrome.tabs.onActivated.addListener(async (info) => {
   const tabId = info.tabId
+
+  // Only interact with tabs the user explicitly added to Orion
+  if (!panelOpenTabs.has(tabId) && !isOrionTab(tabId)) return
 
   if (panelOpenTabs.has(tabId)) {
     setActiveOriginTab(tabId)
   }
 
-  // Capture screenshot for page context
+  // Capture screenshot only for Orion-managed tabs
   const s = await getSettings()
   if (s.onboardingComplete) {
     await captureScreenshot(tabId).catch(() => {})
@@ -454,8 +457,13 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 
 chrome.webNavigation.onCommitted.addListener(async (details) => {
   if (details.frameId !== 0) return
-  await flushBuffer(details.tabId)
-  tabState.delete(details.tabId)
+  const tid = details.tabId
+
+  // Only monitor tabs that belong to Orion
+  if (!panelOpenTabs.has(tid) && !isOrionTab(tid)) return
+
+  await flushBuffer(tid)
+  tabState.delete(tid)
   const s = await getSettings()
   if (!s.monitoringEnabled) return
 
@@ -467,7 +475,7 @@ chrome.webNavigation.onCommitted.addListener(async (details) => {
     tags: ['navigation', `domain:${extractDomain(details.url)}`],
     timestamp: Date.now(),
     sessionId,
-    tabId: details.tabId,
+    tabId: tid,
   })
 })
 
@@ -1015,6 +1023,8 @@ async function handleMessage(
 
   switch (msg.type) {
     case MSG.PAGE_SNAPSHOT: {
+      // Ignore snapshots from tabs not in Orion's group
+      if (tabId > 0 && !panelOpenTabs.has(tabId) && !isOrionTab(tabId)) return { ok: true }
       const snap = msg.payload as PageSnapshot
       tabState.set(tabId, snap)
       // Record page visit in visual sitemap (without screenshot — the screenshot loop handles that)
@@ -1047,6 +1057,8 @@ async function handleMessage(
     }
 
     case MSG.PAGE_TEXT: {
+      // Ignore text from tabs not in Orion's group
+      if (tabId > 0 && !panelOpenTabs.has(tabId) && !isOrionTab(tabId)) return { ok: true }
       const snap = tabState.get(tabId)
       if (snap) {
         snap.pageText = msg.pageText as string
@@ -1119,7 +1131,8 @@ async function handleMessage(
     }
 
     case MSG.USER_ACTION: {
-      if (s.monitoringEnabled) {
+      // Only record actions from Orion-managed tabs
+      if (s.monitoringEnabled && (panelOpenTabs.has(tabId) || isOrionTab(tabId))) {
         recordAction(tabId, msg.event as Parameters<typeof recordAction>[1], sessionId)
       }
       if (isSupervisedActive()) {

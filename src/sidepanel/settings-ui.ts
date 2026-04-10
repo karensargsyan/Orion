@@ -430,32 +430,34 @@ function renderCapabilityBadges(caps?: APICapabilities): string {
   return `<div id="capability-badges" class="capability-badges">${badges.join('')}</div>`
 }
 
+/** Render model <option> elements, always including the saved selection even if not in the hardcoded list. */
+function renderModelOptions(models: string[], selected?: string): string {
+  // If saved model isn't in the list, prepend it so it stays selected
+  const list = selected && !models.includes(selected)
+    ? [selected, ...models]
+    : models
+  return list.map(m =>
+    `<option value="${m}" ${m === selected ? 'selected' : ''}>${m}</option>`
+  ).join('')
+}
+
 function renderGeminiModelOptions(selected?: string): string {
-  const models = [
+  return renderModelOptions([
     'gemini-2.5-flash-preview-04-17',
     'gemini-2.5-pro-preview-03-25',
     'gemini-2.0-flash',
     'gemini-2.0-flash-lite',
     'gemini-1.5-pro',
     'gemini-1.5-flash',
-  ]
-  return models.map(m =>
-    `<option value="${m}" ${m === selected ? 'selected' : ''}>${m}</option>`
-  ).join('')
+  ], selected)
 }
 
 function renderOpenAIModelOptions(selected?: string): string {
-  const models = ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'o3-mini', 'o4-mini']
-  return models.map(m =>
-    `<option value="${m}" ${m === selected ? 'selected' : ''}>${m}</option>`
-  ).join('')
+  return renderModelOptions(['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'o3-mini', 'o4-mini'], selected)
 }
 
 function renderAnthropicModelOptions(selected?: string): string {
-  const models = ['claude-sonnet-4-20250514', 'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229']
-  return models.map(m =>
-    `<option value="${m}" ${m === selected ? 'selected' : ''}>${m}</option>`
-  ).join('')
+  return renderModelOptions(['claude-sonnet-4-20250514', 'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229'], selected)
 }
 
 function wireProviderToggle(container: HTMLElement): void {

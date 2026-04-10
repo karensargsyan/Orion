@@ -92,6 +92,11 @@ export function hasOrionGroup(tabId: number): boolean {
   return tabGroupMap.has(tabId)
 }
 
+/** Returns true if the tab belongs to Orion (grouped or research tab). */
+export function isOrionTab(tabId: number): boolean {
+  return tabGroupMap.has(tabId) || researchTabIds.has(tabId)
+}
+
 /** Clean up tracking when a tab is removed */
 export function cleanupTabGroup(tabId: number): void {
   tabGroupMap.delete(tabId)
