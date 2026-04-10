@@ -73,16 +73,36 @@ export async function cdpHoverAt(tabId: number, x: number, y: number): Promise<b
 // ─── Typing ──────────────────────────────────────────────────────────────────
 
 /**
- * Trusted text insertion. Uses Input.insertText which generates a trusted
- * InputEvent that React's onChange and Angular's ngModel detect correctly.
+ * Trusted text insertion. Tries Input.insertText first (bulk, React-compatible),
+ * falls back to character-by-character Input.dispatchKeyEvent if insertText fails.
  */
 export async function cdpTypeText(tabId: number, text: string): Promise<boolean> {
   if (!isSessionActive(tabId)) return false
   try {
+    // Try bulk insert first — fastest and works with React/Angular onChange
     await cdpSend(tabId, 'Input.insertText', { text })
     return true
   } catch {
-    return false
+    // Fallback: type character by character via key events
+    try {
+      for (const char of text) {
+        await cdpSend(tabId, 'Input.dispatchKeyEvent', {
+          type: 'keyDown',
+          text: char,
+          key: char,
+          code: char === ' ' ? 'Space' : `Key${char.toUpperCase()}`,
+          unmodifiedText: char,
+        })
+        await cdpSend(tabId, 'Input.dispatchKeyEvent', {
+          type: 'keyUp',
+          key: char,
+          code: char === ' ' ? 'Space' : `Key${char.toUpperCase()}`,
+        })
+      }
+      return true
+    } catch {
+      return false
+    }
   }
 }
 

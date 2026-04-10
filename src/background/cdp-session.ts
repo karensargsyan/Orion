@@ -46,7 +46,7 @@ export async function acquireSession(tabId: number): Promise<CDPSession | null> 
   // Enable all required domains
   for (const domain of REQUIRED_DOMAINS) {
     try {
-      await chrome.debugger.sendCommand({ tabId }, `${domain}.enable`)
+      await chrome.debugger.sendCommand.call(chrome.debugger, { tabId }, `${domain}.enable`)
     } catch {
       // Some domains may fail on restricted pages — continue anyway
     }
@@ -54,7 +54,7 @@ export async function acquireSession(tabId: number): Promise<CDPSession | null> 
 
   // Get initial document (required for DOM queries)
   try {
-    await chrome.debugger.sendCommand({ tabId }, 'DOM.getDocument', { depth: 0 })
+    await chrome.debugger.sendCommand.call(chrome.debugger, { tabId }, 'DOM.getDocument', { depth: 0 })
   } catch { /* ok */ }
 
   const session: CDPSession = {
@@ -89,7 +89,15 @@ export async function cdpSend<T = unknown>(
 ): Promise<T> {
   const session = activeSessions.get(tabId)
   if (session) session.lastUsed = Date.now()
-  return chrome.debugger.sendCommand({ tabId }, method, params) as Promise<T>
+  // Must use .call() to preserve `this` binding — without it,
+  // chrome.debugger.sendCommand throws "Illegal invocation" for
+  // certain CDP methods like Input.insertText and Input.dispatchKeyEvent.
+  return chrome.debugger.sendCommand.call(
+    chrome.debugger,
+    { tabId },
+    method,
+    params ?? {},
+  ) as Promise<T>
 }
 
 /**

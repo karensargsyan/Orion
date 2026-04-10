@@ -65,7 +65,7 @@ async function cmd<T>(tabId: number, method: string, params?: Record<string, unk
   if (isSessionActive(tabId)) {
     return cdpSend<T>(tabId, method, params)
   }
-  return chrome.debugger.sendCommand({ tabId }, method, params) as Promise<T>
+  return chrome.debugger.sendCommand.call(chrome.debugger, { tabId }, method, params ?? {}) as Promise<T>
 }
 
 const INTERACTIVE_ROLES = new Set([

@@ -615,7 +615,10 @@ export function truncateMessagesToFit(
   // Build from the end, adding messages until budget is spent
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i]
-    const msgTokens = estimateTokens(msg.content ?? '') + (msg.imageData ? 500 : 0)
+    // Images are base64-encoded and extremely large — estimate ~1 token per 4 bytes
+    // A typical screenshot is 100K-500K base64 chars → 25K-125K tokens
+    const imageTokens = msg.imageData ? Math.ceil(msg.imageData.length / 4) : 0
+    const msgTokens = estimateTokens(msg.content ?? '') + imageTokens
     if (totalTokens + msgTokens > available && result.length >= 2) break
     result.unshift(msg)
     totalTokens += msgTokens

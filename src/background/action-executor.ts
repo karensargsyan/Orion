@@ -844,7 +844,7 @@ async function executeSingleAction(action: AIAction, tabId: number): Promise<AIA
       const direction = (action.value ?? 'down').toLowerCase()
       const deltaY = direction === 'up' ? -500 : 500
       await chrome.debugger.attach({ tabId }, '1.3').catch(() => {})
-      await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
+      await chrome.debugger.sendCommand.call(chrome.debugger, { tabId }, 'Input.dispatchMouseEvent', {
         type: 'mouseWheel', x: 400, y: 400, deltaX: 0, deltaY,
       })
       await chrome.debugger.detach({ tabId }).catch(() => {})
@@ -910,10 +910,10 @@ async function executeSingleAction(action: AIAction, tabId: number): Promise<AIA
           } else {
             try {
               await chrome.debugger.attach({ tabId }, '1.3').catch(() => {})
-              await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
+              await chrome.debugger.sendCommand.call(chrome.debugger, { tabId }, 'Input.dispatchMouseEvent', {
                 type: 'mousePressed', x: cx, y: cy, button: 'left', clickCount: 1,
               })
-              await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
+              await chrome.debugger.sendCommand.call(chrome.debugger, { tabId }, 'Input.dispatchMouseEvent', {
                 type: 'mouseReleased', x: cx, y: cy, button: 'left', clickCount: 1,
               })
               await chrome.debugger.detach({ tabId }).catch(() => {})
@@ -1506,49 +1506,60 @@ export async function executeWithFollowUp(
     const followUpMaxTokens = isLocal ? 1024 : 4096
     const hasScreenshot = followUpMessages.some(m => !!m.imageData)
 
-    // Estimate total input tokens and truncate if needed
+    // Estimate total input tokens — images are base64 and huge
     const totalInputTokens = followUpMessages.reduce((sum, m) =>
-      sum + estimateTokens(m.content ?? '') + (m.imageData ? 1000 : 0), 0)
-    const safeInputLimit = ctxWindow - followUpMaxTokens - 500 // 500 token safety margin
+      sum + estimateTokens(m.content ?? '') + (m.imageData ? Math.ceil(m.imageData.length / 4) : 0), 0)
+    const totalTextTokens = followUpMessages.reduce((sum, m) =>
+      sum + estimateTokens(m.content ?? ''), 0)
+    const safeInputLimit = ctxWindow - followUpMaxTokens - 500
 
-    let truncatedMessages = followUpMessages
-    if (totalInputTokens > safeInputLimit) {
-      console.log(`[LocalAI] Follow-up context too large: ~${totalInputTokens} tokens (limit ~${safeInputLimit}). Truncating...`)
-      truncatedMessages = truncateMessagesToFit(followUpMessages, 0, ctxWindow, followUpMaxTokens + 500)
+    // Always strip images from historical messages — only latest user message gets screenshot
+    let truncatedMessages = followUpMessages.map((m, i) => {
+      if (i < followUpMessages.length - 1) return { ...m, imageData: undefined }
+      return m
+    })
+
+    // Truncate text if still over budget
+    if (totalTextTokens > safeInputLimit) {
+      console.log(`[LocalAI] Follow-up text too large: ~${totalTextTokens} tokens (limit ~${safeInputLimit}). Truncating...`)
+      truncatedMessages = truncateMessagesToFit(
+        truncatedMessages.map(m => ({ ...m, imageData: undefined })),
+        0, ctxWindow, followUpMaxTokens + 500,
+      )
     }
 
-    console.log(`[LocalAI] Calling AI for round ${round + 2}... (tokens≈${totalInputTokens}, maxCtx=${ctxWindow}, restricted=${restricted})`)
-    // Notify user that a follow-up is in progress (model may be slow)
+    console.log(`[LocalAI] Calling AI for round ${round + 2}... (textTokens≈${totalTextTokens}, maxCtx=${ctxWindow}, restricted=${restricted})`)
     port.postMessage({ type: MSG.STREAM_CHUNK, chunk: `\n\n> Round ${round + 2}: thinking...\n` })
 
-    // Generous timeout — local models can be very slow (user accepts 20-30 min waits)
-    const followUpPromise = callAI(truncatedMessages, settings, followUpMaxTokens, hasScreenshot)
-    const timeoutMs = isLocal ? 30 * 60_000 : 5 * 60_000
-    let followUp = await Promise.race([
-      followUpPromise,
-      new Promise<string>(resolve => setTimeout(() => resolve(''), timeoutMs)),
-    ])
+    // Timeout: 2 minutes for cloud, 30 minutes for local
+    const timeoutMs = isLocal ? 30 * 60_000 : 2 * 60_000
+    const callWithTimeout = (msgs: typeof truncatedMessages, maxTok: number, vision = false) =>
+      Promise.race([
+        callAI(msgs, settings, maxTok, vision),
+        new Promise<string>(resolve => setTimeout(() => resolve(''), timeoutMs)),
+      ])
 
-    // ── Retry logic: up to 3 attempts on empty response with progressive context reduction
-    const MAX_FOLLOWUP_RETRIES = 3
-    for (let retryAttempt = 0; retryAttempt < MAX_FOLLOWUP_RETRIES && !followUp; retryAttempt++) {
-      if (retryAttempt === 0 && hasScreenshot) {
-        // First retry: remove images (might be too large for model)
-        console.log(`[LocalAI] Follow-up empty, retry 1/${MAX_FOLLOWUP_RETRIES}: removing images...`)
-        const noImageMsgs = truncatedMessages.map(m => ({ ...m, imageData: undefined }))
-        followUp = await callAI(noImageMsgs, settings, followUpMaxTokens)
-      } else if (retryAttempt === 1) {
-        // Second retry: aggressively truncate — keep only last 2 messages + reduce output
-        console.log(`[LocalAI] Follow-up empty, retry 2/${MAX_FOLLOWUP_RETRIES}: minimal context...`)
-        const minimalMsgs = truncatedMessages.slice(-2).map(m => ({ ...m, imageData: undefined }))
-        followUp = await callAI(minimalMsgs, settings, Math.min(followUpMaxTokens, 2048))
-      } else {
-        // Third retry: last 2 messages with image, small output — give model visual cues
-        console.log(`[LocalAI] Follow-up empty, retry 3/${MAX_FOLLOWUP_RETRIES}: last resort with screenshot...`)
-        await new Promise(r => setTimeout(r, 2000))
-        const lastResort = truncatedMessages.slice(-2)
-        followUp = await callAI(lastResort, settings, Math.min(followUpMaxTokens, 1024), hasScreenshot)
-      }
+    let followUp = await callWithTimeout(truncatedMessages, followUpMaxTokens, hasScreenshot)
+
+    // ── Retry logic: progressively reduce context on empty response ──────
+    if (!followUp) {
+      // Retry 1: strip ALL images
+      console.log(`[LocalAI] Follow-up empty, retry 1/3: removing all images...`)
+      const textOnly = truncatedMessages.map(m => ({ ...m, imageData: undefined }))
+      followUp = await callWithTimeout(textOnly, followUpMaxTokens)
+    }
+    if (!followUp) {
+      // Retry 2: keep only last user message (the current follow-up context)
+      console.log(`[LocalAI] Follow-up empty, retry 2/3: last message only...`)
+      const lastMsg = truncatedMessages.slice(-1).map(m => ({ ...m, imageData: undefined }))
+      followUp = await callWithTimeout(lastMsg, Math.min(followUpMaxTokens, 2048))
+    }
+    if (!followUp) {
+      // Retry 3: ultra-compact — just action results and instruction
+      console.log(`[LocalAI] Follow-up empty, retry 3/3: compact prompt...`)
+      const compactContent = `${resultSummary}\n\nRound ${round + 2}/${maxRounds}. Continue the task or give a SHORT summary.`
+      const compact = [{ role: 'user' as const, content: compactContent, imageData: undefined }]
+      followUp = await callWithTimeout(compact, Math.min(followUpMaxTokens, 1024))
     }
 
     if (followUp) {
