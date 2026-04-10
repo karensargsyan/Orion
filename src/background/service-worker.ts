@@ -71,6 +71,7 @@ import {
 } from './auto-collector'
 import {
   telegramEnabled, pollTelegramUpdates, testTelegramBot, resetTelegramOffset,
+  registerChatHandler, cleanupTelegramTab, notifyTabUrlChange, isTelegramTab,
 } from './telegram-client'
 
 // ─── Background AI call failure tracking ─────────────────────────────────────
@@ -197,6 +198,9 @@ async function initSW(): Promise<void> {
     const intervalMin = Math.max(0.083, (settings!.telegramPollIntervalSec ?? 5) / 60) // min 5s
     await chrome.alarms.create('telegram-poll', { periodInMinutes: intervalMin })
   }
+
+  // Inject handleAIChat into telegram-client (avoids circular import)
+  registerChatHandler(handleAIChat)
 
   if (settings!.onboardingComplete) {
     startScreenshotLoop(settings!.screenshotIntervalSec)
@@ -486,6 +490,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   tabState.delete(tabId)
   panelOpenTabs.delete(tabId)
   cleanupTabGroup(tabId)
+  cleanupTelegramTab(tabId)
   flushBuffer(tabId).then(() => clearTabBuffer(tabId)).catch(() => {})
   // Auto-collector: flush pending inputs then clean up buffer
   triggerFlush(tabId).catch(() => {}).finally(() => clearBuffer(tabId))
@@ -496,6 +501,11 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 chrome.webNavigation.onCommitted.addListener(async (details) => {
   if (details.frameId !== 0) return
   const tid = details.tabId
+
+  // Auto-rename Telegram tabs on navigation
+  if (isTelegramTab(tid)) {
+    notifyTabUrlChange(tid, details.url).catch(() => {})
+  }
 
   // Only monitor tabs that belong to Orion
   if (!panelOpenTabs.has(tid) && !isOrionTab(tid)) return

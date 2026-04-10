@@ -38,26 +38,30 @@ function nextGroupColor(): chrome.tabGroups.ColorEnum {
  * Create a new Orion group for a tab where the user opened the panel.
  * Each panel-open gets its own uniquely colored group.
  */
-export async function createGroupForTab(tabId: number): Promise<void> {
+export async function createGroupForTab(tabId: number, title?: string): Promise<number> {
   // If this tab already has a group, reuse it
   const existingGroupId = tabGroupMap.get(tabId)
   if (existingGroupId !== undefined) {
     try {
       await chrome.tabGroups.get(existingGroupId)
-      return // group still alive, nothing to do
+      return existingGroupId // group still alive
     } catch { tabGroupMap.delete(tabId) }
   }
 
   try {
     const newGroupId = await chrome.tabs.group({ tabIds: [tabId] })
     await chrome.tabGroups.update(newGroupId, {
-      title: AI_GROUP_TITLE,
+      title: title ?? AI_GROUP_TITLE,
       color: nextGroupColor(),
       collapsed: false,
     })
     tabGroupMap.set(tabId, newGroupId)
     activeOriginTabId = tabId
-  } catch { /* tabGroups API may not be available */ }
+    return newGroupId
+  } catch {
+    /* tabGroups API may not be available */
+    return -1
+  }
 }
 
 /**
@@ -101,6 +105,15 @@ export function isOrionTab(tabId: number): boolean {
 export function cleanupTabGroup(tabId: number): void {
   tabGroupMap.delete(tabId)
   if (activeOriginTabId === tabId) activeOriginTabId = null
+}
+
+/** Update the title of a tab's group (e.g. for Telegram auto-rename) */
+export async function updateGroupTitle(tabId: number, title: string): Promise<void> {
+  const groupId = tabGroupMap.get(tabId)
+  if (groupId === undefined) return
+  try {
+    await chrome.tabGroups.update(groupId, { title })
+  } catch { /* group may be gone */ }
 }
 
 /**
