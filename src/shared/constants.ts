@@ -218,6 +218,8 @@ export const DEFAULTS = {
   WHISPER_ENDPOINT: '',
   CONTEXT_WINDOW_TOKENS: 0,
   LITE_MODE: false,
+  TELEGRAM_BOT_ENABLED: false,
+  TELEGRAM_POLL_INTERVAL_SEC: 5,
 } as const
 
 export const SESSION_KEY_STORAGE = 'sessionKey'

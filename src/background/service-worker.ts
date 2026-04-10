@@ -69,6 +69,9 @@ import {
   autoCollectEnabled, bufferUserInput, triggerFlush, clearBuffer,
   getAutoCollectedCount, approveAutoCollected, approveAllAutoCollected,
 } from './auto-collector'
+import {
+  telegramEnabled, pollTelegramUpdates, testTelegramBot, resetTelegramOffset,
+} from './telegram-client'
 
 // ─── Background AI call failure tracking ─────────────────────────────────────
 
@@ -142,6 +145,9 @@ async function getSettings(): Promise<Settings> {
         autoCollectEnabled: DEFAULTS.AUTO_COLLECT_ENABLED,
         autoCollectMinFields: DEFAULTS.AUTO_COLLECT_MIN_FIELDS,
         autoCollectExcludeDomains: [],
+        telegramBotEnabled: DEFAULTS.TELEGRAM_BOT_ENABLED,
+        telegramPollIntervalSec: DEFAULTS.TELEGRAM_POLL_INTERVAL_SEC,
+        telegramAllowedChatIds: [],
         calendarDetectionEnabled: true, onboardingComplete: false,
         learningModeActive: false, learningSnapshotIntervalSec: 3,
         sttProvider: 'web-speech', whisperEndpoint: '',
@@ -185,6 +191,12 @@ async function initSW(): Promise<void> {
   })
   await chrome.alarms.create('ai-action-learn', { periodInMinutes: 15 })
   await chrome.alarms.create('mempalace-learn', { periodInMinutes: 10 })
+
+  // Start Telegram polling if enabled
+  if (telegramEnabled(settings!)) {
+    const intervalMin = Math.max(0.083, (settings!.telegramPollIntervalSec ?? 5) / 60) // min 5s
+    await chrome.alarms.create('telegram-poll', { periodInMinutes: intervalMin })
+  }
 
   if (settings!.onboardingComplete) {
     startScreenshotLoop(settings!.screenshotIntervalSec)
@@ -355,6 +367,12 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     if (!shouldSkipBackgroundAI()) {
       const s = await getSettings()
       await runMempalaceLearningCycle(s)
+    }
+  }
+  if (alarm.name === 'telegram-poll') {
+    const s = await getSettings()
+    if (telegramEnabled(s)) {
+      pollTelegramUpdates(s).catch(err => console.warn('[Telegram] Poll error:', err))
     }
   }
 })
@@ -1137,13 +1155,13 @@ async function handleMessage(
       }
       const raw = (msg.text as string)?.trim() ?? ''
       if (raw.length < 20) return { ok: false, error: 'too_short' }
+      const composeCtx = (msg.composeContext as string) ?? 'general'
+      const composeDetail = (msg.composeDetail as string) ?? 'text'
+      const pageTitle = (msg.pageTitle as string) ?? ''
+      const systemPrompt = buildRewriteSystemPrompt(composeCtx, composeDetail, pageTitle)
       const improved = await callAI(
         [
-          {
-            role: 'system',
-            content:
-              'You improve draft email and contact-form messages. Fix clarity and grammar; keep tone appropriate. Return ONLY the revised text, no quotes or preamble.',
-          },
+          { role: 'system', content: systemPrompt },
           { role: 'user', content: raw.slice(0, 12_000) },
         ],
         s,
@@ -1722,9 +1740,53 @@ async function handleMessage(
       return { ok: true, count: approved }
     }
 
+    // ── Telegram Bot management ──────────────────────────────────────────────
+    case 'TELEGRAM_TEST': {
+      const token = (msg.token as string)?.trim()
+      if (!token) return { ok: false, error: 'No token provided' }
+      const result = await testTelegramBot(token)
+      return result
+    }
+
+    case 'TELEGRAM_TOGGLE': {
+      const enabled = msg.enabled as boolean
+      if (enabled && s.telegramBotToken) {
+        const intervalMin = Math.max(0.083, (s.telegramPollIntervalSec ?? 5) / 60)
+        await chrome.alarms.create('telegram-poll', { periodInMinutes: intervalMin })
+      } else {
+        await chrome.alarms.clear('telegram-poll')
+      }
+      return { ok: true }
+    }
+
+    case 'TELEGRAM_RESET': {
+      resetTelegramOffset()
+      return { ok: true }
+    }
+
     default:
       return { ok: false, error: `Unknown message type: ${msg.type}` }
   }
+}
+
+// ─── Context-aware rewrite prompt ────────────────────────────────────────────
+
+function buildRewriteSystemPrompt(context: string, detail: string, pageTitle: string): string {
+  const contextInstructions: Record<string, string> = {
+    email: `You are revising an ${detail}. Improve clarity, grammar, and professional tone. Keep the message polite and well-structured. For subject lines, make them concise and descriptive. For email bodies, ensure proper greeting, clear body, and appropriate sign-off.`,
+    chat: `You are revising an ${detail} in a messaging app. Keep it conversational, natural, and concise. Fix typos and grammar but preserve the casual tone. Do NOT add formal greetings or sign-offs. Keep it brief — this is instant messaging.`,
+    social: `You are revising a ${detail}. Keep it engaging, authentic, and appropriate for social media. Fix grammar and clarity while preserving the original voice and personality. Keep it concise and impactful.`,
+    code: `You are revising ${detail} on a developer platform. Use clear, technical language. Be precise and well-structured. Use proper technical terminology. For issue descriptions, include clear problem statements. For code review comments, be constructive and specific.`,
+    comment: `You are revising a ${detail}. Keep it relevant, clear, and respectful. Fix grammar and improve readability while preserving the original point. Be concise — comments should add value without being overly long.`,
+    document: `You are revising text in a document editor (${detail}). Improve clarity, structure, and flow. Fix grammar and enhance readability. Maintain consistent tone and style throughout. Preserve formatting intent.`,
+    form: `You are revising text in a ${detail}. Make the message clear, professional, and well-structured. Ensure all key points are communicated effectively. Fix grammar and improve readability.`,
+    general: `You are revising text (${detail}). Improve clarity and grammar while keeping the tone appropriate for the context. Fix any errors and enhance readability.`,
+  }
+
+  const instruction = contextInstructions[context] ?? contextInstructions.general
+  const titleHint = pageTitle ? ` The user is on a page titled "${pageTitle.slice(0, 80)}".` : ''
+
+  return `${instruction}${titleHint} Return ONLY the revised text, no quotes, labels, or preamble. Do not add any text the user did not write — only improve what's there.`
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

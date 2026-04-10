@@ -349,6 +349,36 @@ export async function initSettings(container: HTMLElement): Promise<void> {
       </section>
 
       <section class="settings-section">
+        <h3>Telegram Bot</h3>
+        <p class="hint-text" style="margin-bottom:10px">
+          Connect Orion to a Telegram bot so you can chat with the AI from your phone.
+          Create a bot via <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a> and paste the token below.
+        </p>
+        <div class="form-group form-group-toggle">
+          <label>Enable Telegram bot</label>
+          <input type="checkbox" id="telegram-enabled" ${s.telegramBotEnabled ? 'checked' : ''}>
+        </div>
+        <div class="form-group">
+          <label>Bot Token</label>
+          <div class="input-row-inline">
+            <input type="password" id="telegram-token" value="${esc(s.telegramBotToken ?? '')}" placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11">
+            <button id="btn-test-telegram" class="btn-small btn-test-action">Test</button>
+          </div>
+          <p id="telegram-status" class="hint-text"></p>
+        </div>
+        <div class="form-group">
+          <label>Poll interval (seconds)</label>
+          <input type="number" id="telegram-poll-interval" value="${s.telegramPollIntervalSec ?? 5}" min="2" max="60">
+          <small style="color:var(--text-dim);font-size:11px">How often to check for new Telegram messages.</small>
+        </div>
+        <div class="form-group">
+          <label>Allowed Chat IDs <span class="optional-tag">optional</span></label>
+          <input type="text" id="telegram-chat-ids" value="${esc((s.telegramAllowedChatIds ?? []).join(', '))}" placeholder="Leave empty to allow all chats">
+          <small style="color:var(--text-dim);font-size:11px">Comma-separated chat IDs. Empty = any chat can use the bot. Send /start to your bot to find your chat ID.</small>
+        </div>
+      </section>
+
+      <section class="settings-section">
         <h3>About</h3>
         <p class="hint-text">
           <a href="#" id="btn-privacy-policy" style="color:var(--accent)">Privacy Policy</a>
@@ -755,6 +785,11 @@ function wireSettingsEvents(container: HTMLElement, s: Settings): void {
       autoCollectMinFields: Number((container.querySelector('#auto-collect-min-fields') as HTMLInputElement).value),
       autoCollectExcludeDomains: (container.querySelector('#auto-collect-exclude') as HTMLInputElement).value
         .split(',').map(d => d.trim()).filter(Boolean),
+      telegramBotEnabled: (container.querySelector('#telegram-enabled') as HTMLInputElement).checked,
+      telegramBotToken: (container.querySelector('#telegram-token') as HTMLInputElement).value.trim() || undefined,
+      telegramPollIntervalSec: Number((container.querySelector('#telegram-poll-interval') as HTMLInputElement).value),
+      telegramAllowedChatIds: (container.querySelector('#telegram-chat-ids') as HTMLInputElement).value
+        .split(',').map(s => s.trim()).filter(Boolean),
     }
     await chrome.runtime.sendMessage({ type: MSG.SETTINGS_SET, partial })
     const statusEl = container.querySelector('#save-status') as HTMLElement
@@ -865,6 +900,30 @@ function wireSettingsEvents(container: HTMLElement, s: Settings): void {
     await chrome.runtime.sendMessage({ type: 'LOCAL_MEMORY_CLEAR' })
     statusEl.textContent = 'Local memory cleared.'
     statusEl.style.color = 'var(--color-success)'
+  })
+
+  // ── Telegram bot buttons ───────────────────────────────────────────────────
+  container.querySelector('#btn-test-telegram')?.addEventListener('click', async () => {
+    const token = (container.querySelector('#telegram-token') as HTMLInputElement).value.trim()
+    const statusEl = container.querySelector('#telegram-status') as HTMLElement
+    if (!token) { statusEl.textContent = 'Enter a bot token first.'; statusEl.style.color = 'var(--color-error)'; return }
+    statusEl.textContent = 'Testing...'
+    statusEl.style.color = ''
+    const res = await chrome.runtime.sendMessage({ type: 'TELEGRAM_TEST', token }) as {
+      ok: boolean; botName?: string; error?: string
+    }
+    if (res.ok) {
+      statusEl.textContent = `Connected! Bot: ${res.botName}`
+      statusEl.style.color = 'var(--color-success)'
+    } else {
+      statusEl.textContent = res.error || 'Invalid token'
+      statusEl.style.color = 'var(--color-error)'
+    }
+  })
+
+  container.querySelector('#telegram-enabled')?.addEventListener('change', async () => {
+    const enabled = (container.querySelector('#telegram-enabled') as HTMLInputElement).checked
+    await chrome.runtime.sendMessage({ type: 'TELEGRAM_TOGGLE', enabled })
   })
 
   // ── Privacy Policy link ───────────────────────────────────────────────────

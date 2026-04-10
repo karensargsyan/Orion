@@ -341,6 +341,11 @@ export interface Settings {
   contextWindowTokens: number
   /** Use simplified prompt + fewer actions for small local models */
   liteMode: boolean
+  /** Telegram bot integration */
+  telegramBotEnabled?: boolean
+  telegramBotToken?: string
+  telegramAllowedChatIds?: string[]
+  telegramPollIntervalSec?: number
 }
 
 // ─── Confirmation ─────────────────────────────────────────────────────────────
