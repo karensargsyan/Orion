@@ -159,7 +159,7 @@ export const MSG = {
 export type MsgType = (typeof MSG)[keyof typeof MSG]
 
 export const DB_NAME = 'pwa_memory'
-export const DB_VERSION = 7
+export const DB_VERSION = 8
 
 export const STORE = {
   CHAT_HISTORY: 'chat_history',
@@ -175,6 +175,7 @@ export const STORE = {
   SUPERVISED_PLAYBOOKS: 'supervised_playbooks',
   SUPERVISED_SESSIONS: 'supervised_sessions',
   VISUAL_SITEMAP: 'visual_sitemap',
+  LOCAL_MEMORY: 'local_memory',
 } as const
 
 export const PORT_AI_STREAM = 'ai-stream'
@@ -200,8 +201,12 @@ export const DEFAULTS = {
   ACTION_BUFFER_SIZE: 500,
   SCREENSHOT_INTERVAL_SEC: 10,
   TEXT_REWRITE_ENABLED: true,
-  MEMPALACE_BRIDGE_ENABLED: true,
+  MEMPALACE_BRIDGE_ENABLED: false,
   MEMPALACE_BRIDGE_URL: 'http://127.0.0.1:8765',
+  LOCAL_MEMORY_ENABLED: true,
+  LOCAL_MEMORY_MAX_ENTRIES: 500,
+  AUTO_COLLECT_ENABLED: true,
+  AUTO_COLLECT_MIN_FIELDS: 3,
   CALENDAR_DETECTION_ENABLED: true,
   ONBOARDING_COMPLETE: false,
   SAFETY_BORDER_ENABLED: false,

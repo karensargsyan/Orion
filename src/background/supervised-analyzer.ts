@@ -3,6 +3,7 @@ import { callAI } from './ai-client'
 import { savePlaybook } from './memory-manager'
 import { mempalaceEnabled } from './mempalace-client'
 import { recordLesson, recordDomainKnowledge } from './mempalace-learner'
+import { localMemoryEnabled, recordLocalLesson, recordLocalDomainKnowledge } from './local-memory'
 
 export async function analyzeSupervisedInteraction(
   interaction: SupervisedInteraction,
@@ -31,6 +32,18 @@ export async function analyzeSupervisedInteraction(
 
   if (mempalaceEnabled(settings)) {
     await storeToPalace(playbook, rawAnalysis, session, settings)
+  }
+
+  // Local memory: store playbook as lesson + domain knowledge
+  if (localMemoryEnabled(settings)) {
+    await recordLocalLesson(
+      `Supervised playbook for "${playbook.triggers.join(', ')}": ${playbook.steps.join(' → ')}`.slice(0, 1500),
+      { source: 'supervised-learning', domain: session.domain }
+    ).catch(() => {})
+    await recordLocalDomainKnowledge(
+      session.domain,
+      `Learned interaction: ${rawAnalysis.slice(0, 1500)}`
+    ).catch(() => {})
   }
 
   return playbook

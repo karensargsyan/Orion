@@ -163,6 +163,26 @@ export interface VaultEntry {
   encryptedData: EncryptedBlob
   createdAt: number
   updatedAt: number
+  /** If true, this entry was auto-collected from user input and awaits approval */
+  autoCollected?: boolean
+  /** Domain where the data was collected from */
+  sourceDomain?: string
+}
+
+// ─── Local Memory ─────────────────────────────────────────────────────────────
+
+export type LocalMemoryCategory = 'error' | 'success' | 'lesson' | 'domain_knowledge' | 'session_push'
+
+export interface LocalMemoryEntry {
+  id?: number
+  category: LocalMemoryCategory
+  domain: string
+  content: string
+  source: string
+  keywords: string[]
+  timestamp: number
+  accessCount: number
+  lastAccessed: number
 }
 
 export interface EncryptedBlob {
@@ -304,6 +324,11 @@ export interface Settings {
   mempalaceBridgeEnabled?: boolean
   mempalaceBridgeUrl?: string
   mempalaceWing?: string
+  localMemoryEnabled?: boolean
+  localMemoryMaxEntries?: number
+  autoCollectEnabled?: boolean
+  autoCollectMinFields?: number
+  autoCollectExcludeDomains?: string[]
   calendarDetectionEnabled: boolean
   onboardingComplete: boolean
   learningModeActive: boolean

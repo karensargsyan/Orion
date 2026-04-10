@@ -27,6 +27,7 @@ function copyStatic(): void {
   copyFile('src/sidepanel/sidepanel.html', 'dist/sidepanel/sidepanel.html')
   copyFile('src/offscreen/offscreen.html', 'dist/offscreen/offscreen.html')
   copyFile('src/permissions/microphone-permission.html', 'dist/permissions/microphone-permission.html')
+  copyFile('docs/privacy-policy.html', 'dist/privacy-policy.html')
   if (fs.existsSync('icons')) copyDir('icons', 'dist/icons')
   // _dev is NOT copied to dist — Chrome rejects filenames starting with "_"
 }

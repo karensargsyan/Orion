@@ -61,6 +61,14 @@ import { getCDPAccessibilityTree, type CDPTreeResult } from './cdp-accessibility
 import { captureMiniMap, type MiniMapResult } from './minimap-screenshot'
 import { recordPageVisit, getSitemapForPrompt, persistDirtySitemaps } from './visual-sitemap'
 import { getPersonaForPrompt } from './page-persona'
+import {
+  localMemoryEnabled, recallLocalMemories, recordLocalLesson,
+  searchLocalMemory, clearLocalMemory, getLocalMemoryStats,
+} from './local-memory'
+import {
+  autoCollectEnabled, bufferUserInput, triggerFlush, clearBuffer,
+  getAutoCollectedCount, approveAutoCollected, approveAllAutoCollected,
+} from './auto-collector'
 
 // ─── Background AI call failure tracking ─────────────────────────────────────
 
@@ -129,6 +137,11 @@ async function getSettings(): Promise<Settings> {
         aiActionLearningEnabled: true,
         mempalaceBridgeEnabled: DEFAULTS.MEMPALACE_BRIDGE_ENABLED,
         mempalaceBridgeUrl: DEFAULTS.MEMPALACE_BRIDGE_URL,
+        localMemoryEnabled: DEFAULTS.LOCAL_MEMORY_ENABLED,
+        localMemoryMaxEntries: DEFAULTS.LOCAL_MEMORY_MAX_ENTRIES,
+        autoCollectEnabled: DEFAULTS.AUTO_COLLECT_ENABLED,
+        autoCollectMinFields: DEFAULTS.AUTO_COLLECT_MIN_FIELDS,
+        autoCollectExcludeDomains: [],
         calendarDetectionEnabled: true, onboardingComplete: false,
         learningModeActive: false, learningSnapshotIntervalSec: 3,
         sttProvider: 'web-speech', whisperEndpoint: '',
@@ -154,6 +167,11 @@ async function initSW(): Promise<void> {
       safetyBorderEnabled: false, composeAssistantEnabled: true, aiActionLearningEnabled: true,
       mempalaceBridgeEnabled: DEFAULTS.MEMPALACE_BRIDGE_ENABLED,
       mempalaceBridgeUrl: DEFAULTS.MEMPALACE_BRIDGE_URL,
+      localMemoryEnabled: DEFAULTS.LOCAL_MEMORY_ENABLED,
+      localMemoryMaxEntries: DEFAULTS.LOCAL_MEMORY_MAX_ENTRIES,
+      autoCollectEnabled: DEFAULTS.AUTO_COLLECT_ENABLED,
+      autoCollectMinFields: DEFAULTS.AUTO_COLLECT_MIN_FIELDS,
+      autoCollectExcludeDomains: [],
       calendarDetectionEnabled: true, onboardingComplete: false,
       learningModeActive: false, learningSnapshotIntervalSec: 3,
       sttProvider: 'web-speech', whisperEndpoint: '',
@@ -451,6 +469,8 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   panelOpenTabs.delete(tabId)
   cleanupTabGroup(tabId)
   flushBuffer(tabId).then(() => clearTabBuffer(tabId)).catch(() => {})
+  // Auto-collector: flush pending inputs then clean up buffer
+  triggerFlush(tabId).catch(() => {}).finally(() => clearBuffer(tabId))
 })
 
 // Tab activation screenshot handled in the side panel onActivated listener above
@@ -692,6 +712,15 @@ async function handleAIChat(
     const recalled = await recallRelevantMemories(s, userText, currentDomain).catch(() => '')
     if (recalled) mempalaceBlock = recalled
   }
+  // Local memory recall (always-available, no external server)
+  if (localMemoryEnabled(s) && userText.trim().length > 0) {
+    const localRecalled = await recallLocalMemories(userText, currentDomain).catch(() => '')
+    if (localRecalled) {
+      mempalaceBlock = mempalaceBlock
+        ? mempalaceBlock + '\n\n' + localRecalled
+        : localRecalled
+    }
+  }
 
   const isExternalProvider = s.activeProvider === 'gemini' || s.activeProvider === 'openai' || s.activeProvider === 'anthropic'
   const effectiveCapabilities = isExternalProvider
@@ -931,11 +960,14 @@ async function handleAIMemorySearch(
     return
   }
 
-  // Parallel search: IDB text search + MemPalace semantic search + URL-rich session memory
-  const [idbResults, mempalaceResults, sessionEntries] = await Promise.all([
+  // Parallel search: IDB text search + MemPalace semantic search + Local Memory + URL-rich session memory
+  const [idbResults, mempalaceResults, localMemResults, sessionEntries] = await Promise.all([
     searchAllHistory(query).catch(() => ''),
     mempalaceEnabled(s)
       ? searchMempalace(s, query, { limit: 8 }).catch(() => '')
+      : Promise.resolve(''),
+    localMemoryEnabled(s)
+      ? searchLocalMemory(query, { limit: 8 }).catch(() => '')
       : Promise.resolve(''),
     getRecentSessionMemory(80).catch(() => [] as Awaited<ReturnType<typeof getRecentSessionMemory>>),
   ])
@@ -969,6 +1001,7 @@ async function handleAIMemorySearch(
   if (urlContext) sections.push(`## Browsing History (URLs and pages visited)\n${urlContext}`)
   if (idbResults) sections.push(`## Text Search Results\n${idbResults.slice(0, 2500)}`)
   if (mempalaceResults) sections.push(`## Semantic Memory (MemPalace)\n${mempalaceResults.slice(0, 2500)}`)
+  if (localMemResults) sections.push(`## Local Memory\n${localMemResults.slice(0, 2500)}`)
 
   const combinedContext = sections.join('\n\n').slice(0, 8000)
 
@@ -1138,6 +1171,19 @@ async function handleMessage(
       if (isSupervisedActive()) {
         feedUserEvent(msg.event as Parameters<typeof feedUserEvent>[0])
       }
+      // Auto-collection: buffer user form inputs for extraction
+      if (autoCollectEnabled(s) && tabId > 0) {
+        const evt = msg.event as { type: string; selector?: string; value?: string; tagName?: string; inputType?: string }
+        const snap = tabState.get(tabId)
+        const domain = snap?.url ? extractDomain(snap.url) : ''
+        if (domain) {
+          bufferUserInput(tabId, domain, snap?.url ?? '', evt)
+        }
+        // Flush on form submit
+        if (evt.type === 'submit') {
+          triggerFlush(tabId).catch(() => {})
+        }
+      }
       return { ok: true }
     }
 
@@ -1154,7 +1200,7 @@ async function handleMessage(
       const unlocked = await isSessionUnlocked()
       if (!unlocked) return { ok: false, error: 'SESSION_LOCKED' }
       const entries = await vaultList()
-      return { ok: true, entries: entries.map(e => ({ id: e.id, category: e.category, label: e.label, updatedAt: e.updatedAt })) }
+      return { ok: true, entries: entries.map(e => ({ id: e.id, category: e.category, label: e.label, updatedAt: e.updatedAt, autoCollected: e.autoCollected, sourceDomain: e.sourceDomain })) }
     }
 
     case MSG.VAULT_GET: {
@@ -1647,6 +1693,33 @@ async function handleMessage(
         sendSTTStartToOffscreen(lang)
       }
       return { ok: true }
+    }
+
+    // ── Local Memory management ──────────────────────────────────────────────
+    case 'LOCAL_MEMORY_STATS': {
+      const stats = await getLocalMemoryStats()
+      return { ok: true, total: stats.total, byCategory: stats.byCategory }
+    }
+
+    case 'LOCAL_MEMORY_CLEAR': {
+      await clearLocalMemory()
+      return { ok: true }
+    }
+
+    // ── Auto-collection management ──────────────────────────────────────────
+    case 'AUTO_COLLECT_COUNT': {
+      const count = await getAutoCollectedCount()
+      return { ok: true, count }
+    }
+
+    case 'AUTO_COLLECT_APPROVE': {
+      await approveAutoCollected(msg.id as string)
+      return { ok: true }
+    }
+
+    case 'AUTO_COLLECT_APPROVE_ALL': {
+      const approved = await approveAllAutoCollected()
+      return { ok: true, count: approved }
     }
 
     default:

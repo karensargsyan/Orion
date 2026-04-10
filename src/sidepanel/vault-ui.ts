@@ -10,6 +10,8 @@ interface VaultEntryMeta {
   category: VaultCategory
   label: string
   updatedAt: number
+  autoCollected?: boolean
+  sourceDomain?: string
 }
 
 const CATEGORY_LABELS: Record<VaultCategory, string> = {
@@ -188,25 +190,58 @@ async function renderVaultList(): Promise<void> {
   }
 
   const entries = res.entries ?? []
+  const autoCollected = entries.filter(e => e.autoCollected)
+  const approved = entries.filter(e => !e.autoCollected)
 
   container.innerHTML = `
     <div class="vault-header">
       <h2>Vault</h2>
       <button id="btn-add-entry" class="btn-primary btn-small">+ Add</button>
     </div>
+    ${autoCollected.length > 0 ? `
+      <div class="vault-auto-collected-section">
+        <div class="vault-auto-header">
+          <span class="auto-badge">${autoCollected.length} Auto-collected</span>
+          <button id="btn-approve-all" class="btn-small" style="margin-left:8px">Approve All</button>
+        </div>
+        ${autoCollected.map(item => `
+          <div class="vault-entry vault-entry-auto" data-id="${item.id}">
+            <div class="vault-entry-info">
+              <div class="vault-entry-label">${escHtml(item.label)}</div>
+              <div class="vault-entry-meta">${CATEGORY_LABELS[item.category] ?? item.category}${item.sourceDomain ? ` · ${escHtml(item.sourceDomain)}` : ''}</div>
+            </div>
+            <div class="vault-entry-actions">
+              <button class="btn-approve btn-small" title="Approve and keep">Approve</button>
+              <button class="btn-edit btn-small" title="Edit">Edit</button>
+              <button class="btn-delete btn-small btn-danger" title="Dismiss">Dismiss</button>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    ` : ''}
     <div class="vault-categories">
-      ${renderCategoryGroups(entries)}
+      ${renderCategoryGroups(approved)}
     </div>
     ${entries.length === 0 ? '<p class="empty-hint">No entries yet. Click <strong>+ Add</strong> to store your first profile.</p>' : ''}
   `
 
   container.querySelector('#btn-add-entry')?.addEventListener('click', () => renderAddForm())
 
+  // Approve all auto-collected
+  container.querySelector('#btn-approve-all')?.addEventListener('click', async () => {
+    await chrome.runtime.sendMessage({ type: 'AUTO_COLLECT_APPROVE_ALL' })
+    await renderVaultList()
+  })
+
   container.querySelectorAll('.vault-entry').forEach(el => {
     const id = el.getAttribute('data-id')!
     el.querySelector('.btn-edit')?.addEventListener('click', () => renderEditForm(id))
     el.querySelector('.btn-delete')?.addEventListener('click', () => deleteEntry(id))
     el.querySelector('.btn-fill')?.addEventListener('click', () => fillEntry(id))
+    el.querySelector('.btn-approve')?.addEventListener('click', async () => {
+      await chrome.runtime.sendMessage({ type: 'AUTO_COLLECT_APPROVE', id })
+      await renderVaultList()
+    })
   })
 }
 

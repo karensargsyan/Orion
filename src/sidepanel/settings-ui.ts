@@ -296,12 +296,63 @@ export async function initSettings(container: HTMLElement): Promise<void> {
       </section>
 
       <section class="settings-section">
+        <h3>Local Memory</h3>
+        <p class="hint-text" style="margin-bottom:10px">
+          Local memory stores lessons, errors, successes and domain knowledge in the browser (IndexedDB).
+          Always available, no external server needed. Replaces MemPalace for most use cases.
+        </p>
+        <div class="form-group form-group-toggle">
+          <label>Enable local memory</label>
+          <input type="checkbox" id="local-memory-enabled" ${s.localMemoryEnabled !== false ? 'checked' : ''}>
+        </div>
+        <div class="form-group">
+          <label>Max entries</label>
+          <input type="number" id="local-memory-max" value="${s.localMemoryMaxEntries ?? 500}" min="50" max="5000" step="50">
+          <small style="color:var(--text-dim);font-size:11px">Oldest/least-used entries are pruned automatically when limit is reached.</small>
+        </div>
+        <div class="form-row">
+          <button id="btn-local-memory-stats" class="btn-small">Show Stats</button>
+          <button id="btn-clear-local-memory" class="btn-small btn-danger">Clear Local Memory</button>
+        </div>
+        <p id="local-memory-status" class="hint-text"></p>
+      </section>
+
+      <section class="settings-section">
+        <h3>Smart Auto-Collection</h3>
+        <p class="hint-text" style="margin-bottom:10px">
+          Monitors form inputs and extracts reusable personal data (name, email, phone, address, etc.)
+          using AI analysis. Extracted data is stored encrypted in the Vault with an "Auto-collected" badge for your review.
+        </p>
+        <div class="form-group form-group-toggle">
+          <label>Enable auto-collection</label>
+          <input type="checkbox" id="auto-collect-enabled" ${s.autoCollectEnabled !== false ? 'checked' : ''}>
+        </div>
+        <div class="form-group">
+          <label>Minimum fields before extraction</label>
+          <input type="number" id="auto-collect-min-fields" value="${s.autoCollectMinFields ?? 3}" min="2" max="10">
+          <small style="color:var(--text-dim);font-size:11px">Only extract when user fills this many fields on a page.</small>
+        </div>
+        <div class="form-group">
+          <label>Exclude domains (comma-separated)</label>
+          <input type="text" id="auto-collect-exclude" value="${esc((s.autoCollectExcludeDomains ?? []).join(', '))}" placeholder="e.g. google.com, facebook.com">
+          <small style="color:var(--text-dim);font-size:11px">Domains where auto-collection is disabled.</small>
+        </div>
+      </section>
+
+      <section class="settings-section">
         <h3>Data</h3>
         <div class="form-row">
           <button id="btn-export-memory" class="btn-small">Export Memory</button>
           <button id="btn-clear-session-mem" class="btn-small btn-danger">Clear Session</button>
           <button id="btn-clear-all-mem" class="btn-small btn-danger">Clear All</button>
         </div>
+      </section>
+
+      <section class="settings-section">
+        <h3>About</h3>
+        <p class="hint-text">
+          <a href="#" id="btn-privacy-policy" style="color:var(--accent)">Privacy Policy</a>
+        </p>
       </section>
 
       <div class="settings-footer">
@@ -698,6 +749,12 @@ function wireSettingsEvents(container: HTMLElement, s: Settings): void {
       mempalaceBridgeEnabled: (container.querySelector('#mempalace-enabled') as HTMLInputElement).checked,
       mempalaceBridgeUrl: (container.querySelector('#mempalace-url') as HTMLInputElement).value.trim(),
       mempalaceWing: (container.querySelector('#mempalace-wing') as HTMLInputElement).value.trim() || undefined,
+      localMemoryEnabled: (container.querySelector('#local-memory-enabled') as HTMLInputElement).checked,
+      localMemoryMaxEntries: Number((container.querySelector('#local-memory-max') as HTMLInputElement).value),
+      autoCollectEnabled: (container.querySelector('#auto-collect-enabled') as HTMLInputElement).checked,
+      autoCollectMinFields: Number((container.querySelector('#auto-collect-min-fields') as HTMLInputElement).value),
+      autoCollectExcludeDomains: (container.querySelector('#auto-collect-exclude') as HTMLInputElement).value
+        .split(',').map(d => d.trim()).filter(Boolean),
     }
     await chrome.runtime.sendMessage({ type: MSG.SETTINGS_SET, partial })
     const statusEl = container.querySelector('#save-status') as HTMLElement
@@ -783,6 +840,37 @@ function wireSettingsEvents(container: HTMLElement, s: Settings): void {
       statusEl.textContent = res.error || 'Failed'
       statusEl.style.color = 'var(--color-error)'
     }
+  })
+
+  // ── Local Memory buttons ──────────────────────────────────────────────────
+  container.querySelector('#btn-local-memory-stats')?.addEventListener('click', async () => {
+    const statusEl = container.querySelector('#local-memory-status') as HTMLElement
+    statusEl.textContent = 'Loading...'
+    const res = await chrome.runtime.sendMessage({ type: 'LOCAL_MEMORY_STATS' }) as {
+      ok: boolean; total?: number; byCategory?: Record<string, number>
+    }
+    if (res.ok) {
+      const cats = res.byCategory ? Object.entries(res.byCategory).map(([k, v]) => `${k}: ${v}`).join(', ') : 'none'
+      statusEl.textContent = `${res.total ?? 0} entries (${cats})`
+      statusEl.style.color = 'var(--color-success)'
+    } else {
+      statusEl.textContent = 'Could not load stats'
+      statusEl.style.color = 'var(--color-error)'
+    }
+  })
+
+  container.querySelector('#btn-clear-local-memory')?.addEventListener('click', async () => {
+    if (!confirm('Clear all local memory entries? This cannot be undone.')) return
+    const statusEl = container.querySelector('#local-memory-status') as HTMLElement
+    await chrome.runtime.sendMessage({ type: 'LOCAL_MEMORY_CLEAR' })
+    statusEl.textContent = 'Local memory cleared.'
+    statusEl.style.color = 'var(--color-success)'
+  })
+
+  // ── Privacy Policy link ───────────────────────────────────────────────────
+  container.querySelector('#btn-privacy-policy')?.addEventListener('click', (e) => {
+    e.preventDefault()
+    void chrome.tabs.create({ url: chrome.runtime.getURL('privacy-policy.html'), active: true })
   })
 }
 

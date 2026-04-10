@@ -126,6 +126,16 @@ function setupSchema(db: IDBDatabase, tx: IDBTransaction, oldVersion: number): v
       sm.createIndex('by_updated', 'lastUpdated', { unique: false })
     }
   }
+
+  // v7 -> v8: local memory store (MemPalace replacement — no external server)
+  if (oldVersion < 8) {
+    if (!db.objectStoreNames.contains(STORE.LOCAL_MEMORY)) {
+      const lm = db.createObjectStore(STORE.LOCAL_MEMORY, { keyPath: 'id', autoIncrement: true })
+      lm.createIndex('by_category', 'category', { unique: false })
+      lm.createIndex('by_domain', 'domain', { unique: false })
+      lm.createIndex('by_timestamp', 'timestamp', { unique: false })
+    }
+  }
 }
 
 // ─── Generic helpers ──────────────────────────────────────────────────────────

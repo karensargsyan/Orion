@@ -10,6 +10,7 @@ import { recordActionFailure, recordActionSuccess, recallRelevantMemories } from
 import { getAllSettings } from './memory-manager'
 import { classifyField } from './form-intelligence'
 import { mempalaceEnabled, searchMempalace } from './mempalace-client'
+import { localMemoryEnabled, recallLocalMemories, recordLocalFailure, recordLocalSuccess } from './local-memory'
 import { getCDPAccessibilityTree, getCDPAccessibilityTreeCached, resolveElementCoords, invalidateTreeCache } from './cdp-accessibility'
 import { captureMiniMap, captureAutomationScreenshot } from './minimap-screenshot'
 import { recordPageVisit, getPageScreenshot } from './visual-sitemap'
@@ -1439,14 +1440,29 @@ export async function executeWithFollowUp(
     let palaceHints = ''
     if (anyFailed) {
       const s = await getAllSettings().catch(() => null)
+      const failQuery = failedActions.map(r => r.error ?? r.action).join(' ').slice(0, 200)
+      const snap = tabState.get(tabId)
+      const domain = snap?.url ? extractDomainFromUrl(snap.url) : ''
+
       if (s && mempalaceEnabled(s)) {
-        const failQuery = failedActions.map(r => r.error ?? r.action).join(' ').slice(0, 200)
-        const snap = tabState.get(tabId)
-        const domain = snap?.url ? extractDomainFromUrl(snap.url) : ''
         const hints = await recallRelevantMemories(s, failQuery, domain).catch(() => '')
         if (hints) palaceHints = `\n\nMEMORY FROM PAST SESSIONS:\n${hints}\n`
         for (const r of failedActions) {
           recordActionFailure(s, r, {
+            url: snap?.url ?? '',
+            domain,
+            userGoal: sessionMessages.filter(m => m.role === 'user').pop()?.content?.slice(0, 200),
+            attempt: actions.map(a => `${a.action}(${a.params.selector ?? ''})`).join(', ').slice(0, 300),
+          }).catch(() => {})
+        }
+      }
+      // Local memory: recall hints + record failures
+      if (s && localMemoryEnabled(s)) {
+        const localHints = await recallLocalMemories(failQuery, domain).catch(() => '')
+        if (localHints && !palaceHints) palaceHints = `\n\nMEMORY FROM PAST SESSIONS:\n${localHints}\n`
+        else if (localHints) palaceHints += localHints + '\n'
+        for (const r of failedActions) {
+          recordLocalFailure(r, {
             url: snap?.url ?? '',
             domain,
             userGoal: sessionMessages.filter(m => m.role === 'user').pop()?.content?.slice(0, 200),
