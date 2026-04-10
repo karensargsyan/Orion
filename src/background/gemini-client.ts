@@ -163,13 +163,24 @@ export async function callGemini(
       body: JSON.stringify(body),
     })
 
-    if (!response.ok) return ''
+    if (!response.ok) {
+      try {
+        const errBody = await response.text()
+        console.warn(`[LocalAI] callGemini error ${response.status}: ${errBody.slice(0, 300)}`)
+      } catch {
+        console.warn(`[LocalAI] callGemini error: ${response.status} ${response.statusText}`)
+      }
+      return ''
+    }
 
     const json = await response.json() as {
       candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>
     }
-    return json.candidates?.[0]?.content?.parts?.map(p => p.text ?? '').join('') ?? ''
-  } catch {
+    const result = json.candidates?.[0]?.content?.parts?.map(p => p.text ?? '').join('') ?? ''
+    if (!result) console.warn(`[LocalAI] callGemini returned empty content. Candidates: ${JSON.stringify(json.candidates?.length ?? 0)}`)
+    return result
+  } catch (err) {
+    console.warn(`[LocalAI] callGemini network error:`, err)
     return ''
   }
 }

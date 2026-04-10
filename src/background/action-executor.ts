@@ -1,6 +1,6 @@
 import { MSG } from '../shared/constants'
 import type { AIAction, AIActionResult, Settings, ChatMessage, PageSnapshot, FillAssignment } from '../shared/types'
-import { callAI } from './ai-client'
+import { callAI, estimateTokens, truncateMessagesToFit } from './ai-client'
 import type { StreamPort } from './ai-client'
 import { tabState } from './tab-state'
 import { searchGoogle, openAndReadTab, closeAllResearchTabs, openAndReadMultipleTabs, getResearchTabCount } from './web-researcher'
@@ -1478,8 +1478,15 @@ export async function executeWithFollowUp(
       if (postScreenshot) {
         visualVerification = '\nScreenshot attached — verify actions worked visually.\n'
       }
-      const a11ySection = followUpA11y ? `\nAccessibility Tree:\n${followUpA11y}\n` : ''
-      followUpContent = `Action results:\n${resultSummary}\n\n${verification}${stateDiff ? `\nELEMENT STATE CHANGES:\n${stateDiff}\n` : ''}${visualVerification}\n${failureInstructions}${palaceHints}${userIsActive ? '\nUser is also interacting.\n' : ''}Updated page state:\n${freshContext}${a11ySection}${freshPageText ? `\n\nPage Content (excerpt):\n${freshPageText}\n` : ''}\n\nRound ${round + 2}/${maxRounds}. ${anyFailed ? 'RETRY with a DIFFERENT approach.' : 'Continue if more steps needed, or give a SHORT summary.'}`
+      // Cap a11y tree and page text to prevent context overflow on later rounds
+      const a11yMaxChars = round < 2 ? 8000 : 4000
+      const pageTextMaxChars = round < 2 ? 4000 : 2000
+      const cappedA11y = followUpA11y ? followUpA11y.slice(0, a11yMaxChars) : ''
+      const a11ySection = cappedA11y ? `\nAccessibility Tree:\n${cappedA11y}\n` : ''
+      // freshContext from tabState.summarize() already includes page text excerpts,
+      // so only add freshPageText when a11y tree is NOT present (it provides richer info)
+      const extraPageText = (!cappedA11y && freshPageText) ? freshPageText.slice(0, pageTextMaxChars) : ''
+      followUpContent = `Action results:\n${resultSummary}\n\n${verification}${stateDiff ? `\nELEMENT STATE CHANGES:\n${stateDiff}\n` : ''}${visualVerification}\n${failureInstructions}${palaceHints.slice(0, 1000)}${userIsActive ? '\nUser is also interacting.\n' : ''}Updated page state:\n${freshContext}${a11ySection}${extraPageText ? `\n\nPage Content (excerpt):\n${extraPageText}\n` : ''}\n\nRound ${round + 2}/${maxRounds}. ${anyFailed ? 'RETRY with a DIFFERENT approach.' : 'Continue if more steps needed, or give a SHORT summary.'}`
     }
 
     const followUpMessages: Pick<ChatMessage, 'role' | 'content' | 'imageData'>[] = [
@@ -1493,37 +1500,54 @@ export async function executeWithFollowUp(
       break
     }
 
-    console.log(`[LocalAI] Calling AI for round ${round + 2}... (restricted=${restricted}, resultLen=${resultSummary.length})`)
-    // Notify user that a follow-up is in progress (model may be slow)
-    port.postMessage({ type: MSG.STREAM_CHUNK, chunk: `\n\n> Round ${round + 2}: thinking...\n` })
-
-    // Use smaller max_tokens for local models to avoid very long waits
+    // ── Token-aware context management ────────────────────────────────
     const isLocal = (settings.activeProvider ?? 'local') === 'local'
+    const ctxWindow = settings.contextWindowTokens || (isLocal ? 32768 : 131072)
     const followUpMaxTokens = isLocal ? 1024 : 4096
     const hasScreenshot = followUpMessages.some(m => !!m.imageData)
 
+    // Estimate total input tokens and truncate if needed
+    const totalInputTokens = followUpMessages.reduce((sum, m) =>
+      sum + estimateTokens(m.content ?? '') + (m.imageData ? 1000 : 0), 0)
+    const safeInputLimit = ctxWindow - followUpMaxTokens - 500 // 500 token safety margin
+
+    let truncatedMessages = followUpMessages
+    if (totalInputTokens > safeInputLimit) {
+      console.log(`[LocalAI] Follow-up context too large: ~${totalInputTokens} tokens (limit ~${safeInputLimit}). Truncating...`)
+      truncatedMessages = truncateMessagesToFit(followUpMessages, 0, ctxWindow, followUpMaxTokens + 500)
+    }
+
+    console.log(`[LocalAI] Calling AI for round ${round + 2}... (tokens≈${totalInputTokens}, maxCtx=${ctxWindow}, restricted=${restricted})`)
+    // Notify user that a follow-up is in progress (model may be slow)
+    port.postMessage({ type: MSG.STREAM_CHUNK, chunk: `\n\n> Round ${round + 2}: thinking...\n` })
+
     // Generous timeout — local models can be very slow (user accepts 20-30 min waits)
-    const followUpPromise = callAI(followUpMessages, settings, followUpMaxTokens, hasScreenshot)
+    const followUpPromise = callAI(truncatedMessages, settings, followUpMaxTokens, hasScreenshot)
     const timeoutMs = isLocal ? 30 * 60_000 : 5 * 60_000
     let followUp = await Promise.race([
       followUpPromise,
       new Promise<string>(resolve => setTimeout(() => resolve(''), timeoutMs)),
     ])
 
-    // ── Retry logic: up to 3 attempts on empty response ────────────────
+    // ── Retry logic: up to 3 attempts on empty response with progressive context reduction
     const MAX_FOLLOWUP_RETRIES = 3
     for (let retryAttempt = 0; retryAttempt < MAX_FOLLOWUP_RETRIES && !followUp; retryAttempt++) {
       if (retryAttempt === 0 && hasScreenshot) {
-        // First retry: try without image (might be too large)
-        console.log(`[LocalAI] Follow-up empty with screenshot, retrying without image...`)
-        const noImageMsgs = followUpMessages.map(m => ({ ...m, imageData: undefined }))
+        // First retry: remove images (might be too large for model)
+        console.log(`[LocalAI] Follow-up empty, retry 1/${MAX_FOLLOWUP_RETRIES}: removing images...`)
+        const noImageMsgs = truncatedMessages.map(m => ({ ...m, imageData: undefined }))
         followUp = await callAI(noImageMsgs, settings, followUpMaxTokens)
+      } else if (retryAttempt === 1) {
+        // Second retry: aggressively truncate — keep only last 2 messages + reduce output
+        console.log(`[LocalAI] Follow-up empty, retry 2/${MAX_FOLLOWUP_RETRIES}: minimal context...`)
+        const minimalMsgs = truncatedMessages.slice(-2).map(m => ({ ...m, imageData: undefined }))
+        followUp = await callAI(minimalMsgs, settings, Math.min(followUpMaxTokens, 2048))
       } else {
-        // Subsequent retries: wait briefly then try again with original messages
-        const retryDelay = (retryAttempt + 1) * 2000 // 2s, 4s, 6s
-        console.log(`[LocalAI] Follow-up empty, retry ${retryAttempt + 1}/${MAX_FOLLOWUP_RETRIES} after ${retryDelay}ms...`)
-        await new Promise(r => setTimeout(r, retryDelay))
-        followUp = await callAI(followUpMessages, settings, followUpMaxTokens, hasScreenshot)
+        // Third retry: last 2 messages with image, small output — give model visual cues
+        console.log(`[LocalAI] Follow-up empty, retry 3/${MAX_FOLLOWUP_RETRIES}: last resort with screenshot...`)
+        await new Promise(r => setTimeout(r, 2000))
+        const lastResort = truncatedMessages.slice(-2)
+        followUp = await callAI(lastResort, settings, Math.min(followUpMaxTokens, 1024), hasScreenshot)
       }
     }
 
