@@ -56,6 +56,7 @@ export async function getAllSettings(): Promise<Settings> {
     telegramBotToken: map.telegramBotToken as string | undefined,
     telegramAllowedChatIds: (map.telegramAllowedChatIds as string[]) ?? [],
     telegramPollIntervalSec: (map.telegramPollIntervalSec as number) ?? DEFAULTS.TELEGRAM_POLL_INTERVAL_SEC,
+    guidedModeEnabled: (map.guidedModeEnabled as boolean) ?? DEFAULTS.GUIDED_MODE_ENABLED,
     calendarDetectionEnabled: (map.calendarDetectionEnabled as boolean) ?? DEFAULTS.CALENDAR_DETECTION_ENABLED,
     onboardingComplete: (map.onboardingComplete as boolean) ?? DEFAULTS.ONBOARDING_COMPLETE,
     learningModeActive: (map.learningModeActive as boolean) ?? DEFAULTS.LEARNING_MODE_ACTIVE,

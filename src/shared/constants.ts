@@ -104,6 +104,10 @@ export const MSG = {
   FORM_COACH_START: 'FORM_COACH_START',
   FORM_COACH_DONE: 'FORM_COACH_DONE',
 
+  // Guided Mode — highlight-and-wait for user click
+  GUIDED_HIGHLIGHT: 'GUIDED_HIGHLIGHT',
+  GUIDED_HIDE: 'GUIDED_HIDE',
+
   // Element markers / accessibility tree
   INJECT_MARKERS: 'INJECT_MARKERS',
   REMOVE_MARKERS: 'REMOVE_MARKERS',
@@ -220,6 +224,7 @@ export const DEFAULTS = {
   LITE_MODE: false,
   TELEGRAM_BOT_ENABLED: false,
   TELEGRAM_POLL_INTERVAL_SEC: 5,
+  GUIDED_MODE_ENABLED: false,
 } as const
 
 export const SESSION_KEY_STORAGE = 'sessionKey'

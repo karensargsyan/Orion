@@ -350,6 +350,8 @@ export interface Settings {
   telegramBotToken?: string
   telegramAllowedChatIds?: string[]
   telegramPollIntervalSec?: number
+  /** Guided mode: highlight elements for user to click instead of auto-clicking */
+  guidedModeEnabled?: boolean
 }
 
 // ─── Confirmation ─────────────────────────────────────────────────────────────

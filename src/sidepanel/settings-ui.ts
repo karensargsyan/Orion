@@ -195,6 +195,14 @@ export async function initSettings(container: HTMLElement): Promise<void> {
           <label>AI learning from your actions (periodic local model analysis)</label>
           <input type="checkbox" id="ai-action-learning-enabled" ${s.aiActionLearningEnabled !== false ? 'checked' : ''}>
         </div>
+        <div class="form-group form-group-toggle">
+          <label>Guided mode (highlight elements instead of auto-clicking)</label>
+          <input type="checkbox" id="guided-mode-enabled" ${s.guidedModeEnabled ? 'checked' : ''}>
+        </div>
+        <p class="hint-text" style="margin-top:-8px;margin-bottom:10px">
+          Experimental: AI highlights the element you need to interact with instead of clicking automatically.
+          Walk through tasks step-by-step at your own pace. Faster response since no AI-driven navigation.
+        </p>
         <div class="form-group">
           <label>Learning mode snapshot interval (seconds)</label>
           <input type="number" id="learning-interval" value="${s.learningSnapshotIntervalSec ?? 3}" min="1" max="30">
@@ -772,6 +780,7 @@ function wireSettingsEvents(container: HTMLElement, s: Settings): void {
       safetyBorderEnabled: (container.querySelector('#safety-border-enabled') as HTMLInputElement).checked,
       composeAssistantEnabled: (container.querySelector('#compose-assistant-enabled') as HTMLInputElement).checked,
       aiActionLearningEnabled: (container.querySelector('#ai-action-learning-enabled') as HTMLInputElement).checked,
+      guidedModeEnabled: (container.querySelector('#guided-mode-enabled') as HTMLInputElement).checked,
       learningSnapshotIntervalSec: Number((container.querySelector('#learning-interval') as HTMLInputElement).value),
       calendarDetectionEnabled: (container.querySelector('#calendar-detection') as HTMLInputElement).checked,
       sttProvider: (container.querySelector('#stt-provider') as HTMLSelectElement).value as Settings['sttProvider'],

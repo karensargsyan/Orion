@@ -175,6 +175,18 @@ async function handleContentMessage(msg: Record<string, unknown>): Promise<unkno
       return { ok: true }
     }
 
+    case MSG.GUIDED_HIGHLIGHT: {
+      const { showGuidedHighlight } = await import('./guided-overlay')
+      const result = await showGuidedHighlight(msg.target as import('./guided-overlay').GuidedTarget)
+      return { ok: true, ...result }
+    }
+
+    case MSG.GUIDED_HIDE: {
+      const { hideGuidedHighlight } = await import('./guided-overlay')
+      hideGuidedHighlight()
+      return { ok: true }
+    }
+
     case MSG.SHOW_ACTIVITY_BORDER: {
       showActivityBorder()
       return { ok: true }

@@ -410,6 +410,128 @@ export async function executeActionsFromText(
   return executeParsedActions(parsed, tabId)
 }
 
+// ─── Guided Mode ──────────────────────────────────────────────────────────
+
+/** Actions that run normally even in guided mode (no user interaction needed) */
+const NON_INTERACTIVE_ACTIONS = new Set([
+  'read', 'screenshot', 'scroll', 'search', 'navigate', 'back', 'forward',
+  'get_page_state', 'get_page_text', 'read_page', 'read_options',
+  'batch_read', 'analyze_file', 'open_tab', 'read_tab', 'close_tab',
+  'wait', 'scroll_to', 'sitemap_screenshot', 'research_done',
+])
+
+function isNonInteractiveAction(action: string): boolean {
+  return NON_INTERACTIVE_ACTIONS.has(action)
+}
+
+/** Convert a parsed action to a human-readable instruction */
+function buildGuidedInstruction(action: ParsedAction): string {
+  const sel = action.params.selector ?? ''
+  const val = action.params.value ?? ''
+  const url = action.params.url ?? ''
+  // Use the most descriptive identifier
+  const target = sel || val || url
+  const short = target.length > 60 ? target.slice(0, 57) + '...' : target
+
+  switch (action.action) {
+    case 'click': return `Click "${short}"`
+    case 'type': return `Type "${val}" into "${sel ? sel.slice(0, 40) : 'field'}"`
+    case 'fill_form': return `Fill the form`
+    case 'select_option': return `Select "${val}" in "${sel ? sel.slice(0, 40) : 'dropdown'}"`
+    case 'check': case 'toggle': return `Toggle "${short}"`
+    case 'hover': return `Hover over "${short}"`
+    case 'doubleclick': return `Double-click "${short}"`
+    case 'focus': return `Click into "${short}"`
+    case 'clear': return `Clear "${short}"`
+    case 'keypress': return `Press ${val || action.params.key || 'key'}`
+    default: return `${action.action} "${short}"`
+  }
+}
+
+/**
+ * Execute actions in guided mode — highlights elements for user to click
+ * instead of executing them automatically via CDP/content script.
+ */
+async function executeGuidedActions(
+  actions: ParsedAction[],
+  tabId: number,
+  port: StreamPort,
+  stepNumber: number,
+): Promise<AIActionResult[]> {
+  const results: AIActionResult[] = []
+
+  for (const action of actions) {
+    // Check cancellation
+    if (isCancelled(tabId)) {
+      results.push({ action: action.action, success: false, error: 'Cancelled' })
+      break
+    }
+
+    // Non-interactive actions run normally
+    if (isNonInteractiveAction(action.action)) {
+      const normalResults = await executeParsedActions([action], tabId)
+      results.push(...normalResults)
+      continue
+    }
+
+    // Build instruction text
+    const instruction = buildGuidedInstruction(action)
+
+    // Stream instruction to sidepanel
+    port.postMessage({
+      type: MSG.STREAM_CHUNK,
+      chunk: `\n\n> **Step ${stepNumber}:** ${instruction}\n`,
+    })
+
+    // Send highlight to content script and wait for user response
+    try {
+      const response = await chrome.tabs.sendMessage(tabId, {
+        type: MSG.GUIDED_HIGHLIGHT,
+        target: {
+          selector: action.params.selector ?? '',
+          markerId: action.params.markerId ? Number(action.params.markerId) : undefined,
+          actionType: action.action,
+          instruction,
+          value: action.params.value,
+          stepNumber,
+        },
+      }) as { ok: boolean; clicked?: boolean; skipped?: boolean; stopped?: boolean; value?: string }
+
+      if (response.stopped) {
+        cancelAutomation(tabId)
+        port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '\n> Guided mode stopped by user.\n' })
+        results.push({ action: action.action, success: false, error: 'User stopped guided mode' })
+        break
+      }
+
+      if (response.skipped) {
+        port.postMessage({ type: MSG.STREAM_CHUNK, chunk: ' *(skipped)*\n' })
+        results.push({ action: action.action, success: true, result: `User skipped: ${instruction}` })
+        continue
+      }
+
+      if (response.clicked) {
+        port.postMessage({ type: MSG.STREAM_CHUNK, chunk: ' *done*\n' })
+        results.push({
+          action: action.action,
+          success: true,
+          result: `User completed: ${instruction}${response.value ? ` (value: ${response.value})` : ''}`,
+        })
+      }
+    } catch (err) {
+      // Content script unreachable (page navigated mid-highlight, etc.)
+      port.postMessage({ type: MSG.STREAM_CHUNK, chunk: ' *(element not found)*\n' })
+      results.push({
+        action: action.action,
+        success: false,
+        error: `Guided highlight failed: ${String(err)}`,
+      })
+    }
+  }
+
+  return results
+}
+
 async function executeAIActions(allActions: AIAction[], tabId: number): Promise<AIActionResult[]> {
   const batches = groupActionsIntoBatches(allActions)
   const results: AIActionResult[] = []
@@ -1304,7 +1426,13 @@ export async function executeWithFollowUp(
     }
 
     // Execute using the pre-parsed actions array (may include kickstart/retry actions)
-    let results = await executeParsedActions(actions, tabId)
+    // In guided mode, interactive actions are highlighted for user to click
+    let results: AIActionResult[]
+    if (settings.guidedModeEnabled) {
+      results = await executeGuidedActions(actions, tabId, port, round + 1)
+    } else {
+      results = await executeParsedActions(actions, tabId)
+    }
     console.log(`[LocalAI] Executed ${results.length} actions: ${results.map(r => `${r.action}=${r.success ? 'OK' : 'FAIL'}${r.error ? `(${r.error.slice(0, 60)})` : ''}`).join(', ')}`)
 
     // If ALL actions failed due to content script unreachable (blank/restricted tab),
