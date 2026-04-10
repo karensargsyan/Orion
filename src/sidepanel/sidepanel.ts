@@ -60,10 +60,13 @@ async function initHistory(): Promise<void> {
       <div class="session-list">
         ${sessions.slice().reverse().map(sid => {
           const isDomain = sid.startsWith('session_domain_')
-          const label = isDomain ? sid.replace('session_domain_', '') : sid
-          const ts = isDomain ? '' : new Date(Number(sid.replace('session_', '').replace('session_tab_', ''))).toLocaleString()
+          const isOrion = sid.startsWith('session_orion_')
+          const label = isOrion ? 'Orion session' : isDomain ? sid.replace('session_domain_', '') : sid
+          const tsNum = isOrion ? Number(sid.replace('session_orion_', '')) : (!isDomain ? Number(sid.replace('session_', '').replace('session_tab_', '')) : 0)
+          const ts = tsNum ? new Date(tsNum).toLocaleString() : ''
+          const icon = isOrion ? '🚀 ' : isDomain ? '🌐 ' : ''
           return `<div class="session-item" data-session="${escHtml(sid)}">
-            <div class="session-date">${isDomain ? '🌐 ' : ''}${escHtml(label)}</div>
+            <div class="session-date">${icon}${escHtml(label)}</div>
             ${ts ? `<div class="session-id">${escHtml(ts)}</div>` : ''}
           </div>`
         }).join('')}

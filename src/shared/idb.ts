@@ -136,6 +136,17 @@ function setupSchema(db: IDBDatabase, tx: IDBTransaction, oldVersion: number): v
       lm.createIndex('by_timestamp', 'timestamp', { unique: false })
     }
   }
+
+  // v8 -> v9: input journal — Total Recall (capture all form inputs)
+  if (oldVersion < 9) {
+    if (!db.objectStoreNames.contains(STORE.INPUT_JOURNAL)) {
+      const ij = db.createObjectStore(STORE.INPUT_JOURNAL, { keyPath: 'id', autoIncrement: true })
+      ij.createIndex('by_fieldType', 'fieldType', { unique: false })
+      ij.createIndex('by_domain', 'domain', { unique: false })
+      ij.createIndex('by_timestamp', 'timestamp', { unique: false })
+      ij.createIndex('by_fieldType_domain', ['fieldType', 'domain'], { unique: false })
+    }
+  }
 }
 
 // ─── Generic helpers ──────────────────────────────────────────────────────────

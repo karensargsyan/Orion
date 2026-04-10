@@ -240,6 +240,30 @@ export interface IdentityData {
 
 export type VaultData = CredentialData | AddressData | CardData | ContactData | IdentityData | Record<string, string>
 
+// ─── Input Journal (Total Recall) ─────────────────────────────────────────────
+
+export type InputFieldType =
+  | 'firstName' | 'lastName' | 'fullName'
+  | 'email' | 'phone'
+  | 'username' | 'password'
+  | 'street' | 'city' | 'state' | 'zip' | 'country'
+  | 'cardNumber' | 'cardExpiry' | 'cardCvv' | 'cardholderName'
+  | 'birthday' | 'company'
+  | 'unknown'
+
+export interface InputJournalEntry {
+  id?: number
+  fieldType: InputFieldType
+  fieldLabel: string
+  value: string
+  encrypted: boolean
+  domain: string
+  url: string
+  inputType: string
+  timestamp: number
+  source: 'user_action' | 'form_fill' | 'chat_pii'
+}
+
 // ─── Chat ─────────────────────────────────────────────────────────────────────
 
 export type ChatRole = 'user' | 'assistant' | 'system'
@@ -350,8 +374,10 @@ export interface Settings {
   telegramBotToken?: string
   telegramAllowedChatIds?: string[]
   telegramPollIntervalSec?: number
-  /** Guided mode: highlight elements for user to click instead of auto-clicking */
-  guidedModeEnabled?: boolean
+  /** Automation preference: 'ask' prompts per-task, 'auto' runs automatically, 'guided' highlights for user */
+  automationPreference?: 'ask' | 'auto' | 'guided'
+  /** Total Recall: capture all form inputs for later recall */
+  inputJournalEnabled?: boolean
 }
 
 // ─── Confirmation ─────────────────────────────────────────────────────────────

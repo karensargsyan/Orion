@@ -5,9 +5,9 @@
  * to help users find links, data, and content from their browsing history.
  */
 
-import { MSG, PORT_AI_STREAM } from '../shared/constants'
+import { MSG, PORT_AI_STREAM, STORE } from '../shared/constants'
 import { renderMarkdown, sanitizeHtml } from './markdown'
-import type { SessionMemoryEntry, GlobalMemoryEntry } from '../shared/types'
+import type { SessionMemoryEntry, GlobalMemoryEntry, InputJournalEntry } from '../shared/types'
 
 // ─── Module state ────────────────────────────────────────────────────────────
 
@@ -36,6 +36,7 @@ export async function initMemory(container: HTMLElement, tabId: number): Promise
       </div>
       <div class="memory-view-bar">
         <button class="memory-view-btn active" data-view="search">AI Search</button>
+        <button class="memory-view-btn" data-view="journal">Journal</button>
         <button class="memory-view-btn" data-view="session">Session</button>
         <button class="memory-view-btn" data-view="global">Global</button>
       </div>
@@ -58,6 +59,11 @@ export async function initMemory(container: HTMLElement, tabId: number): Promise
           <p class="hint-text">Loading...</p>
         </div>
       </div>
+      <div id="memory-journal-panel" class="memory-view-panel">
+        <div id="memory-journal-list" class="memory-list">
+          <p class="hint-text">Loading journal...</p>
+        </div>
+      </div>
     </div>
   `
 
@@ -73,11 +79,18 @@ export async function initMemory(container: HTMLElement, tabId: number): Promise
       const searchPanel = container.querySelector('#memory-search-panel') as HTMLElement
       const browsePanel = container.querySelector('#memory-browse-panel') as HTMLElement
 
+      const journalPanel = container.querySelector('#memory-journal-panel') as HTMLElement
+
+      searchPanel.classList.remove('active')
+      browsePanel.classList.remove('active')
+      journalPanel.classList.remove('active')
+
       if (view === 'search') {
         searchPanel.classList.add('active')
-        browsePanel.classList.remove('active')
+      } else if (view === 'journal') {
+        journalPanel.classList.add('active')
+        renderJournalList(container)
       } else {
-        searchPanel.classList.remove('active')
         browsePanel.classList.add('active')
         renderBrowseList(container, view, '')
       }
@@ -161,10 +174,11 @@ function doSearch(container: HTMLElement, query: string): void {
         const idbResults = msg.idbResults as string ?? ''
         const mempalaceResults = msg.mempalaceResults as string ?? ''
         const urlEntries = msg.urlEntries as Array<{ date: string; type: string; domain: string; url: string; content: string }> ?? []
+        const journalResultsRaw = msg.journalResults as string ?? ''
         rawSourcesRendered = true
 
         // We'll append raw sources after the AI answer area
-        renderRawSources(aiArea, idbResults, mempalaceResults, urlEntries)
+        renderRawSources(aiArea, idbResults, mempalaceResults, urlEntries, journalResultsRaw)
         break
       }
 
@@ -255,24 +269,33 @@ function renderRawSources(
   container: HTMLElement,
   idbResults: string,
   mempalaceResults: string,
-  urlEntries: Array<{ date: string; type: string; domain: string; url: string; content: string }>
+  urlEntries: Array<{ date: string; type: string; domain: string; url: string; content: string }>,
+  journalResults?: string
 ): void {
   // Remove existing raw sources
   const existing = container.querySelector('.memory-raw-sources')
   if (existing) existing.remove()
 
-  const totalSources = urlEntries.length + (idbResults ? 1 : 0) + (mempalaceResults ? 1 : 0)
+  const totalSources = urlEntries.length + (idbResults ? 1 : 0) + (mempalaceResults ? 1 : 0) + (journalResults ? 1 : 0)
   if (totalSources === 0) return
 
   const details = document.createElement('details')
   details.className = 'memory-raw-sources'
 
   const summary = document.createElement('summary')
-  summary.textContent = `Raw sources (${urlEntries.length} entries${mempalaceResults ? ' + MemPalace' : ''})`
+  summary.textContent = `Raw sources (${urlEntries.length} entries${mempalaceResults ? ' + MemPalace' : ''}${journalResults ? ' + Journal' : ''})`
   details.appendChild(summary)
 
   const content = document.createElement('div')
   content.className = 'memory-raw-content'
+
+  // Journal results
+  if (journalResults) {
+    const section = document.createElement('div')
+    section.className = 'raw-section'
+    section.innerHTML = `<div class="raw-section-label">Input Journal (Total Recall)</div><pre class="raw-section-text">${escHtml(journalResults)}</pre>`
+    content.appendChild(section)
+  }
 
   // URL entries
   if (urlEntries.length > 0) {
@@ -413,4 +436,125 @@ function escHtml(s: string): string {
 
 function escAttr(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+}
+
+// ─── Journal Browse View ────────────────────────────────────────────────────
+
+const FIELD_TYPE_ICONS: Record<string, string> = {
+  email: '\u2709',      // envelope
+  password: '\uD83D\uDD12', // lock
+  username: '\uD83D\uDC64', // bust
+  phone: '\uD83D\uDCDE',    // phone
+  firstName: '\uD83D\uDC64',
+  lastName: '\uD83D\uDC64',
+  fullName: '\uD83D\uDC64',
+  birthday: '\uD83C\uDF82', // cake
+  street: '\uD83C\uDFE0',   // house
+  city: '\uD83C\uDFD9',     // cityscape
+  state: '\uD83C\uDFD9',
+  zip: '\uD83D\uDCEE',      // postbox
+  country: '\uD83C\uDF0D',  // globe
+  cardNumber: '\uD83D\uDCB3', // credit card
+  cardExpiry: '\uD83D\uDCB3',
+  cardCvv: '\uD83D\uDCB3',
+  cardholderName: '\uD83D\uDCB3',
+  company: '\uD83C\uDFE2',  // office
+  unknown: '\u2699',    // gear
+}
+
+const ENCRYPTED_FIELD_TYPES = new Set(['password', 'cardNumber', 'cardCvv', 'cardExpiry'])
+
+async function renderJournalList(container: HTMLElement): Promise<void> {
+  const listEl = container.querySelector('#memory-journal-list') as HTMLElement
+  if (!listEl) return
+
+  listEl.innerHTML = '<div class="analyzing-spinner" style="margin:20px auto"></div>'
+
+  try {
+    // Fetch recent journal entries from the background via IDB (sidepanel has direct access)
+    const { openDB } = await import('../shared/idb')
+    const db = await openDB()
+    const tx = db.transaction('input_journal', 'readonly')
+    const store = tx.objectStore('input_journal')
+    const index = store.index('by_timestamp')
+
+    const entries: InputJournalEntry[] = await new Promise((resolve, reject) => {
+      const results: InputJournalEntry[] = []
+      const req = index.openCursor(null, 'prev')
+      req.onsuccess = () => {
+        const cursor = req.result
+        if (!cursor || results.length >= 100) { resolve(results); return }
+        results.push(cursor.value as InputJournalEntry)
+        cursor.continue()
+      }
+      req.onerror = () => reject(req.error)
+    })
+
+    if (entries.length === 0) {
+      listEl.innerHTML = '<p class="hint-text" style="padding:20px;text-align:center">No inputs recorded yet. Fill some forms to start building your recall journal.</p>'
+      return
+    }
+
+    // Group by domain
+    const grouped = new Map<string, InputJournalEntry[]>()
+    for (const e of entries) {
+      const key = e.domain || 'unknown'
+      if (!grouped.has(key)) grouped.set(key, [])
+      grouped.get(key)!.push(e)
+    }
+
+    listEl.innerHTML = ''
+
+    for (const [domain, domEntries] of grouped) {
+      const group = document.createElement('div')
+      group.className = 'journal-group'
+
+      const header = document.createElement('div')
+      header.className = 'journal-group-header'
+      header.textContent = domain
+      group.appendChild(header)
+
+      for (const entry of domEntries) {
+        const icon = FIELD_TYPE_ICONS[entry.fieldType] || '\u2699'
+        const isEncrypted = entry.encrypted || ENCRYPTED_FIELD_TYPES.has(entry.fieldType)
+        const displayValue = isEncrypted ? '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022' : escHtml(entry.value).slice(0, 80)
+
+        const row = document.createElement('div')
+        row.className = 'journal-entry'
+        row.innerHTML = `
+          <span class="journal-icon">${icon}</span>
+          <span class="journal-label">${escHtml(entry.fieldLabel || entry.fieldType)}</span>
+          <span class="journal-value ${isEncrypted ? 'journal-encrypted' : ''}" data-real="${escAttr(isEncrypted ? '' : entry.value)}">${displayValue}</span>
+          <span class="journal-time">${formatTime(entry.timestamp)}</span>
+          <button class="journal-copy-btn" title="Copy value">\uD83D\uDCCB</button>
+        `
+
+        // Copy button handler
+        const copyBtn = row.querySelector('.journal-copy-btn') as HTMLButtonElement
+        copyBtn.addEventListener('click', async () => {
+          let valueToCopy = entry.value
+          if (entry.encrypted) {
+            try {
+              // Try to decrypt via background
+              const res = await chrome.runtime.sendMessage({ type: 'JOURNAL_DECRYPT', entryId: entry.id })
+              if (res?.ok) valueToCopy = res.value
+              else { copyBtn.textContent = '\u274C'; return }
+            } catch {
+              copyBtn.textContent = '\u274C'; return
+            }
+          }
+          await navigator.clipboard.writeText(valueToCopy)
+          copyBtn.textContent = '\u2705'
+          setTimeout(() => { copyBtn.textContent = '\uD83D\uDCCB' }, 1500)
+        })
+
+        group.appendChild(row)
+      }
+
+      listEl.appendChild(group)
+    }
+  } catch (err) {
+    listEl.innerHTML = '<p class="hint-text" style="padding:20px;text-align:center;color:var(--text-dim)">Failed to load journal entries.</p>'
+    console.warn('[MemoryUI] Journal load error:', err)
+  }
 }

@@ -137,7 +137,8 @@ function processSSELine(line: string, fullText: string, port: StreamPort): strin
 export async function callGemini(
   messages: Pick<ChatMessage, 'role' | 'content' | 'imageData'>[],
   settings: Settings,
-  maxTokens = 2048
+  maxTokens = 2048,
+  signal?: AbortSignal
 ): Promise<string> {
   const apiKey = settings.geminiApiKey
   if (!apiKey) return ''
@@ -161,6 +162,7 @@ export async function callGemini(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      signal,
     })
 
     if (!response.ok) {
@@ -180,6 +182,7 @@ export async function callGemini(
     if (!result) console.warn(`[LocalAI] callGemini returned empty content. Candidates: ${JSON.stringify(json.candidates?.length ?? 0)}`)
     return result
   } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') return ''
     console.warn(`[LocalAI] callGemini network error:`, err)
     return ''
   }

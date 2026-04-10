@@ -30,9 +30,13 @@ const NAV_ACTIONS = new Set(['navigate', 'back', 'forward'])
 // Allows aborting the executeWithFollowUp loop from outside (e.g., stop button)
 
 const cancelledTabs = new Set<number>()
+const executionAbortControllers = new Map<number, AbortController>()
 
 export function cancelAutomation(tabId: number): void {
   cancelledTabs.add(tabId)
+  // Abort any in-flight callAI() request for this execution
+  executionAbortControllers.get(tabId)?.abort()
+  executionAbortControllers.delete(tabId)
 }
 
 function isCancelled(tabId: number): boolean {
@@ -41,6 +45,7 @@ function isCancelled(tabId: number): boolean {
 
 function clearCancellation(tabId: number): void {
   cancelledTabs.delete(tabId)
+  executionAbortControllers.delete(tabId)
 }
 
 interface ParsedAction {
@@ -1277,7 +1282,8 @@ export async function executeWithFollowUp(
   settings: Settings,
   port: StreamPort,
   sessionMessages: Pick<ChatMessage, 'role' | 'content'>[],
-  maxRounds = 25
+  maxRounds = 25,
+  guided = false
 ): Promise<void> {
   let response = aiResponse
   let round = 0
@@ -1292,6 +1298,8 @@ export async function executeWithFollowUp(
 
   // Clear any stale cancellation for this tab, then show stop overlay
   clearCancellation(tabId)
+  const executionAbort = new AbortController()
+  executionAbortControllers.set(tabId, executionAbort)
   signalActivity(tabId, true)
 
   // ── Acquire CDP session for the entire automation sequence ──────────
@@ -1372,7 +1380,7 @@ export async function executeWithFollowUp(
       ]
 
       console.log(`[LocalAI] Retrying with clearer prompt (hasWrongFormat: ${hasWrongFormat})...`)
-      const retryResponse = await callAI(retryMessages, settings, 2048)
+      const retryResponse = await callAI(retryMessages, settings, 2048, false, executionAbort.signal)
       if (retryResponse) {
         console.log(`[LocalAI] Retry response: ${retryResponse.slice(0, 200)}`)
         const cleanedRetry = stripActionMarkersForDisplay(retryResponse)
@@ -1412,23 +1420,31 @@ export async function executeWithFollowUp(
     const errorSig = lastErrorSignature
 
     // Pre-action DOM ops: only when tab has a real page loaded
+    // In guided mode after round 0, skip expensive captures — user sees the page
     let preState: Awaited<ReturnType<typeof captureVerificationState>> | undefined
     let preTree: Awaited<ReturnType<typeof getCDPAccessibilityTree>> | null = null
+    const guidedSkipExpensive = guided && round > 0
 
     if (!restricted && tabId > 0) {
+      if (isCancelled(tabId)) break
       const csAlive = await ensureContentScript(tabId).catch(() => false)
       if (!csAlive) {
         console.warn(`[LocalAI] Content script not available for tab ${tabId} — actions needing DOM will fail`)
       }
-      await captureAutomationScreenshot(tabId).catch(() => null)
-      preState = await captureVerificationState(tabId)
-      preTree = await getCDPAccessibilityTree(tabId).catch(() => null)
+      if (!guidedSkipExpensive) {
+        if (isCancelled(tabId)) break
+        await captureAutomationScreenshot(tabId).catch(() => null)
+        if (isCancelled(tabId)) break
+        preState = await captureVerificationState(tabId)
+        if (isCancelled(tabId)) break
+        preTree = await getCDPAccessibilityTree(tabId).catch(() => null)
+      }
     }
 
     // Execute using the pre-parsed actions array (may include kickstart/retry actions)
     // In guided mode, interactive actions are highlighted for user to click
     let results: AIActionResult[]
-    if (settings.guidedModeEnabled) {
+    if (guided) {
       results = await executeGuidedActions(actions, tabId, port, round + 1)
     } else {
       results = await executeParsedActions(actions, tabId)
@@ -1516,44 +1532,64 @@ export async function executeWithFollowUp(
     const anyFailed = results.some(r => !r.success) || suspiciousSuccess
     const userIsActive = results.some(r => r.userActive)
 
-    if (!restricted && tabId > 0) {
-      const postState = await captureVerificationState(tabId)
-      if (preState) verification = buildVerificationContext(preState, postState)
+    if (!restricted && tabId > 0 && !isCancelled(tabId)) {
+      if (guidedSkipExpensive) {
+        // Guided mode: lightweight context — user sees the page, AI only needs URL + title
+        try {
+          const tab = await chrome.tabs.get(tabId)
+          freshContext = `URL: ${tab.url ?? 'unknown'}\nTitle: ${tab.title ?? 'unknown'}`
+        } catch { freshContext = 'Tab state unknown' }
 
-      const postShot = await captureAutomationScreenshot(tabId).catch(() => null)
-      if (postShot) {
-        postScreenshot = postShot.dataUrl
-        tabState.setScreenshot(tabId, postShot.dataUrl)
-        const snap = tabState.get(tabId)
-        if (snap?.url) {
-          recordPageVisit(extractDomainFromUrl(snap.url), snap.url, snap, postShot.dataUrl).catch(() => {})
+        // Still handle navigation waits even in guided mode
+        const hasNav = results.some(r => r.success && (NAV_ACTIONS.has(r.action) || r.result?.includes('navigated')))
+        if (hasNav) {
+          await sleep(1500)
+          await ensureContentScript(tabId).catch(() => false)
+          await sleep(500)
+          restricted = await isTabRestricted()
+        }
+      } else {
+        // Full context capture for auto mode
+        if (isCancelled(tabId)) break
+        const postState = await captureVerificationState(tabId)
+        if (preState) verification = buildVerificationContext(preState, postState)
+
+        if (isCancelled(tabId)) break
+        const postShot = await captureAutomationScreenshot(tabId).catch(() => null)
+        if (postShot) {
+          postScreenshot = postShot.dataUrl
+          tabState.setScreenshot(tabId, postShot.dataUrl)
+          const snap = tabState.get(tabId)
+          if (snap?.url) {
+            recordPageVisit(extractDomainFromUrl(snap.url), snap.url, snap, postShot.dataUrl).catch(() => {})
+          }
+        }
+
+        const hasNav = results.some(r => r.success && (NAV_ACTIONS.has(r.action) || r.result?.includes('navigated')))
+        if (hasNav) {
+          await sleep(1500)
+          await ensureContentScript(tabId).catch(() => false)
+          await sleep(500)
+          await requestFreshSnapshot(tabId)
+          restricted = await isTabRestricted()
+        }
+
+        if (!restricted && !isCancelled(tabId)) {
+          // Get fresh page state via CDP accessibility tree (no markers needed —
+          // text selectors are more reliable than element IDs on dynamic sites)
+          const postTree2 = await getCDPAccessibilityTree(tabId).catch(() => null)
+          if (postTree2) {
+            followUpA11y = postTree2.treeText
+            if (preTree) stateDiff = buildStateDiff(preTree.elements, postTree2.elements)
+          }
+
+          await requestFreshSnapshot(tabId)
+          freshContext = tabState.summarize(tabId)
+          const freshSnap = tabState.get(tabId)
+          freshPageText = (freshSnap?.completePageText ?? '').slice(0, 6000)
         }
       }
-
-      const hasNav = results.some(r => r.success && (NAV_ACTIONS.has(r.action) || r.result?.includes('navigated')))
-      if (hasNav) {
-        await sleep(1500)
-        await ensureContentScript(tabId).catch(() => false)
-        await sleep(500)
-        await requestFreshSnapshot(tabId)
-        restricted = await isTabRestricted()
-      }
-
-      if (!restricted) {
-        // Get fresh page state via CDP accessibility tree (no markers needed —
-        // text selectors are more reliable than element IDs on dynamic sites)
-        const postTree2 = await getCDPAccessibilityTree(tabId).catch(() => null)
-        if (postTree2) {
-          followUpA11y = postTree2.treeText
-          if (preTree) stateDiff = buildStateDiff(preTree.elements, postTree2.elements)
-        }
-
-        await requestFreshSnapshot(tabId)
-        freshContext = tabState.summarize(tabId)
-        const freshSnap = tabState.get(tabId)
-        freshPageText = (freshSnap?.completePageText ?? '').slice(0, 6000)
-      }
-    } else {
+    } else if (restricted) {
       console.log(`[LocalAI] Skipping DOM ops on restricted tab — building lightweight follow-up`)
     }
 
@@ -1603,7 +1639,10 @@ export async function executeWithFollowUp(
     // Build follow-up content based on tab state
     let followUpContent: string
 
-    if (restricted) {
+    if (guidedSkipExpensive) {
+      // Guided mode: lightweight follow-up — user sees the page, AI just needs action results
+      followUpContent = `Action results:\n${resultSummary}\n\nPage: ${freshContext}${palaceHints ? palaceHints.slice(0, 500) : ''}\n\nRound ${round + 2}/${maxRounds}. The user is clicking elements you highlight. What should they do next? Give clear instructions.`
+    } else if (restricted) {
       // LIGHTWEIGHT follow-up for blank/restricted tabs — no DOM context, just results + clear guidance
       const hasSearchResults = results.some(r => r.action === 'search' && r.success && r.result)
       const guidance = hasSearchResults
@@ -1679,7 +1718,7 @@ export async function executeWithFollowUp(
     const timeoutMs = isLocal ? 30 * 60_000 : 2 * 60_000
     const callWithTimeout = (msgs: typeof truncatedMessages, maxTok: number, vision = false) =>
       Promise.race([
-        callAI(msgs, settings, maxTok, vision),
+        callAI(msgs, settings, maxTok, vision, executionAbort.signal),
         new Promise<string>(resolve => setTimeout(() => resolve(''), timeoutMs)),
       ])
 
@@ -1733,6 +1772,7 @@ export async function executeWithFollowUp(
   }
 
   clearCancellation(tabId)
+  executionAbortControllers.delete(tabId)
   signalActivity(tabId, false)
 
   // ── Release CDP session ──────────────────────────────────────────────

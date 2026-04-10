@@ -1457,18 +1457,18 @@ function showActivityBorder(): void {
   stopBtn.id = STOP_BTN_ID
   stopBtn.textContent = 'Stop AI'
   stopBtn.style.cssText = `
-    position:fixed;top:12px;right:12px;z-index:2147483647;
-    padding:6px 16px;border:none;border-radius:6px;
+    position:fixed;bottom:18px;left:50%;transform:translateX(-50%);z-index:2147483647;
+    padding:8px 24px;border:none;border-radius:20px;
     background:rgba(220,38,38,0.9);color:#fff;
     font:600 13px/1 -apple-system,BlinkMacSystemFont,sans-serif;
     cursor:pointer;pointer-events:auto;
-    box-shadow:0 2px 8px rgba(0,0,0,0.3);
+    box-shadow:0 4px 16px rgba(0,0,0,0.35);
     transition:background 0.15s, transform 0.1s;
   `
   stopBtn.addEventListener('mouseenter', () => { stopBtn.style.background = 'rgba(185,28,28,0.95)' })
   stopBtn.addEventListener('mouseleave', () => { stopBtn.style.background = 'rgba(220,38,38,0.9)' })
-  stopBtn.addEventListener('mousedown', () => { stopBtn.style.transform = 'scale(0.95)' })
-  stopBtn.addEventListener('mouseup', () => { stopBtn.style.transform = '' })
+  stopBtn.addEventListener('mousedown', () => { stopBtn.style.transform = 'translateX(-50%) scale(0.95)' })
+  stopBtn.addEventListener('mouseup', () => { stopBtn.style.transform = 'translateX(-50%)' })
   stopBtn.addEventListener('click', () => {
     chrome.runtime.sendMessage({ type: MSG.STOP_AUTOMATION }).catch(() => {})
     hideActivityBorder()

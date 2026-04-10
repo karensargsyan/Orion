@@ -445,6 +445,130 @@
     }
     .chat-toast-close:hover { opacity: 1; }
 
+    /* Mode toggle (Ask / Auto / Guide) */
+    .btn-mode-toggle {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      cursor: pointer;
+      padding: 4px 10px;
+      border-radius: 14px;
+      flex-shrink: 0;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.3px;
+      transition: all 0.2s ease;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      user-select: none;
+      line-height: 1;
+      height: 26px;
+    }
+    .btn-mode-toggle:hover {
+      border-color: var(--accent);
+      color: var(--text-bright);
+    }
+    .btn-mode-toggle.guided {
+      background: rgba(99, 102, 241, 0.12);
+      border-color: rgba(99, 102, 241, 0.4);
+      color: #818cf8;
+    }
+    .btn-mode-toggle.guided:hover {
+      background: rgba(99, 102, 241, 0.2);
+      border-color: rgba(99, 102, 241, 0.6);
+    }
+    .btn-mode-toggle.auto-mode {
+      background: rgba(34, 197, 94, 0.10);
+      border-color: rgba(34, 197, 94, 0.35);
+      color: #4ade80;
+    }
+    .btn-mode-toggle.auto-mode:hover {
+      background: rgba(34, 197, 94, 0.18);
+      border-color: rgba(34, 197, 94, 0.55);
+    }
+    .btn-mode-toggle .mode-label {
+      pointer-events: none;
+    }
+
+    /* Mode choice card (inline in chat) */
+    .mode-choice-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px;
+      margin: 8px 0;
+    }
+    .mode-choice-card.mode-choice-done {
+      opacity: 0.6;
+    }
+    .mode-choice-header {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-bright);
+      margin-bottom: 6px;
+    }
+    .mode-choice-desc {
+      font-size: 12px;
+      color: var(--text-dim);
+      margin-bottom: 12px;
+      line-height: 1.4;
+    }
+    .mode-choice-buttons {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .mode-choice-btn {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      padding: 10px 8px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .mode-choice-btn:hover:not(:disabled) {
+      border-color: var(--accent);
+      background: rgba(99, 102, 241, 0.08);
+    }
+    .mode-choice-btn:disabled {
+      cursor: default;
+    }
+    .mode-choice-btn.mode-choice-selected {
+      border-color: var(--accent);
+      background: rgba(99, 102, 241, 0.15);
+    }
+    .mode-choice-icon {
+      font-size: 20px;
+      line-height: 1;
+    }
+    .mode-choice-label {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-bright);
+    }
+    .mode-choice-hint {
+      font-size: 10px;
+      color: var(--text-dim);
+    }
+    .mode-choice-remember {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      color: var(--text-dim);
+      cursor: pointer;
+    }
+    .mode-choice-remember input {
+      margin: 0;
+      accent-color: var(--accent);
+    }
+
     /* Mic & attach icon buttons */
     .btn-icon {
       background: none;
@@ -867,6 +991,40 @@
     .memory-entry-link:hover { text-decoration: underline; }
     .memory-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
     .tag { background: rgba(255,255,255,0.06); border-radius: 4px; padding: 1px 6px; font-size: 10px; color: var(--text-dim); }
+
+    /* ─── Journal (Total Recall) ─────────────────────────────────────── */
+    .journal-group { margin-bottom: 12px; }
+    .journal-group-header {
+      font-size: 11px; font-weight: 600; color: var(--accent);
+      padding: 6px 10px; background: rgba(99, 102, 241, 0.08);
+      border-radius: var(--radius); margin-bottom: 4px;
+      text-transform: lowercase;
+    }
+    .journal-entry {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 10px; border-radius: var(--radius);
+      border: 1px solid var(--border); margin-bottom: 3px;
+      background: var(--bg-surface); font-size: 12px;
+      transition: background var(--transition);
+    }
+    .journal-entry:hover { background: rgba(255,255,255,0.03); }
+    .journal-icon { font-size: 14px; flex-shrink: 0; width: 20px; text-align: center; }
+    .journal-label {
+      color: var(--text-dim); font-size: 11px; min-width: 70px;
+      max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .journal-value {
+      flex: 1; color: var(--text-main); font-family: var(--font-mono, monospace);
+      font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .journal-encrypted { color: var(--text-dim); font-style: italic; }
+    .journal-time { color: var(--text-dim); font-size: 10px; flex-shrink: 0; white-space: nowrap; }
+    .journal-copy-btn {
+      background: none; border: none; cursor: pointer; padding: 2px 4px;
+      font-size: 12px; border-radius: 4px; flex-shrink: 0;
+      transition: background var(--transition);
+    }
+    .journal-copy-btn:hover { background: rgba(255,255,255,0.08); }
 
     /* ─── Stats / Insights ───────────────────────────────────────────── */
     .stats-container { display: flex; flex-direction: column; height: 100%; overflow: hidden; }

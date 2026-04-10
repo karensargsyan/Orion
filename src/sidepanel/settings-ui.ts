@@ -195,13 +195,18 @@ export async function initSettings(container: HTMLElement): Promise<void> {
           <label>AI learning from your actions (periodic local model analysis)</label>
           <input type="checkbox" id="ai-action-learning-enabled" ${s.aiActionLearningEnabled !== false ? 'checked' : ''}>
         </div>
-        <div class="form-group form-group-toggle">
-          <label>Guided mode (highlight elements instead of auto-clicking)</label>
-          <input type="checkbox" id="guided-mode-enabled" ${s.guidedModeEnabled ? 'checked' : ''}>
+        <div class="form-group">
+          <label>Automation mode</label>
+          <select id="automation-preference">
+            <option value="ask" ${(s.automationPreference ?? 'ask') === 'ask' ? 'selected' : ''}>Ask each time</option>
+            <option value="auto" ${s.automationPreference === 'auto' ? 'selected' : ''}>Always auto (click for me)</option>
+            <option value="guided" ${s.automationPreference === 'guided' ? 'selected' : ''}>Always guided (highlight for me)</option>
+          </select>
         </div>
         <p class="hint-text" style="margin-top:-8px;margin-bottom:10px">
-          Experimental: AI highlights the element you need to interact with instead of clicking automatically.
-          Walk through tasks step-by-step at your own pace. Faster response since no AI-driven navigation.
+          Ask: prompts you to choose Guide or Auto for each task.
+          Auto: AI clicks elements automatically.
+          Guided: AI highlights what to click and you do it yourself.
         </p>
         <div class="form-group">
           <label>Learning mode snapshot interval (seconds)</label>
@@ -344,6 +349,18 @@ export async function initSettings(container: HTMLElement): Promise<void> {
           <label>Exclude domains (comma-separated)</label>
           <input type="text" id="auto-collect-exclude" value="${esc((s.autoCollectExcludeDomains ?? []).join(', '))}" placeholder="e.g. google.com, facebook.com">
           <small style="color:var(--text-dim);font-size:11px">Domains where auto-collection is disabled.</small>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <h3>Total Recall</h3>
+        <p class="hint-text" style="margin-bottom:10px">
+          Records every form input (emails, usernames, passwords, addresses, etc.) so you can recall them later
+          via the Memory tab AI search. Sensitive fields (passwords, card numbers) are stored encrypted.
+        </p>
+        <div class="form-group form-group-toggle">
+          <label>Enable Total Recall</label>
+          <input type="checkbox" id="input-journal-enabled" ${s.inputJournalEnabled !== false ? 'checked' : ''}>
         </div>
       </section>
 
@@ -780,7 +797,7 @@ function wireSettingsEvents(container: HTMLElement, s: Settings): void {
       safetyBorderEnabled: (container.querySelector('#safety-border-enabled') as HTMLInputElement).checked,
       composeAssistantEnabled: (container.querySelector('#compose-assistant-enabled') as HTMLInputElement).checked,
       aiActionLearningEnabled: (container.querySelector('#ai-action-learning-enabled') as HTMLInputElement).checked,
-      guidedModeEnabled: (container.querySelector('#guided-mode-enabled') as HTMLInputElement).checked,
+      automationPreference: (container.querySelector('#automation-preference') as HTMLSelectElement).value as 'ask' | 'auto' | 'guided',
       learningSnapshotIntervalSec: Number((container.querySelector('#learning-interval') as HTMLInputElement).value),
       calendarDetectionEnabled: (container.querySelector('#calendar-detection') as HTMLInputElement).checked,
       sttProvider: (container.querySelector('#stt-provider') as HTMLSelectElement).value as Settings['sttProvider'],
@@ -790,6 +807,7 @@ function wireSettingsEvents(container: HTMLElement, s: Settings): void {
       mempalaceWing: (container.querySelector('#mempalace-wing') as HTMLInputElement).value.trim() || undefined,
       localMemoryEnabled: (container.querySelector('#local-memory-enabled') as HTMLInputElement).checked,
       localMemoryMaxEntries: Number((container.querySelector('#local-memory-max') as HTMLInputElement).value),
+      inputJournalEnabled: (container.querySelector('#input-journal-enabled') as HTMLInputElement).checked,
       autoCollectEnabled: (container.querySelector('#auto-collect-enabled') as HTMLInputElement).checked,
       autoCollectMinFields: Number((container.querySelector('#auto-collect-min-fields') as HTMLInputElement).value),
       autoCollectExcludeDomains: (container.querySelector('#auto-collect-exclude') as HTMLInputElement).value

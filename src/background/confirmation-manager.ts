@@ -139,6 +139,56 @@ export async function handleConfirmResponse(
   }
 }
 
+// ─── Mode choice (Auto vs Guided) ────────────────────────────────────────────
+
+interface PendingModeChoice {
+  resolve: (mode: 'auto' | 'guided') => void
+}
+
+const pendingModeChoices = new Map<string, PendingModeChoice>()
+
+export function requestModeChoice(
+  port: StreamPort,
+  actions: ParsedAction[],
+): Promise<'auto' | 'guided'> {
+  const id = `mode_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
+  const description = buildActionDescription(actions)
+
+  port.postMessage({
+    type: MSG.MODE_CHOICE,
+    id,
+    description,
+    actions: actions.map(a => a.action),
+  })
+
+  return new Promise<'auto' | 'guided'>((resolve) => {
+    pendingModeChoices.set(id, { resolve })
+    // Default to auto after 2 minutes
+    setTimeout(() => {
+      if (pendingModeChoices.has(id)) {
+        pendingModeChoices.delete(id)
+        resolve('auto')
+      }
+    }, 120_000)
+  })
+}
+
+export async function handleModeChoiceResponse(
+  id: string,
+  mode: 'auto' | 'guided',
+  remember: boolean
+): Promise<void> {
+  const pending = pendingModeChoices.get(id)
+  if (!pending) return
+
+  pendingModeChoices.delete(id)
+  pending.resolve(mode)
+
+  if (remember) {
+    await setSettings({ automationPreference: mode })
+  }
+}
+
 async function saveActionPreferences(
   actionTypes: string[],
   domain: string

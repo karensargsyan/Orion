@@ -25,6 +25,9 @@ let colorIndex = 0
 /** Maps an origin tabId → its group id */
 const tabGroupMap = new Map<number, number>()
 
+/** Maps a groupId → its unique session id (for group-based chat) */
+const groupSessionMap = new Map<number, string>()
+
 /** The "active" origin tab whose research tabs should be grouped together */
 let activeOriginTabId: number | null = null
 
@@ -44,24 +47,48 @@ export async function createGroupForTab(tabId: number, title?: string): Promise<
   if (existingGroupId !== undefined) {
     try {
       await chrome.tabGroups.get(existingGroupId)
-      return existingGroupId // group still alive
+      return existingGroupId // group still alive — keep existing session
     } catch { tabGroupMap.delete(tabId) }
   }
 
   try {
+    // Determine initial title: "Orion: {domain}" or "Orion: New"
+    let groupTitle = title ? `Orion: ${title}` : 'Orion: New'
+    if (!title) {
+      try {
+        const tab = await chrome.tabs.get(tabId)
+        const url = tab.url ?? ''
+        if (url && !url.startsWith('chrome://') && !url.startsWith('about:') && !url.startsWith('chrome-extension://')) {
+          const domain = extractDomainShort(url)
+          if (domain) groupTitle = `Orion: ${domain}`
+        }
+      } catch { /* use default */ }
+    }
+
     const newGroupId = await chrome.tabs.group({ tabIds: [tabId] })
     await chrome.tabGroups.update(newGroupId, {
-      title: title ?? AI_GROUP_TITLE,
+      title: groupTitle,
       color: nextGroupColor(),
       collapsed: false,
     })
     tabGroupMap.set(tabId, newGroupId)
+    // Generate unique session for this group — fresh chat context
+    const sid = `session_orion_${Date.now()}`
+    groupSessionMap.set(newGroupId, sid)
     activeOriginTabId = tabId
     return newGroupId
   } catch {
     /* tabGroups API may not be available */
     return -1
   }
+}
+
+/** Extract short domain for group title (strips www.) */
+function extractDomainShort(url: string): string {
+  try {
+    const host = new URL(url).hostname
+    return host.replace(/^www\./, '')
+  } catch { return '' }
 }
 
 /**
@@ -103,8 +130,17 @@ export function isOrionTab(tabId: number): boolean {
 
 /** Clean up tracking when a tab is removed */
 export function cleanupTabGroup(tabId: number): void {
+  const groupId = tabGroupMap.get(tabId)
   tabGroupMap.delete(tabId)
   if (activeOriginTabId === tabId) activeOriginTabId = null
+  // If no other tabs reference this groupId, clean up the session too
+  if (groupId !== undefined) {
+    let groupStillReferenced = false
+    for (const gid of tabGroupMap.values()) {
+      if (gid === groupId) { groupStillReferenced = true; break }
+    }
+    if (!groupStillReferenced) groupSessionMap.delete(groupId)
+  }
 }
 
 /** Update the title of a tab's group (e.g. for Telegram auto-rename) */
@@ -114,6 +150,32 @@ export async function updateGroupTitle(tabId: number, title: string): Promise<vo
   try {
     await chrome.tabGroups.update(groupId, { title })
   } catch { /* group may be gone */ }
+}
+
+/** Get the session id for a tab's group (fast path — tabGroupMap lookup) */
+export function getGroupSessionId(tabId: number): string | null {
+  const groupId = tabGroupMap.get(tabId)
+  if (groupId === undefined) return null
+  return groupSessionMap.get(groupId) ?? null
+}
+
+/** Resolve group session for a tab, with Chrome API fallback for manually moved tabs */
+export async function resolveGroupSession(tabId: number): Promise<string | null> {
+  // Fast path: tabGroupMap
+  const directSid = getGroupSessionId(tabId)
+  if (directSid) return directSid
+  // Slow path: query Chrome for the tab's actual groupId
+  try {
+    const tab = await chrome.tabs.get(tabId)
+    if (tab.groupId && tab.groupId !== -1) {
+      const sid = groupSessionMap.get(tab.groupId)
+      if (sid) {
+        tabGroupMap.set(tabId, tab.groupId) // cache for next time
+        return sid
+      }
+    }
+  } catch { /* tab gone */ }
+  return null
 }
 
 /**
@@ -126,6 +188,7 @@ export async function addTabToAIGroup(tabId: number): Promise<void> {
 
   try {
     await chrome.tabs.group({ tabIds: [tabId], groupId })
+    tabGroupMap.set(tabId, groupId) // track so research tabs inherit group session
   } catch { /* group gone or API unavailable */ }
 }
 

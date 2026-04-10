@@ -1,11 +1,11 @@
 import { MSG, PORT_AI_STREAM } from '../shared/constants'
 import { renderMarkdown, sanitizeHtml } from './markdown'
-import { parseWidgets, parseActionResults, renderWidgetsInContainer, attachWidgetHandlers, createActionConfirmElement } from './chat-widgets'
+import { parseWidgets, parseActionResults, renderWidgetsInContainer, attachWidgetHandlers, createActionConfirmElement, createModeChoiceElement } from './chat-widgets'
 import { sanitizeModelOutput, stripMalformedActions } from '../shared/sanitize-output'
 import type { Widget } from './chat-widgets'
 import * as speech from './speech-service'
 
-// ─── Per-tab chat state ────────────────────────────────────────────────────────
+// ─── Per-session chat state (keyed by sessionId, shared across tabs in same group) ──
 
 interface TabChatState {
   sessionId: string
@@ -22,15 +22,18 @@ interface TabChatState {
   pendingImageData: string | null
 }
 
-const tabStates = new Map<number, TabChatState>()
+const sessionStates = new Map<string, TabChatState>()
+const tabToSession = new Map<number, string>()
 let activeTabId = 0
+let activeSessionId = ''
 
 function getTabState(tabId: number): TabChatState | undefined {
-  return tabStates.get(tabId)
+  const sid = tabToSession.get(tabId)
+  return sid ? sessionStates.get(sid) : undefined
 }
 
 function getActiveState(): TabChatState | undefined {
-  return tabStates.get(activeTabId)
+  return sessionStates.get(activeSessionId)
 }
 
 // ─── Port management (per-tab) ────────────────────────────────────────────────
@@ -57,7 +60,7 @@ function getPort(state: TabChatState): chrome.runtime.Port {
   return p
 }
 
-function handlePortMessage(state: TabChatState, msg: { type: string; chunk?: string; fullText?: string; error?: string; id?: string; description?: string; risk?: string; actions?: string[] }): void {
+function handlePortMessage(state: TabChatState, msg: { type: string; chunk?: string; fullText?: string; error?: string; id?: string; description?: string; risk?: string; actions?: string[]; mode?: string; remember?: boolean }): void {
   switch (msg.type) {
     case MSG.STREAM_CHUNK:
       appendChunk(state, msg.chunk ?? '')
@@ -70,6 +73,9 @@ function handlePortMessage(state: TabChatState, msg: { type: string; chunk?: str
       break
     case MSG.CONFIRM_ACTION:
       showConfirmationCard(state, msg.id!, msg.description!, msg.risk!, msg.actions ?? [])
+      break
+    case MSG.MODE_CHOICE:
+      showModeChoiceCard(state, msg.id!, msg.description!)
       break
   }
 }
@@ -93,9 +99,13 @@ async function resolveSession(tabId: number): Promise<{ sessionId: string; domai
 
 export async function initChat(parentContainer: HTMLElement, tabId: number): Promise<void> {
   activeTabId = tabId
+  const { sessionId, domain } = await resolveSession(tabId)
+  activeSessionId = sessionId
+  tabToSession.set(tabId, sessionId)
 
-  const existing = tabStates.get(tabId)
+  const existing = sessionStates.get(sessionId)
   if (existing) {
+    existing.tabId = tabId // point at current tab in the group
     parentContainer.innerHTML = ''
     parentContainer.appendChild(existing.container)
     updatePageContext(existing)
@@ -103,8 +113,6 @@ export async function initChat(parentContainer: HTMLElement, tabId: number): Pro
     wireEvents(existing)
     return
   }
-
-  const { sessionId, domain } = await resolveSession(tabId)
 
   const wrapper = document.createElement('div')
   wrapper.className = 'chat-wrapper'
@@ -145,6 +153,9 @@ export async function initChat(parentContainer: HTMLElement, tabId: number): Pro
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>
       </button>
       <input type="file" class="file-input-tab" accept="image/*,.pdf,.txt,.csv" style="display:none">
+      <button class="btn-mode-toggle btn-mode-tab" title="Switch mode">
+        <span class="mode-label">Auto</span>
+      </button>
       <textarea class="chat-input-tab" placeholder="Ask anything..." rows="1"></textarea>
       <div class="send-buttons">
         <button class="btn-primary btn-send btn-send-tab">
@@ -169,7 +180,7 @@ export async function initChat(parentContainer: HTMLElement, tabId: number): Pro
     historyLoaded: false,
     pendingImageData: null,
   }
-  tabStates.set(tabId, state)
+  sessionStates.set(sessionId, state)
 
   parentContainer.innerHTML = ''
   parentContainer.appendChild(wrapper)
@@ -200,6 +211,17 @@ function wireEvents(state: TabChatState): void {
 
   newSend.addEventListener('click', () => sendMessage(state))
   newStop.addEventListener('click', () => stopStream(state))
+
+  // ── Mode toggle (Auto ↔ Guided) ──
+  const modeBtn = c.querySelector<HTMLButtonElement>('.btn-mode-tab')
+  if (modeBtn) {
+    // Load initial state
+    loadModeToggle(modeBtn)
+    const newMode = modeBtn.cloneNode(true) as HTMLButtonElement
+    modeBtn.parentNode!.replaceChild(newMode, modeBtn)
+    loadModeToggle(newMode)
+    newMode.addEventListener('click', () => toggleMode(newMode))
+  }
 
   newInput.addEventListener('keydown', (e: KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -781,6 +803,31 @@ function handleConfirmationResponse(
   })
 }
 
+function showModeChoiceCard(state: TabChatState, id: string, description: string): void {
+  const messagesEl = getMessages(state)
+  const cardEl = createModeChoiceElement(id, description)
+  messagesEl.appendChild(cardEl)
+  scrollToBottom(messagesEl, true)
+
+  attachWidgetHandlers(
+    cardEl,
+    () => {},
+    undefined,
+    (modeId, mode, remember) => {
+      getPort(state).postMessage({
+        type: MSG.MODE_CHOICE_RESPONSE,
+        id: modeId,
+        mode,
+        remember,
+        tabId: state.tabId,
+      })
+      // Update the toggle to reflect current mode
+      const modeBtn = state.container.querySelector<HTMLButtonElement>('.btn-mode-tab')
+      if (modeBtn && remember) applyModeVisual(modeBtn, mode)
+    }
+  )
+}
+
 function addMessageActions(state: TabChatState, bubble: HTMLElement, text: string): void {
   const actions = document.createElement('div')
   actions.className = 'message-actions'
@@ -1001,6 +1048,53 @@ function showTypingIndicator(state: TabChatState, show: boolean): void {
   if (el) el.style.display = show ? 'flex' : 'none'
 }
 
+// ─── Mode Toggle (Ask → Auto → Guide) ────────────────────────────────────────
+
+type AutomationPref = 'ask' | 'auto' | 'guided'
+
+async function loadModeToggle(btn: HTMLButtonElement): Promise<void> {
+  try {
+    const res = await chrome.runtime.sendMessage({ type: MSG.SETTINGS_GET }) as {
+      ok: boolean; settings?: { automationPreference?: AutomationPref }
+    }
+    const pref = (res.ok && res.settings?.automationPreference) || 'ask'
+    applyModeVisual(btn, pref)
+  } catch {
+    applyModeVisual(btn, 'ask')
+  }
+}
+
+function applyModeVisual(btn: HTMLButtonElement, mode: AutomationPref): void {
+  const label = btn.querySelector('.mode-label')
+  btn.classList.remove('guided', 'auto-mode')
+  btn.dataset.mode = mode
+  if (mode === 'guided') {
+    btn.classList.add('guided')
+    btn.title = 'Guided mode — click to change'
+    if (label) label.textContent = 'Guide'
+  } else if (mode === 'auto') {
+    btn.classList.add('auto-mode')
+    btn.title = 'Auto mode — click to change'
+    if (label) label.textContent = 'Auto'
+  } else {
+    btn.title = 'Ask each time — click to change'
+    if (label) label.textContent = 'Ask'
+  }
+}
+
+async function toggleMode(btn: HTMLButtonElement): Promise<void> {
+  const current = (btn.dataset.mode ?? 'ask') as AutomationPref
+  // Cycle: Ask → Auto → Guide → Ask
+  const next: AutomationPref = current === 'ask' ? 'auto' : current === 'auto' ? 'guided' : 'ask'
+
+  await chrome.runtime.sendMessage({
+    type: MSG.SETTINGS_SET,
+    partial: { automationPreference: next },
+  }).catch(() => {})
+
+  applyModeVisual(btn, next)
+}
+
 /** Show a dismissible toast notification above the input row */
 function showChatToast(state: TabChatState, message: string, type: 'error' | 'info' = 'error'): void {
   // Remove any existing toast
@@ -1073,9 +1167,20 @@ export async function loadSession(sessionId: string): Promise<void> {
 }
 
 export function cleanupClosedTab(tabId: number): void {
-  const state = tabStates.get(tabId)
-  if (state?.port) {
-    try { state.port.disconnect() } catch { /* already disconnected */ }
+  const sid = tabToSession.get(tabId)
+  tabToSession.delete(tabId)
+  if (!sid) return
+  const state = sessionStates.get(sid)
+  if (!state) return
+  // Only clean up session state if no other tabs reference this session
+  let otherTabReferences = false
+  for (const [tid, s] of tabToSession) {
+    if (tid !== tabId && s === sid) { otherTabReferences = true; break }
   }
-  tabStates.delete(tabId)
+  if (!otherTabReferences) {
+    if (state.port) {
+      try { state.port.disconnect() } catch { /* already disconnected */ }
+    }
+    sessionStates.delete(sid)
+  }
 }

@@ -124,6 +124,10 @@ export const MSG = {
   CONFIRM_ACTION: 'CONFIRM_ACTION',
   CONFIRM_RESPONSE: 'CONFIRM_RESPONSE',
 
+  // Mode choice — ask user to pick Auto or Guided before executing actions
+  MODE_CHOICE: 'MODE_CHOICE',
+  MODE_CHOICE_RESPONSE: 'MODE_CHOICE_RESPONSE',
+
   // Page analysis
   ANALYZE_PAGE: 'ANALYZE_PAGE',
 
@@ -163,7 +167,7 @@ export const MSG = {
 export type MsgType = (typeof MSG)[keyof typeof MSG]
 
 export const DB_NAME = 'pwa_memory'
-export const DB_VERSION = 8
+export const DB_VERSION = 9
 
 export const STORE = {
   CHAT_HISTORY: 'chat_history',
@@ -180,6 +184,7 @@ export const STORE = {
   SUPERVISED_SESSIONS: 'supervised_sessions',
   VISUAL_SITEMAP: 'visual_sitemap',
   LOCAL_MEMORY: 'local_memory',
+  INPUT_JOURNAL: 'input_journal',
 } as const
 
 export const PORT_AI_STREAM = 'ai-stream'
@@ -224,7 +229,8 @@ export const DEFAULTS = {
   LITE_MODE: false,
   TELEGRAM_BOT_ENABLED: false,
   TELEGRAM_POLL_INTERVAL_SEC: 5,
-  GUIDED_MODE_ENABLED: false,
+  AUTOMATION_PREFERENCE: 'ask' as const,
+  INPUT_JOURNAL_ENABLED: true,
 } as const
 
 export const SESSION_KEY_STORAGE = 'sessionKey'

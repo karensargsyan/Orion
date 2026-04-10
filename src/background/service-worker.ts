@@ -1,6 +1,6 @@
 import { MSG, DEFAULTS, PORT_AI_STREAM, PORT_STT_RELAY, STORE } from '../shared/constants'
 import { persistMicGrantTimestamp } from '../shared/mic-permission-storage'
-import type { Settings, VaultData, VaultCategory, PageSnapshot, ChatMessage } from '../shared/types'
+import type { Settings, VaultData, VaultCategory, PageSnapshot, ChatMessage, InputFieldType } from '../shared/types'
 import { tabState } from './tab-state'
 import {
   rateLimiter, streamChat, fetchModels, buildSystemPrompt, buildCompactSystemPrompt,
@@ -19,15 +19,15 @@ import {
   getDomainStats, getGlobalMemoryByDomain, clearSessionChat, searchAllHistory,
 } from './memory-manager'
 import { recordAction, flushAllBuffers, flushBuffer, clearTabBuffer } from './action-recorder'
-import { matchVaultToForm, matchCredentialsToForm, describeForm } from './form-intelligence'
+import { matchVaultToForm, matchCredentialsToForm, describeForm, classifyField } from './form-intelligence'
 import { probeEndpoint, quickHealthCheck } from './api-detector'
 import { startScreenshotLoop, stopScreenshotLoop, captureScreenshot } from './screenshot-loop'
 import { executeActionsFromText, parseActionsFromText, executeWithFollowUp, ensureContentScript, requestFreshSnapshot, cancelAutomation } from './action-executor'
-import { createGroupForTab, ungroupTab, hasOrionGroup, isOrionTab, cleanupTabGroup, setActiveOriginTab } from './web-researcher'
+import { createGroupForTab, ungroupTab, hasOrionGroup, isOrionTab, cleanupTabGroup, setActiveOriginTab, resolveGroupSession, updateGroupTitle } from './web-researcher'
 import { analyzeHabits, getHabitPatterns } from './habit-tracker'
 import { getAllCalendarEvents } from './calendar-detector'
 import { detectPersonalData, storeDetectedPII } from './pii-detector'
-import { classifyActionRisk, needsConfirmation, requestConfirmation, handleConfirmResponse } from './confirmation-manager'
+import { classifyActionRisk, needsConfirmation, requestConfirmation, handleConfirmResponse, requestModeChoice, handleModeChoiceResponse } from './confirmation-manager'
 import type { ConfirmResponseType } from '../shared/types'
 import { getSkillsForDomain, formatSkillsForPrompt } from './skill-manager'
 import { getBehaviorsForDomain, formatBehaviorsForPrompt } from './behavior-learner'
@@ -73,6 +73,7 @@ import {
   telegramEnabled, pollTelegramUpdates, testTelegramBot, resetTelegramOffset,
   registerChatHandler, cleanupTelegramTab, notifyTabUrlChange, isTelegramTab,
 } from './telegram-client'
+import { journalInput, searchInputJournal } from './input-journal'
 
 // ─── Background AI call failure tracking ─────────────────────────────────────
 
@@ -507,6 +508,14 @@ chrome.webNavigation.onCommitted.addListener(async (details) => {
     notifyTabUrlChange(tid, details.url).catch(() => {})
   }
 
+  // Auto-rename Orion groups on navigation (e.g., "Orion: New" → "Orion: gmail.com")
+  if (hasOrionGroup(tid) && details.url) {
+    const navDomain = extractDomain(details.url)
+    if (navDomain && !details.url.startsWith('chrome://') && !details.url.startsWith('about:') && !details.url.startsWith('chrome-extension://')) {
+      updateGroupTitle(tid, `Orion: ${navDomain}`).catch(() => {})
+    }
+  }
+
   // Only monitor tabs that belong to Orion
   if (!panelOpenTabs.has(tid) && !isOrionTab(tid)) return
 
@@ -578,6 +587,14 @@ chrome.runtime.onConnect.addListener((port) => {
           msg.preference as ConfirmResponseType,
           (msg.actionTypes as string[]) ?? [],
           domain
+        )
+      }
+
+      if (msg.type === MSG.MODE_CHOICE_RESPONSE) {
+        await handleModeChoiceResponse(
+          msg.id as string,
+          msg.mode as 'auto' | 'guided',
+          msg.remember as boolean ?? false
         )
       }
 
@@ -835,14 +852,14 @@ async function handleAIChat(
 
     const actions = parseActionsFromText(fullText)
     if (tabId > 0) {
-      // Always try executeWithFollowUp — it has auto-kickstart logic
-      // that can detect user intent and inject actions even when the AI didn't emit any
+      let guided = false
+
       if (actions.length > 0) {
         const risk = classifyActionRisk(actions)
         const domain = extractDomain(tabState.get(tabId)?.url ?? '')
-        const shouldConfirm = await needsConfirmation(risk, actions, domain)
 
-        if (shouldConfirm) {
+        // Destructive actions always need confirmation regardless of mode
+        if (risk === 'destructive') {
           const confirmed = await requestConfirmation(port, actions, risk, tabId, chatSessionId)
           if (!confirmed) {
             port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '\n\n*Action declined by user.*\n' })
@@ -850,11 +867,23 @@ async function handleAIChat(
             return
           }
         }
+
+        // Determine execution mode
+        const pref = s.automationPreference ?? 'ask'
+        if (pref === 'guided') {
+          guided = true
+        } else if (pref === 'ask' && risk !== 'read') {
+          // Ask user to choose mode (skip for read-only actions)
+          const mode = await requestModeChoice(port, actions)
+          guided = mode === 'guided'
+        }
+        // pref === 'auto' → guided stays false
       }
 
       await executeWithFollowUp(
         fullText, tabId, s, port,
-        messages.map(m => ({ role: m.role, content: m.content }))
+        messages.map(m => ({ role: m.role, content: m.content })),
+        25, guided
       )
     }
   }
@@ -963,7 +992,9 @@ async function handleAIRecall(
 // ── AI Memory Search ─────────────────────────────────────────────────────────
 
 const MEMORY_SEARCH_SYSTEM_PROMPT = `You are a memory search assistant for the Orion browser assistant.
-The user is searching their browsing history and saved memories. Your job is to find and present the most relevant results.
+The user is searching their browsing history, saved memories, and Input Journal. Your job is to find and present the most relevant results.
+
+You have access to an Input Journal (Total Recall) that records form inputs the user has entered across all websites — emails, usernames, passwords, addresses, names, phone numbers, etc. When the user asks about data they entered, check the Input Journal section first.
 
 RULES:
 - Format every URL as a clickable markdown link: [Page Title or description](url)
@@ -973,7 +1004,9 @@ RULES:
 - Present the BEST match first, then alternatives if any exist
 - If nothing matches, say so honestly — do not make up results
 - Be concise — the user wants the link/data, not a long explanation
-- If multiple results match, present them as a numbered list with dates and domains`
+- If multiple results match, present them as a numbered list with dates and domains
+- For Input Journal entries, show the field label, value, domain, and date clearly
+- If a journal entry shows [encrypted], tell the user the data exists but requires PIN unlock to view`
 
 async function handleAIMemorySearch(
   msg: Record<string, unknown>,
@@ -988,8 +1021,8 @@ async function handleAIMemorySearch(
     return
   }
 
-  // Parallel search: IDB text search + MemPalace semantic search + Local Memory + URL-rich session memory
-  const [idbResults, mempalaceResults, localMemResults, sessionEntries] = await Promise.all([
+  // Parallel search: IDB text search + MemPalace semantic search + Local Memory + URL-rich session memory + Input Journal
+  const [idbResults, mempalaceResults, localMemResults, sessionEntries, journalResults] = await Promise.all([
     searchAllHistory(query).catch(() => ''),
     mempalaceEnabled(s)
       ? searchMempalace(s, query, { limit: 8 }).catch(() => '')
@@ -998,6 +1031,7 @@ async function handleAIMemorySearch(
       ? searchLocalMemory(query, { limit: 8 }).catch(() => '')
       : Promise.resolve(''),
     getRecentSessionMemory(80).catch(() => [] as Awaited<ReturnType<typeof getRecentSessionMemory>>),
+    searchInputJournal(query, 20).catch(() => ''),
   ])
 
   // Build URL context from session entries
@@ -1022,6 +1056,7 @@ async function handleAIMemorySearch(
     idbResults: idbResults.slice(0, 3000),
     mempalaceResults: mempalaceResults.slice(0, 3000),
     urlEntries: urlEntries.slice(0, 30),
+    journalResults: journalResults.slice(0, 3000),
   })
 
   // Build combined context for AI
@@ -1030,6 +1065,7 @@ async function handleAIMemorySearch(
   if (idbResults) sections.push(`## Text Search Results\n${idbResults.slice(0, 2500)}`)
   if (mempalaceResults) sections.push(`## Semantic Memory (MemPalace)\n${mempalaceResults.slice(0, 2500)}`)
   if (localMemResults) sections.push(`## Local Memory\n${localMemResults.slice(0, 2500)}`)
+  if (journalResults) sections.push(`## Input Journal (Total Recall)\n${journalResults.slice(0, 2500)}`)
 
   const combinedContext = sections.join('\n\n').slice(0, 8000)
 
@@ -1203,7 +1239,7 @@ async function handleMessage(
       if (autoCollectEnabled(s) && tabId > 0) {
         const evt = msg.event as {
           type: string; selector?: string; value?: string; tagName?: string;
-          inputType?: string; fieldLabel?: string
+          inputType?: string; fieldLabel?: string; detail?: string
         }
         const snap = tabState.get(tabId)
         const domain = snap?.url ? extractDomain(snap.url) : ''
@@ -1213,6 +1249,25 @@ async function handleMessage(
         // Flush on form submit or navigation
         if (evt.type === 'submit' || evt.type === 'navigate') {
           triggerFlush(tabId).catch(() => {})
+        }
+
+        // Total Recall: journal every meaningful input
+        if ((evt.type === 'input' || evt.type === 'change') && evt.value?.trim()) {
+          const detailParts = (evt.detail ?? '').split('|')
+          const fieldName = detailParts[0] || ''
+          const fieldAutocomplete = detailParts[1] || ''
+          const fieldType = classifyFieldFromEvent(evt.inputType ?? 'text', fieldName, evt.fieldLabel ?? '', fieldAutocomplete)
+          journalInput({
+            fieldType,
+            fieldLabel: evt.fieldLabel || fieldName || evt.selector || '',
+            value: evt.value,
+            encrypted: false,
+            domain,
+            url: snap?.url ?? '',
+            inputType: evt.inputType || 'text',
+            timestamp: Date.now(),
+            source: 'user_action',
+          }).catch(() => {})
         }
       }
       return { ok: true }
@@ -1378,6 +1433,10 @@ async function handleMessage(
       try {
         const tab = await chrome.tabs.get(targetTabId)
         const domain = extractDomain(tab.url ?? '')
+        // Priority 1: group-based session (tabs in same Orion group share chat)
+        const groupSid = await resolveGroupSession(targetTabId)
+        if (groupSid) return { ok: true, sessionId: groupSid, domain, url: tab.url ?? '' }
+        // Priority 2: domain-based (non-grouped tabs / legacy)
         const sid = `session_domain_${domain}`
         return { ok: true, sessionId: sid, domain, url: tab.url ?? '' }
       } catch {
@@ -1777,6 +1836,21 @@ async function handleMessage(
       return { ok: true }
     }
 
+    case 'JOURNAL_DECRYPT': {
+      const unlocked = await isSessionUnlocked()
+      if (!unlocked) return { ok: false, error: 'SESSION_LOCKED' }
+      try {
+        const { decryptJournalValue } = await import('./input-journal')
+        const { dbGet } = await import('../shared/idb')
+        const entry = await dbGet<import('../shared/types').InputJournalEntry>(STORE.INPUT_JOURNAL, msg.entryId as number)
+        if (!entry) return { ok: false, error: 'NOT_FOUND' }
+        const value = await decryptJournalValue(entry)
+        return { ok: true, value }
+      } catch {
+        return { ok: false, error: 'DECRYPT_FAILED' }
+      }
+    }
+
     default:
       return { ok: false, error: `Unknown message type: ${msg.type}` }
   }
@@ -1806,6 +1880,23 @@ function buildRewriteSystemPrompt(context: string, detail: string, pageTitle: st
 
 function extractDomain(url: string): string {
   try { return new URL(url).hostname } catch { return url }
+}
+
+/** Classify a field from USER_ACTION event metadata using form-intelligence. */
+function classifyFieldFromEvent(
+  inputType: string,
+  name: string,
+  label: string,
+  autocomplete: string
+): InputFieldType {
+  return classifyField({
+    selector: '',
+    type: inputType,
+    name,
+    label,
+    required: false,
+    autocomplete,
+  }) as InputFieldType
 }
 
 function signalActivityBorder(tabId: number, show: boolean): void {

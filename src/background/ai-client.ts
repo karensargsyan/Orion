@@ -476,12 +476,13 @@ export async function callAI(
   messages: Pick<ChatMessage, 'role' | 'content' | 'imageData'>[],
   settings: Settings,
   maxTokens = 512,
-  forceVision = false
+  forceVision = false,
+  signal?: AbortSignal
 ): Promise<string> {
   const format = getApiFormat(settings)
 
   if (format === 'gemini') {
-    return callGemini(messages, settings, maxTokens)
+    return callGemini(messages, settings, maxTokens, signal)
   }
 
   const baseUrl = getBaseUrl(settings)
@@ -495,7 +496,7 @@ export async function callAI(
       const body: Record<string, unknown> = { model, messages: msgs, max_tokens: maxTokens, temperature: getAdaptiveTemperature(settings) }
       if (system) body.system = system
 
-      const res = await fetch(`${baseUrl}/v1/messages`, { method: 'POST', headers, body: JSON.stringify(body) })
+      const res = await fetch(`${baseUrl}/v1/messages`, { method: 'POST', headers, body: JSON.stringify(body), signal })
       if (!res.ok) {
         console.warn(`[LocalAI] callAI Anthropic error: ${res.status} ${res.statusText}`)
         return ''
@@ -514,7 +515,7 @@ export async function callAI(
       max_tokens: maxTokens,
       temperature: getAdaptiveTemperature(settings),
     }
-    const res = await fetch(`${baseUrl}/v1/chat/completions`, { method: 'POST', headers, body: JSON.stringify(body) })
+    const res = await fetch(`${baseUrl}/v1/chat/completions`, { method: 'POST', headers, body: JSON.stringify(body), signal })
     if (!res.ok) {
       // Try to read the error body for details (e.g., LM Studio "insufficient system resources")
       try {
@@ -540,6 +541,7 @@ export async function callAI(
     // they exhaust max_tokens before producing content)
     return msg?.content || msg?.reasoning_content || ''
   } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') return ''
     console.warn(`[LocalAI] callAI network error:`, err)
     return ''
   }
