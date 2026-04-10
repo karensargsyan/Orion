@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Orion",
   "version": "0.6.0",
-  "description": "AI-powered browser assistant using your local AI model. Reads pages, fills forms, analyzes emails, remembers context, all 100% local and private.",
+  "description": "AI browser assistant. Reads pages, fills forms, researches the web. Runs locally or via cloud APIs. Private and fast.",
 
   "permissions": [
     "storage",
