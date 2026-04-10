@@ -103,6 +103,10 @@ export interface UserActionEvent {
   url: string
   timestamp: number
   tabId?: number
+  /** HTML input type (text, email, tel, password, search, etc.) */
+  inputType?: string
+  /** Human-readable field label from <label>, placeholder, or aria-label */
+  fieldLabel?: string
 }
 
 // ─── Memory ───────────────────────────────────────────────────────────────────

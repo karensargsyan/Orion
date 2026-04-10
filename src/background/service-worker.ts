@@ -1191,14 +1191,17 @@ async function handleMessage(
       }
       // Auto-collection: buffer user form inputs for extraction
       if (autoCollectEnabled(s) && tabId > 0) {
-        const evt = msg.event as { type: string; selector?: string; value?: string; tagName?: string; inputType?: string }
+        const evt = msg.event as {
+          type: string; selector?: string; value?: string; tagName?: string;
+          inputType?: string; fieldLabel?: string
+        }
         const snap = tabState.get(tabId)
         const domain = snap?.url ? extractDomain(snap.url) : ''
         if (domain) {
           bufferUserInput(tabId, domain, snap?.url ?? '', evt)
         }
-        // Flush on form submit
-        if (evt.type === 'submit') {
+        // Flush on form submit or navigation
+        if (evt.type === 'submit' || evt.type === 'navigate') {
           triggerFlush(tabId).catch(() => {})
         }
       }
