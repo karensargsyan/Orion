@@ -98,6 +98,104 @@ const groupSessionMap = new Map<number, string>()
 /** The "active" origin tab whose research tabs should be grouped together */
 let activeOriginTabId: number | null = null
 
+// ─── Group Pause/Stop API ───────────────────────────────────────────────────
+
+/** Groups whose AI interactions are paused (by groupId). */
+const pausedGroups = new Set<number>()
+
+export interface ActiveGroupInfo {
+  groupId: number
+  title: string
+  color: string
+  sessionId: string | null
+  paused: boolean
+  tabIds: number[]
+}
+
+export function pauseGroup(groupId: number): void {
+  pausedGroups.add(groupId)
+}
+
+export function resumeGroup(groupId: number): void {
+  pausedGroups.delete(groupId)
+}
+
+export function isGroupPaused(groupId: number): boolean {
+  return pausedGroups.has(groupId)
+}
+
+/** Check if a tab belongs to a paused group. */
+export function isTabInPausedGroup(tabId: number): boolean {
+  const groupId = tabGroupMap.get(tabId)
+  if (groupId === undefined) return false
+  return pausedGroups.has(groupId)
+}
+
+/** Get all tabIds belonging to a group. */
+export function getTabsInGroup(groupId: number): number[] {
+  const tabs: number[] = []
+  for (const [tabId, gid] of tabGroupMap.entries()) {
+    if (gid === groupId) tabs.push(tabId)
+  }
+  return tabs
+}
+
+/** Get all active Orion groups with their tabs, titles, colors, and pause state. */
+export async function getActiveGroups(): Promise<ActiveGroupInfo[]> {
+  // Invert tabGroupMap: groupId → tabId[]
+  const groupToTabs = new Map<number, number[]>()
+  for (const [tabId, groupId] of tabGroupMap.entries()) {
+    const list = groupToTabs.get(groupId) ?? []
+    list.push(tabId)
+    groupToTabs.set(groupId, list)
+  }
+
+  const results: ActiveGroupInfo[] = []
+  for (const [groupId, tabIds] of groupToTabs.entries()) {
+    let title = 'Orion'
+    let color = 'grey'
+    try {
+      const group = await chrome.tabGroups.get(groupId)
+      title = group.title ?? 'Orion'
+      color = group.color ?? 'grey'
+    } catch {
+      // Group was disbanded externally — prune stale tracking
+      for (const tid of tabIds) tabGroupMap.delete(tid)
+      groupSessionMap.delete(groupId)
+      pausedGroups.delete(groupId)
+      continue
+    }
+
+    results.push({
+      groupId,
+      title,
+      color,
+      sessionId: groupSessionMap.get(groupId) ?? null,
+      paused: pausedGroups.has(groupId),
+      tabIds,
+    })
+  }
+  return results
+}
+
+/** Stop a group: remove all tracking, ungroup tabs (but don't close them). Returns affected tabIds. */
+export async function stopGroup(groupId: number): Promise<number[]> {
+  const tabIds = getTabsInGroup(groupId)
+
+  // Clean up all tracking
+  for (const tabId of tabIds) {
+    tabGroupMap.delete(tabId)
+  }
+  groupSessionMap.delete(groupId)
+  pausedGroups.delete(groupId)
+
+  // Ungroup all tabs (keeps them open, just removes from the Chrome tab group)
+  for (const tabId of tabIds) {
+    try { await chrome.tabs.ungroup(tabId) } catch { /* tab may be gone */ }
+  }
+  return tabIds
+}
+
 function nextGroupColor(): chrome.tabGroups.ColorEnum {
   const color = GROUP_COLORS[colorIndex % GROUP_COLORS.length]
   colorIndex++
@@ -206,7 +304,10 @@ export function cleanupTabGroup(tabId: number): void {
     for (const gid of tabGroupMap.values()) {
       if (gid === groupId) { groupStillReferenced = true; break }
     }
-    if (!groupStillReferenced) groupSessionMap.delete(groupId)
+    if (!groupStillReferenced) {
+      groupSessionMap.delete(groupId)
+      pausedGroups.delete(groupId)
+    }
   }
 }
 
