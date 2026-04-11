@@ -57,7 +57,11 @@ import {
 import { analyzeFullSupervisedSession } from './supervised-analyzer'
 import { findMatchingPlaybook } from './playbook-matcher'
 import { getAllPlaybooks, deletePlaybook, exportFullBackup, importFullBackup } from './memory-manager'
-import { logError, getRecentErrors, getErrorCount, clearErrors, formatDebugInfo } from './error-logger'
+import { logError } from './error-logger'
+import { routeMessage, hasHandler } from './handlers/msg-router'
+import { registerClipboardHandlers } from './handlers/clipboard-handlers'
+import { registerWorkflowHandlers } from './handlers/workflow-handlers'
+import { registerDebugHandlers } from './handlers/debug-handlers'
 import { getCDPAccessibilityTree, type CDPTreeResult } from './cdp-accessibility'
 import { captureMiniMap, type MiniMapResult } from './minimap-screenshot'
 import { recordPageVisit, getSitemapForPrompt, persistDirtySitemaps } from './visual-sitemap'
@@ -217,6 +221,11 @@ async function initSW(): Promise<void> {
     await chrome.alarms.create('vault-auto-lock', { periodInMinutes: 1 })
   }
 
+  // Register modular message handlers
+  registerClipboardHandlers()
+  registerWorkflowHandlers()
+  registerDebugHandlers()
+
   // Initial badge
   updateBadge('idle')
 }
@@ -299,6 +308,17 @@ chrome.commands.onCommand.addListener(async (command) => {
       try { await chrome.sidePanel.open({ tabId: tab.id }) } catch {}
       await sleep(300)
       broadcastToPanel({ type: 'SWITCH_TO_MEMORY' })
+      break
+    case 'command-palette':
+      if (tab.id) {
+        try {
+          await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            files: ['content/command-palette.js'],
+          })
+          await chrome.tabs.sendMessage(tab.id, { type: MSG.TOGGLE_COMMAND_PALETTE })
+        } catch { /* content script may already be injected */ }
+      }
       break
   }
 })
@@ -1743,17 +1763,77 @@ async function handleMessage(
       return { ok: true, ...result }
     }
 
-    case MSG.GET_DEBUG_INFO: {
-      return {
-        ok: true,
-        errors: getRecentErrors(50),
-        errorCount: getErrorCount(),
-        debugText: formatDebugInfo(),
-      }
-    }
+    // ── Modular handlers (clipboard, workflow, debug) are in handlers/ ──
+    // They're routed via the msg-router at the end of this switch (default case).
 
-    case MSG.CLEAR_ERRORS: {
-      clearErrors()
+    // ── Command Palette ───────────────────────────────────────────────────────
+    case MSG.COMMAND_PALETTE_SEARCH: {
+      const q = (msg.query as string || '').toLowerCase()
+      const results: Array<{ label: string; description: string; action: string }> = []
+
+      // Built-in commands
+      const commands = [
+        { label: 'Summarize page', description: 'Get a summary of the current page', action: 'chat:Summarize this page for me.' },
+        { label: 'Fill form', description: 'Fill forms using vault data', action: 'chat:Fill the forms on this page using my vault data.' },
+        { label: 'Describe page', description: 'Describe what this page is about', action: 'chat:Describe this page and what I can do here.' },
+        { label: 'Draft reply', description: 'Help draft a reply', action: 'chat:Help me draft a reply to this conversation.' },
+        { label: 'Research topic', description: 'Deep research on a topic', action: 'chat:Research this topic thoroughly.' },
+        { label: 'Search memory', description: 'Open memory search', action: 'switch:memory' },
+        { label: 'Open vault', description: 'Go to encrypted vault', action: 'switch:vault' },
+        { label: 'Open settings', description: 'Configure Orion', action: 'switch:settings' },
+        { label: 'New chat', description: 'Start a fresh conversation', action: 'new-chat' },
+        { label: 'Take screenshot', description: 'Capture current page', action: 'screenshot' },
+      ]
+      for (const cmd of commands) {
+        if (cmd.label.toLowerCase().includes(q) || cmd.description.toLowerCase().includes(q)) {
+          results.push(cmd)
+        }
+      }
+
+      // Search vault entries
+      try {
+        const vaultEntries = await vaultList()
+        for (const v of vaultEntries.slice(0, 20)) {
+          const label = v.label || v.category
+          if (label.toLowerCase().includes(q)) {
+            results.push({ label: `Vault: ${label}`, description: v.category, action: `vault:${v.id}` })
+          }
+        }
+      } catch { /* vault may be locked */ }
+
+      return { ok: true, results: results.slice(0, 8) }
+    }
+    case MSG.COMMAND_PALETTE_EXECUTE: {
+      const action = msg.action as string
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+      if (action.startsWith('chat:')) {
+        if (tab?.id) try { await chrome.sidePanel.open({ tabId: tab.id }) } catch {}
+        await sleep(300)
+        broadcastToPanel({ type: 'CONTEXT_MENU_CHAT', text: action.slice(5), tabId: tab?.id })
+      } else if (action.startsWith('switch:')) {
+        if (tab?.id) try { await chrome.sidePanel.open({ tabId: tab.id }) } catch {}
+        await sleep(300)
+        broadcastToPanel({ type: `SWITCH_TO_${action.slice(7).toUpperCase()}` })
+      } else if (action === 'new-chat') {
+        if (tab?.id) try { await chrome.sidePanel.open({ tabId: tab.id }) } catch {}
+        await sleep(300)
+        broadcastToPanel({ type: 'NEW_CHAT' })
+      } else if (action === 'screenshot') {
+        if (tab?.id) await captureScreenshot(tab.id)
+      }
+      return { ok: true }
+    }
+    case MSG.TOGGLE_COMMAND_PALETTE: {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+      if (tab?.id) {
+        try {
+          await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            files: ['content/command-palette.js'],
+          })
+          await chrome.tabs.sendMessage(tab.id, { type: MSG.TOGGLE_COMMAND_PALETTE })
+        } catch { /* tab may not support scripts */ }
+      }
       return { ok: true }
     }
 
@@ -2094,8 +2174,13 @@ async function handleMessage(
       }
     }
 
-    default:
+    default: {
+      // Try modular handlers registered via msg-router
+      if (hasHandler(msg.type as string)) {
+        return routeMessage(msg, sender)
+      }
       return { ok: false, error: `Unknown message type: ${msg.type}` }
+    }
   }
 }
 

@@ -1,12 +1,13 @@
 {
   "name": "orion",
-  "version": "0.7.4",
+  "version": "0.7.5",
   "private": true,
   "scripts": {
     "build": "npx tsx build.ts",
     "watch": "npx tsx build.ts --watch",
     "typecheck": "tsc --noEmit",
     "test": "npx playwright test",
+    "test:unit": "vitest run",
     "test:headed": "npx playwright test --headed",
     "test:ui": "npx playwright test --ui"
   },
@@ -16,6 +17,7 @@
     "esbuild": "^0.21.0",
     "sharp": "^0.34.5",
     "tsx": "^4.7.0",
-    "typescript": "^5.4.0"
+    "typescript": "^5.4.0",
+    "vitest": "^4.1.4"
   }
 }

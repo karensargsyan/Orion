@@ -29,6 +29,7 @@ function copyStatic(): void {
   copyFile('src/permissions/microphone-permission.html', 'dist/permissions/microphone-permission.html')
   copyFile('docs/privacy-policy.html', 'dist/privacy-policy.html')
   if (fs.existsSync('icons')) copyDir('icons', 'dist/icons')
+  if (fs.existsSync('src/_locales')) copyDir('src/_locales', 'dist/_locales')
   // _dev is NOT copied to dist — Chrome rejects filenames starting with "_"
 }
 
@@ -80,6 +81,14 @@ const buildConfigs: esbuild.BuildOptions[] = [
     entryPoints: ['src/permissions/microphone-permission.ts'],
     outfile: 'dist/permissions/microphone-permission.js',
     format: 'esm',
+    platform: 'browser',
+  },
+  // Command Palette (IIFE — injected on demand into pages)
+  {
+    ...sharedOptions,
+    entryPoints: ['src/content/command-palette.ts'],
+    outfile: 'dist/content/command-palette.js',
+    format: 'iife',
     platform: 'browser',
   },
 ]

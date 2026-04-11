@@ -20,6 +20,8 @@ interface TabChatState {
   container: HTMLElement
   historyLoaded: boolean
   pendingImageData: string | null
+  pendingFileContext: string | null
+  pendingFileName: string | null
 }
 
 const sessionStates = new Map<string, TabChatState>()
@@ -176,6 +178,8 @@ export async function initChat(parentContainer: HTMLElement, tabId: number): Pro
     container: wrapper,
     historyLoaded: false,
     pendingImageData: null,
+    pendingFileContext: null,
+    pendingFileName: null,
   }
   sessionStates.set(sessionId, state)
 
@@ -434,23 +438,45 @@ function wireEvents(state: TabChatState): void {
   const previewRemove = c.querySelector<HTMLButtonElement>('.attachment-remove')
   const inputRow = c.querySelector<HTMLElement>('.input-row')
 
-  function attachImage(file: File): void {
+  function attachFile(file: File): void {
     if (file.size > 10 * 1024 * 1024) { alert('File too large (max 10MB)'); return }
-    const reader = new FileReader()
-    reader.onload = () => {
-      state.pendingImageData = reader.result as string
-      if (previewThumb) {
-        previewThumb.src = file.type.startsWith('image/') ? reader.result as string : ''
-        previewThumb.style.display = file.type.startsWith('image/') ? '' : 'none'
+    const isImage = file.type.startsWith('image/')
+    const isText = file.type.startsWith('text/') || /\.(txt|csv|md|json|xml|html|log|tsv)$/i.test(file.name)
+
+    if (isText) {
+      // Read as text for inline context
+      const reader = new FileReader()
+      reader.onload = () => {
+        state.pendingFileContext = (reader.result as string).slice(0, 50_000)
+        state.pendingFileName = file.name
+        state.pendingImageData = null
+        if (previewThumb) { previewThumb.src = ''; previewThumb.style.display = 'none' }
+        if (previewName) previewName.textContent = `\u{1F4C4} ${file.name} (${formatFileSize(file.size)})`
+        if (previewBar) previewBar.style.display = 'flex'
       }
-      if (previewName) previewName.textContent = file.name
-      if (previewBar) previewBar.style.display = 'flex'
+      reader.readAsText(file)
+    } else {
+      // Images and other files → data URL
+      const reader = new FileReader()
+      reader.onload = () => {
+        state.pendingImageData = reader.result as string
+        state.pendingFileContext = null
+        state.pendingFileName = file.name
+        if (previewThumb) {
+          previewThumb.src = isImage ? reader.result as string : ''
+          previewThumb.style.display = isImage ? '' : 'none'
+        }
+        if (previewName) previewName.textContent = `${isImage ? '\u{1F5BC}' : '\u{1F4CE}'} ${file.name} (${formatFileSize(file.size)})`
+        if (previewBar) previewBar.style.display = 'flex'
+      }
+      reader.readAsDataURL(file)
     }
-    reader.readAsDataURL(file)
   }
 
   function clearAttachment(): void {
     state.pendingImageData = null
+    state.pendingFileContext = null
+    state.pendingFileName = null
     if (previewBar) previewBar.style.display = 'none'
     if (previewThumb) previewThumb.src = ''
     if (previewName) previewName.textContent = ''
@@ -462,7 +488,7 @@ function wireEvents(state: TabChatState): void {
     na.addEventListener('click', () => fileInput.click())
     fileInput.addEventListener('change', () => {
       const file = fileInput.files?.[0]
-      if (file) attachImage(file)
+      if (file) attachFile(file)
       fileInput.value = ''
     })
   }
@@ -481,7 +507,7 @@ function wireEvents(state: TabChatState): void {
       if (item.type.startsWith('image/')) {
         e.preventDefault()
         const file = item.getAsFile()
-        if (file) attachImage(file)
+        if (file) attachFile(file)
         return
       }
     }
@@ -495,7 +521,7 @@ function wireEvents(state: TabChatState): void {
       e.preventDefault()
       inputRow.classList.remove('drag-over')
       const file = e.dataTransfer?.files[0]
-      if (file) attachImage(file)
+      if (file) attachFile(file)
     })
   }
 
@@ -1159,7 +1185,7 @@ function showError(state: TabChatState, error: string): void {
 
 async function sendMessage(state: TabChatState): Promise<void> {
   const inputEl = getInput(state)
-  const text = inputEl.value.trim()
+  let text = inputEl.value.trim()
   if (!text || state.isStreaming) return
 
   // Auto-stop mic recording if active
@@ -1171,12 +1197,19 @@ async function sendMessage(state: TabChatState): Promise<void> {
   }
 
   const imageData = state.pendingImageData
+  const fileContext = state.pendingFileContext
+  const fileName = state.pendingFileName
+
+  // Prepend file content as context if attached
+  if (fileContext) {
+    text = `[Attached file: ${fileName}]\n\`\`\`\n${fileContext.slice(0, 20_000)}\n\`\`\`\n\n${text}`
+  }
 
   inputEl.value = ''
   inputEl.style.height = 'auto'
 
   // Show user message with optional image thumbnail
-  const bubble = addBubble(state, 'user', text)
+  const bubble = addBubble(state, 'user', fileContext ? `[${fileName}] ${text.slice(text.indexOf('\n\n') + 2)}` : text)
   if (imageData && imageData.startsWith('data:image/')) {
     const img = document.createElement('img')
     img.src = imageData
@@ -1356,6 +1389,12 @@ export async function loadSession(sessionId: string): Promise<void> {
  * Programmatically send a chat message (used by context menus + keyboard shortcuts).
  * Injects text into the active session's input and triggers send.
  */
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
 export function sendChatMessage(text: string): void {
   const state = getActiveState()
   if (!state) return

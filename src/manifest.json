@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Orion",
-  "version": "0.7.4",
-  "description": "AI browser assistant. Reads pages, fills forms, researches the web. Runs locally or via cloud APIs. Private and fast.",
+  "version": "0.7.5",
+  "description": "__MSG_extDescription__",
+  "default_locale": "en",
 
   "permissions": [
     "storage",
@@ -32,6 +33,10 @@
     "memory-search": {
       "suggested_key": { "default": "Alt+Shift+M", "mac": "Alt+Shift+M" },
       "description": "Search Orion memory"
+    },
+    "command-palette": {
+      "suggested_key": { "default": "Alt+Space", "mac": "Alt+Space" },
+      "description": "Open command palette"
     }
   },
 
@@ -80,7 +85,7 @@
 
   "web_accessible_resources": [
     {
-      "resources": ["privacy-policy.html"],
+      "resources": ["privacy-policy.html", "content/command-palette.js"],
       "matches": ["<all_urls>"]
     }
   ]
