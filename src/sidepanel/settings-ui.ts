@@ -442,6 +442,17 @@ export async function initSettings(container: HTMLElement): Promise<void> {
       </section>
 
       <section class="settings-section" data-settings-tab="advanced">
+        <h3>Debug</h3>
+        <p class="hint-text" style="margin-bottom:8px">Recent errors and API call log for troubleshooting.</p>
+        <div class="form-row" style="margin-bottom:8px">
+          <button id="btn-show-debug" class="btn-small">Show Recent Errors</button>
+          <button id="btn-copy-debug" class="btn-small">Copy Debug Info</button>
+          <button id="btn-clear-errors" class="btn-small btn-danger">Clear</button>
+        </div>
+        <div id="debug-output" style="display:none;max-height:200px;overflow-y:auto;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px;font-size:11px;font-family:var(--font-mono);white-space:pre-wrap;color:var(--text-dim)"></div>
+      </section>
+
+      <section class="settings-section" data-settings-tab="advanced">
         <h3>About</h3>
         <p class="hint-text">
           <a href="#" id="btn-privacy-policy" style="color:var(--accent)">Privacy Policy</a>
@@ -1056,6 +1067,36 @@ function wireSettingsEvents(container: HTMLElement, s: Settings): void {
   container.querySelector('#telegram-enabled')?.addEventListener('change', async () => {
     const enabled = (container.querySelector('#telegram-enabled') as HTMLInputElement).checked
     await chrome.runtime.sendMessage({ type: 'TELEGRAM_TOGGLE', enabled })
+  })
+
+  // ── Debug panel ──────────────────────────────────────────────────────────
+  container.querySelector('#btn-show-debug')?.addEventListener('click', async () => {
+    const output = container.querySelector('#debug-output') as HTMLElement
+    const res = await chrome.runtime.sendMessage({ type: MSG.GET_DEBUG_INFO }) as {
+      ok: boolean; debugText?: string; errorCount?: number
+    }
+    output.textContent = res.debugText || 'No errors recorded.'
+    output.style.display = 'block'
+  })
+
+  container.querySelector('#btn-copy-debug')?.addEventListener('click', async () => {
+    const res = await chrome.runtime.sendMessage({ type: MSG.GET_DEBUG_INFO }) as {
+      ok: boolean; debugText?: string
+    }
+    if (res.debugText) {
+      await navigator.clipboard.writeText(res.debugText)
+      const btn = container.querySelector('#btn-copy-debug') as HTMLElement
+      const orig = btn.textContent
+      btn.textContent = 'Copied!'
+      setTimeout(() => { btn.textContent = orig }, 1500)
+    }
+  })
+
+  container.querySelector('#btn-clear-errors')?.addEventListener('click', async () => {
+    await chrome.runtime.sendMessage({ type: MSG.CLEAR_ERRORS })
+    const output = container.querySelector('#debug-output') as HTMLElement
+    output.textContent = 'Errors cleared.'
+    output.style.display = 'block'
   })
 
   // ── Privacy Policy link ───────────────────────────────────────────────────

@@ -16,7 +16,9 @@ function switchTab(tab: TabId): void {
   activeTab = tab
 
   document.querySelectorAll('.tab-btn').forEach(btn => {
-    btn.classList.toggle('active', (btn as HTMLElement).dataset.tab === tab)
+    const isActive = (btn as HTMLElement).dataset.tab === tab
+    btn.classList.toggle('active', isActive)
+    btn.setAttribute('aria-selected', String(isActive))
   })
 
   document.querySelectorAll('.panel').forEach(panel => {
@@ -208,42 +210,42 @@ function showMainUI(startTab: TabId = 'chat'): void {
       <pre class="learning-feedback-body" id="learning-feedback-body"></pre>
       <button type="button" class="btn-small btn-primary" id="btn-learning-feedback-dismiss">Got it</button>
     </div>
-    <nav class="tab-bar">
-      <button class="tab-btn${startTab === 'chat' ? ' active' : ''}" data-tab="chat" title="Chat">
+    <nav class="tab-bar" role="tablist" aria-label="Orion navigation">
+      <button class="tab-btn${startTab === 'chat' ? ' active' : ''}" data-tab="chat" title="Chat" role="tab" aria-selected="${startTab === 'chat'}" aria-controls="panel-chat" aria-label="Chat">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
         <span>Chat</span>
       </button>
-      <button class="tab-btn" data-tab="memory" title="Memory & Search">
+      <button class="tab-btn" data-tab="memory" title="Memory & Search" role="tab" aria-selected="false" aria-controls="panel-memory" aria-label="Memory and search">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
         <span>Memory</span>
       </button>
-      <button class="tab-btn" data-tab="insights" title="Insights">
+      <button class="tab-btn" data-tab="insights" title="Insights" role="tab" aria-selected="false" aria-controls="panel-insights" aria-label="Insights and stats">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10M12 20V4M6 20v-6"></path></svg>
         <span>Insights</span>
       </button>
-      <button class="tab-btn" data-tab="vault" title="Vault">
+      <button class="tab-btn" data-tab="vault" title="Vault" role="tab" aria-selected="false" aria-controls="panel-vault" aria-label="Encrypted vault">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
         <span>Vault</span>
       </button>
-      <button class="tab-btn" data-tab="history" title="History">
+      <button class="tab-btn" data-tab="history" title="History" role="tab" aria-selected="false" aria-controls="panel-history" aria-label="Chat history">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg>
         <span>History</span>
       </button>
-      <button class="tab-btn${startTab === 'settings' ? ' active' : ''}" data-tab="settings" title="Settings">
+      <button class="tab-btn${startTab === 'settings' ? ' active' : ''}" data-tab="settings" title="Settings" role="tab" aria-selected="${startTab === 'settings'}" aria-controls="panel-settings" aria-label="Settings">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"></path></svg>
         <span>Settings</span>
       </button>
-      <button class="tab-btn learning-btn" id="btn-learning-toggle" title="Learning Mode">
+      <button class="tab-btn learning-btn" id="btn-learning-toggle" title="Learning Mode" role="tab" aria-selected="false" aria-label="Supervised learning mode">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path></svg>
         <span>Learn</span>
       </button>
     </nav>
-    <div id="panel-chat" class="panel${startTab === 'chat' ? ' active' : ''}"></div>
-    <div id="panel-memory" class="panel"></div>
-    <div id="panel-insights" class="panel"></div>
-    <div id="panel-vault" class="panel"></div>
-    <div id="panel-history" class="panel"></div>
-    <div id="panel-settings" class="panel${startTab === 'settings' ? ' active' : ''}"></div>
+    <div id="panel-chat" class="panel${startTab === 'chat' ? ' active' : ''}" role="tabpanel" aria-label="Chat panel"></div>
+    <div id="panel-memory" class="panel" role="tabpanel" aria-label="Memory panel"></div>
+    <div id="panel-insights" class="panel" role="tabpanel" aria-label="Insights panel"></div>
+    <div id="panel-vault" class="panel" role="tabpanel" aria-label="Vault panel"></div>
+    <div id="panel-history" class="panel" role="tabpanel" aria-label="History panel"></div>
+    <div id="panel-settings" class="panel${startTab === 'settings' ? ' active' : ''}" role="tabpanel" aria-label="Settings panel"></div>
   `
 
   document.querySelectorAll<HTMLElement>('.tab-btn:not(.learning-btn)').forEach(btn => {

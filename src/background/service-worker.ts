@@ -57,6 +57,7 @@ import {
 import { analyzeFullSupervisedSession } from './supervised-analyzer'
 import { findMatchingPlaybook } from './playbook-matcher'
 import { getAllPlaybooks, deletePlaybook, exportFullBackup, importFullBackup } from './memory-manager'
+import { logError, getRecentErrors, getErrorCount, clearErrors, formatDebugInfo } from './error-logger'
 import { getCDPAccessibilityTree, type CDPTreeResult } from './cdp-accessibility'
 import { captureMiniMap, type MiniMapResult } from './minimap-screenshot'
 import { recordPageVisit, getSitemapForPrompt, persistDirtySitemaps } from './visual-sitemap'
@@ -1740,6 +1741,20 @@ async function handleMessage(
     case MSG.FULL_RESTORE: {
       const result = await importFullBackup(msg.backup as Record<string, unknown>)
       return { ok: true, ...result }
+    }
+
+    case MSG.GET_DEBUG_INFO: {
+      return {
+        ok: true,
+        errors: getRecentErrors(50),
+        errorCount: getErrorCount(),
+        debugText: formatDebugInfo(),
+      }
+    }
+
+    case MSG.CLEAR_ERRORS: {
+      clearErrors()
+      return { ok: true }
     }
 
     // ── Stats ─────────────────────────────────────────────────────────────────

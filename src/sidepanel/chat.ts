@@ -131,7 +131,8 @@ export async function initChat(parentContainer: HTMLElement, tabId: number): Pro
       </div>
     </div>
     <div class="quick-actions quick-actions-tab"></div>
-    <div class="messages chat-messages-tab">
+    <div class="proactive-bar proactive-bar-tab" style="display:none" aria-label="Page insights"></div>
+    <div class="messages chat-messages-tab" role="log" aria-live="polite" aria-label="Chat messages">
     </div>
     <div class="typing-indicator typing-indicator-tab" style="display:none">
       <span></span><span></span><span></span>
@@ -152,12 +153,12 @@ export async function initChat(parentContainer: HTMLElement, tabId: number): Pro
       <button class="btn-mode-toggle btn-mode-tab" title="Switch mode">
         <span class="mode-label">Auto</span>
       </button>
-      <textarea class="chat-input-tab" placeholder="Ask anything..." rows="1"></textarea>
+      <textarea class="chat-input-tab" placeholder="Ask anything..." rows="1" aria-label="Chat message input"></textarea>
       <div class="send-buttons">
-        <button class="btn-primary btn-send btn-send-tab">
+        <button class="btn-primary btn-send btn-send-tab" aria-label="Send message">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
         </button>
-        <button class="btn-danger btn-send btn-stop-tab" style="display:none">Stop</button>
+        <button class="btn-danger btn-send btn-stop-tab" style="display:none" aria-label="Stop AI response">Stop</button>
       </div>
     </div>
   `
@@ -186,6 +187,7 @@ export async function initChat(parentContainer: HTMLElement, tabId: number): Pro
   updateModelBadge(state)
   loadTabHistory(state)
   startHealthCheckLoop(state)
+  showProactiveInsights(state)
 }
 
 // ─── Wire DOM events ──────────────────────────────────────────────────────────
@@ -728,6 +730,56 @@ async function populateQuickActions(state: TabChatState): Promise<void> {
       sendMessage(state)
     })
   })
+}
+
+// ─── Proactive Page Intelligence ───────────────────────────────���─────────────
+
+async function showProactiveInsights(state: TabChatState): Promise<void> {
+  const bar = state.container.querySelector('.proactive-bar-tab') as HTMLElement | null
+  if (!bar) return
+
+  const insights: string[] = []
+  try {
+    // Check for previous visits to this domain
+    if (state.domain) {
+      const memRes = await chrome.runtime.sendMessage({
+        type: MSG.MEMORY_QUERY,
+        domain: state.domain,
+        limit: 5,
+      }) as { ok: boolean; entries?: Array<{ timestamp: number }> }
+      if (memRes.ok && memRes.entries && memRes.entries.length > 0) {
+        const last = new Date(memRes.entries[0].timestamp)
+        const daysAgo = Math.floor((Date.now() - last.getTime()) / 86_400_000)
+        if (daysAgo === 0) {
+          insights.push('You visited this site earlier today')
+        } else if (daysAgo === 1) {
+          insights.push('You visited this site yesterday')
+        } else if (daysAgo <= 7) {
+          insights.push(`You visited this site ${daysAgo} days ago`)
+        }
+      }
+    }
+
+    // Check if page has forms and vault might have matching data
+    const snapshotRes = await chrome.runtime.sendMessage({
+      type: MSG.GET_TAB_SNAPSHOT,
+      tabId: state.tabId,
+    }) as { ok: boolean; snapshot?: { formFields?: unknown[] } }
+    if (snapshotRes.ok && snapshotRes.snapshot?.formFields) {
+      const fieldCount = (snapshotRes.snapshot.formFields as unknown[]).length
+      if (fieldCount >= 3) {
+        insights.push(`Page has a form with ${fieldCount} fields`)
+      }
+    }
+  } catch { /* non-critical — silently skip */ }
+
+  if (insights.length === 0) {
+    bar.style.display = 'none'
+    return
+  }
+
+  bar.innerHTML = insights.map(i => `<span class="proactive-insight">${i}</span>`).join('')
+  bar.style.display = ''
 }
 
 async function loadTabHistory(state: TabChatState): Promise<void> {

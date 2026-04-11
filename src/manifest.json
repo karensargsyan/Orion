@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Orion",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "description": "AI browser assistant. Reads pages, fills forms, researches the web. Runs locally or via cloud APIs. Private and fast.",
 
   "permissions": [
