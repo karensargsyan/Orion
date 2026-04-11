@@ -467,8 +467,41 @@
     }
     pre:hover .code-copy-btn { opacity: 1; }
     .code-copy-btn:hover { color: var(--accent); border-color: var(--accent); }
-    .message-assistant a { color: var(--accent); text-decoration: none; }
-    .message-assistant a:hover { text-decoration: underline; }
+    .message-assistant a {
+      color: var(--accent);
+      text-decoration: none;
+      border-bottom: 1px dotted rgba(138,92,246,0.4);
+      padding-bottom: 0px;
+      word-break: break-all;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    .message-assistant a:hover {
+      text-decoration: none;
+      border-bottom-style: solid;
+      border-bottom-color: var(--accent);
+      filter: brightness(1.2);
+    }
+    .message-assistant a.auto-link {
+      font-size: 0.92em;
+      background: rgba(138,92,246,0.08);
+      padding: 1px 5px;
+      border-radius: 3px;
+      border-bottom: none;
+    }
+    .message-assistant a.auto-link:hover {
+      background: rgba(138,92,246,0.18);
+      border-bottom: none;
+    }
+    .message-assistant a.auto-link::after {
+      content: ' \2197';
+      font-size: 0.8em;
+      opacity: 0.6;
+    }
+    .message-assistant a.email-link::after {
+      content: ' \2709';
+      font-size: 0.85em;
+      opacity: 0.6;
+    }
     .message-assistant strong { color: var(--text-bright); }
     .message-assistant hr { border: none; border-top: 1px solid var(--border); margin: 8px 0; }
     .message-assistant blockquote {

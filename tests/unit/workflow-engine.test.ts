@@ -1,23 +1,32 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { createWorkflow, getAllWorkflows, getWorkflowProgress, cancelWorkflow, pauseWorkflow } from '../../src/background/workflow-engine'
 
-// Mock chrome.tabs API used by workflow-engine's executeStep/waitForTabLoad
-vi.stubGlobal('chrome', {
-  tabs: {
-    create: vi.fn().mockResolvedValue({ id: 1 }),
-    update: vi.fn().mockResolvedValue({}),
-    get: vi.fn().mockResolvedValue({ status: 'complete' }),
-    onUpdated: {
-      addListener: vi.fn(),
-      removeListener: vi.fn(),
+// Hoist chrome & crypto mocks so they exist BEFORE module-level code in imports runs
+// (vi.stubGlobal is NOT hoisted, but vi.hoisted() IS)
+vi.hoisted(() => {
+  const noop = () => {}
+  const resolved = (v: unknown) => () => Promise.resolve(v)
+  const event = { addListener: noop, removeListener: noop }
+
+  ;(globalThis as any).chrome = {
+    tabs: {
+      create: resolved({ id: 1 }),
+      update: resolved({}),
+      get: resolved({ status: 'complete' }),
+      remove: resolved(undefined),
+      query: resolved([]),
+      onUpdated: event,
+      onRemoved: event,
     },
-  },
+    debugger: { onDetach: event },
+    runtime: { getURL: (p: string) => `chrome-extension://test/${p}` },
+  }
+  Object.defineProperty(globalThis, 'crypto', {
+    value: { randomUUID: () => `uuid-${Math.random().toString(36).slice(2, 10)}` },
+    writable: true, configurable: true,
+  })
 })
 
-// Mock crypto.randomUUID
-vi.stubGlobal('crypto', {
-  randomUUID: vi.fn(() => `uuid-${Math.random().toString(36).slice(2, 10)}`),
-})
+import { createWorkflow, getAllWorkflows, getWorkflowProgress, cancelWorkflow, pauseWorkflow } from '../../src/background/workflow-engine'
 
 describe('workflow-engine', () => {
   describe('createWorkflow', () => {

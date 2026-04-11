@@ -14,12 +14,15 @@ import { localMemoryEnabled, recallLocalMemories, recordLocalFailure, recordLoca
 import { getCDPAccessibilityTree, getCDPAccessibilityTreeCached, resolveElementCoords, invalidateTreeCache } from './cdp-accessibility'
 import { captureMiniMap, captureAutomationScreenshot } from './minimap-screenshot'
 import { recordPageVisit, getPageScreenshot } from './visual-sitemap'
+import { getDomainPersona, classifyPage } from './page-persona'
+import type { PageType } from './page-persona'
 import { acquireSession, releaseSession, isSessionActive } from './cdp-session'
 import {
   cdpClickAt, cdpDoubleClickAt, cdpHoverAt, cdpTypeText, cdpPressKey,
   cdpFocusNode, cdpScrollPage, cdpScrollIntoView, cdpClearField,
   cdpWaitForNavigation, cdpWaitForDOMStable, cdpScreenshot,
 } from './cdp-actions'
+import { logAction, logAIRound, logTabEvent } from './error-logger'
 
 const ACTION_PATTERN = /\[ACTION:(\w+)([^\]]*)\]/g
 const MAX_INJECT_RETRIES = 2
@@ -353,10 +356,25 @@ const PARALLELIZABLE_ACTIONS = new Set([
 ])
 
 function groupActionsIntoBatches(actions: AIAction[]): AIAction[][] {
+  // Step 1: Deduplicate — collapse identical actions (same action + same target)
+  const seen = new Set<string>()
+  const deduped: AIAction[] = []
+  for (const action of actions) {
+    const target = action.selector ?? action.markerId ?? action.url ?? action.value ?? ''
+    const key = `${action.action}:${target}`
+    if (seen.has(key)) {
+      console.log(`[LocalAI] Dedup: skipping duplicate ${action.action} on "${target.slice(0, 60)}"`)
+      continue
+    }
+    seen.add(key)
+    deduped.push(action)
+  }
+
+  // Step 2: Group into batches
   const batches: AIAction[][] = []
   let currentParallel: AIAction[] = []
 
-  for (const action of actions) {
+  for (const action of deduped) {
     if (BARRIER_ACTIONS.has(action.action)) {
       if (currentParallel.length > 0) {
         batches.push(currentParallel)
@@ -838,8 +856,24 @@ async function executeSingleAction(action: AIAction, tabId: number): Promise<AIA
   }
 
   if (action.action === 'open_tab' || action.action === 'read_tab') {
+    const targetUrl = action.url ?? ''
+    // Guard: if trying to open the same URL as the current tab, don't open a new tab
     try {
-      const content = await openAndReadTab(action.url ?? '')
+      const currentTab = await chrome.tabs.get(tabId)
+      if (currentTab.url && targetUrl) {
+        const currentHref = new URL(currentTab.url).href
+        const targetHref = new URL(targetUrl).href
+        if (currentHref === targetHref || currentTab.url.replace(/\/$/, '') === targetUrl.replace(/\/$/, '')) {
+          return {
+            action: action.action, success: true,
+            result: `You are ALREADY on this page (${currentTab.url}). Do NOT open it again. Use CLICK, TYPE, or other interaction actions to work with elements on THIS page.`,
+          }
+        }
+      }
+    } catch { /* tab lookup failed, proceed normally */ }
+
+    try {
+      const content = await openAndReadTab(targetUrl)
       return { action: action.action, success: true, result: `Title: ${content.title}\nURL: ${content.url}\n\n${content.text}` }
     } catch (err) {
       return { action: action.action, success: false, error: String(err) }
@@ -929,8 +963,24 @@ async function executeSingleAction(action: AIAction, tabId: number): Promise<AIA
     const url = action.url ?? action.value ?? ''
     if (!url) return { action: 'navigate', success: false, error: 'No URL provided' }
     try {
-      // Ensure URL has a protocol
       const fullUrl = /^https?:\/\//i.test(url) ? url : `https://${url}`
+
+      // Guard: check if we're already on this URL (including redirected URLs)
+      try {
+        const currentTab = await chrome.tabs.get(tabId)
+        if (currentTab.url) {
+          const currentHost = new URL(currentTab.url).hostname.replace(/^www\./, '')
+          const targetHost = new URL(fullUrl).hostname.replace(/^www\./, '')
+          const currentPath = new URL(currentTab.url).pathname
+          const targetPath = new URL(fullUrl).pathname
+          if (currentHost === targetHost && (currentPath === targetPath || targetPath === '/')) {
+            logTabEvent('duplicate_blocked', tabId, fullUrl, 'navigate')
+            return { action: 'navigate', success: true, result: `Already on ${currentTab.url}. No navigation needed. Interact with the current page using CLICK, TYPE, etc.` }
+          }
+        }
+      } catch { /* proceed with navigation */ }
+
+      logTabEvent('navigated', tabId, fullUrl, 'navigate')
       await chrome.tabs.update(tabId, { url: fullUrl })
       // Wait for page to start loading
       await sleep(2000)
@@ -1295,6 +1345,10 @@ export async function executeWithFollowUp(
   let errorRepeatCount = 0
   const allParsedActions: ParsedAction[] = []
   const allResults: AIActionResult[] = []
+  /** URLs already opened/navigated during this execution — prevents duplicate tab opens */
+  const visitedUrls = new Set<string>()
+  /** Track consecutive tab-opening rounds (no click/type/interaction actions) */
+  let consecutiveTabOpenRounds = 0
 
   // Clear any stale cancellation for this tab, then show stop overlay
   clearCancellation(tabId)
@@ -1405,6 +1459,72 @@ export async function executeWithFollowUp(
       break
     }
 
+    // ── Duplicate URL guard ──────────────────────────────────────────────
+    // Filter out OPEN_TAB/READ_TAB/NAVIGATE actions that target URLs already visited
+    // in this execution. This prevents the AI from repeatedly opening the same page.
+    const TAB_OPEN_ACTIONS = new Set(['open_tab', 'read_tab', 'navigate', 'search'])
+    const INTERACTION_ACTIONS = new Set(['click', 'type', 'select_option', 'toggle', 'fill_form', 'scroll', 'hover', 'focus', 'clear', 'press_key', 'double_click', 'screenshot', 'form_coach'])
+    const hasInteraction = actions.some(a => INTERACTION_ACTIONS.has(a.action))
+    const onlyTabOpens = actions.every(a => TAB_OPEN_ACTIONS.has(a.action))
+
+    if (onlyTabOpens && !restricted) {
+      consecutiveTabOpenRounds++
+    } else if (hasInteraction) {
+      consecutiveTabOpenRounds = 0
+    }
+
+    // If AI has spent 3+ consecutive rounds only opening tabs without interacting,
+    // force it to stop opening and interact with the current page
+    if (consecutiveTabOpenRounds >= 3 && !restricted) {
+      port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '\n\n> Redirecting: you have the page open — now interact with it.\n' })
+      // Replace tab-open actions with a hint and let the AI try again
+      const currentTab = await chrome.tabs.get(tabId).catch(() => null)
+      const forceMsg = `STOP opening new tabs. You are on ${currentTab?.url ?? 'the current page'} and have opened tabs ${consecutiveTabOpenRounds} times without interacting. Use CLICK, TYPE, or other interaction actions on the CURRENT page. Do NOT use OPEN_TAB, NAVIGATE, or SEARCH again.`
+      const forceMsgs: Pick<ChatMessage, 'role' | 'content'>[] = [
+        ...sessionMessages,
+        { role: 'assistant' as const, content: response },
+        { role: 'user' as const, content: forceMsg },
+      ]
+      const forceResponse = await callAI(forceMsgs, settings, 2048, false, executionAbort.signal)
+      if (forceResponse) {
+        actions = parseActionsFromText(forceResponse)
+        response = forceResponse
+        const cleaned = stripActionMarkersForDisplay(forceResponse)
+        if (cleaned.trim()) port.postMessage({ type: MSG.STREAM_CHUNK, chunk: cleaned })
+      }
+      consecutiveTabOpenRounds = 0
+    }
+
+    // Deduplicate: block OPEN_TAB for URLs already visited in this automation
+    actions = actions.filter(a => {
+      if (a.action === 'open_tab' || a.action === 'read_tab') {
+        const url = a.params.url ?? ''
+        if (!url) return true
+        try {
+          const href = new URL(/^https?:\/\//i.test(url) ? url : `https://${url}`).href
+          if (visitedUrls.has(href)) {
+            logTabEvent('duplicate_blocked', tabId, url, 'research')
+            return false
+          }
+          visitedUrls.add(href)
+        } catch { /* invalid URL, let it through */ }
+      }
+      if (a.action === 'navigate') {
+        const url = a.params.url ?? a.params.value ?? ''
+        if (url) {
+          try { visitedUrls.add(new URL(/^https?:\/\//i.test(url) ? url : `https://${url}`).href) }
+          catch { /* ok */ }
+        }
+      }
+      return true
+    })
+
+    if (actions.length === 0 && round > 0) {
+      console.log(`[LocalAI] All actions were duplicates on round ${round + 1}. Breaking.`)
+      port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '\n\n> Already visited those pages. Finishing up.\n\n' })
+      break
+    }
+
     // Loop detection: only trigger after 4 identical action+selector+value signatures
     // AND only if none of those rounds had any success
     const actionSig = actions.map(a => `${a.action}:${a.params.selector ?? ''}:${a.params.value ?? ''}`).join('|')
@@ -1508,6 +1628,28 @@ export async function executeWithFollowUp(
 
     allParsedActions.push(...actions)
     allResults.push(...results)
+
+    // ── Debug logging ──────────────────────────────────────────────────
+    for (let i = 0; i < results.length; i++) {
+      const r = results[i]
+      const a = actions[i]
+      logAction({
+        round: round + 1,
+        action: r.action,
+        params: a ? Object.entries(a.params).map(([k, v]) => `${k}=${v}`).join(' ').slice(0, 120) : '',
+        success: r.success,
+        result: (r.success ? r.result : r.error)?.slice(0, 200) ?? '',
+        tabId,
+      })
+    }
+    logAIRound({
+      round: round + 1,
+      maxRounds,
+      tabId,
+      actionCount: actions.length,
+      actions: actions.map(a => a.action).join(', ').slice(0, 120),
+      allSucceeded: results.every(r => r.success),
+    })
 
     if (results.every(r => r.success)) hadSuccess = true
     if (results.some(r => !r.success)) hadFailure = true
@@ -1654,7 +1796,8 @@ export async function executeWithFollowUp(
       let failureInstructions = ''
       if (anyFailed) {
         const errorTypes = new Set(failedActions.map(r => classifyError(r.error ?? '')))
-        const specificHints = buildErrorSpecificHints(errorTypes, errorRepeatCount, suspiciousSuccess)
+        const snap = tabState.get(tabId)
+        const specificHints = buildDomainAwareRecovery(errorTypes, errorRepeatCount, suspiciousSuccess, snap?.url)
         failureInstructions = `\nACTIONS FAILED:\n${failDetail}\n${specificHints}\nTry a DIFFERENT approach.\n`
       }
       let visualVerification = ''
@@ -1669,7 +1812,11 @@ export async function executeWithFollowUp(
       // freshContext from tabState.summarize() already includes page text excerpts,
       // so only add freshPageText when a11y tree is NOT present (it provides richer info)
       const extraPageText = (!cappedA11y && freshPageText) ? freshPageText.slice(0, pageTextMaxChars) : ''
-      followUpContent = `Action results:\n${resultSummary}\n\n${verification}${stateDiff ? `\nELEMENT STATE CHANGES:\n${stateDiff}\n` : ''}${visualVerification}\n${failureInstructions}${palaceHints.slice(0, 1000)}${userIsActive ? '\nUser is also interacting.\n' : ''}Updated page state:\n${freshContext}${a11ySection}${extraPageText ? `\n\nPage Content (excerpt):\n${extraPageText}\n` : ''}\n\nRound ${round + 2}/${maxRounds}. ${anyFailed ? 'RETRY with a DIFFERENT approach.' : 'Continue if more steps needed, or give a SHORT summary.'}`
+      // Remind AI to interact with the current page instead of opening new tabs
+      const tabOpenWarning = consecutiveTabOpenRounds >= 1
+        ? '\nIMPORTANT: You already opened tabs. Do NOT open more tabs or search again. Use CLICK, TYPE, SCROLL, or other interaction actions on the CURRENT page.\n'
+        : ''
+      followUpContent = `Action results:\n${resultSummary}\n\n${verification}${stateDiff ? `\nELEMENT STATE CHANGES:\n${stateDiff}\n` : ''}${visualVerification}\n${failureInstructions}${tabOpenWarning}${palaceHints.slice(0, 1000)}${userIsActive ? '\nUser is also interacting.\n' : ''}Updated page state:\n${freshContext}${a11ySection}${extraPageText ? `\n\nPage Content (excerpt):\n${extraPageText}\n` : ''}\n\nRound ${round + 2}/${maxRounds}. ${anyFailed ? 'RETRY with a DIFFERENT approach.' : 'Continue if more steps needed, or give a SHORT summary.'}`
     }
 
     const followUpMessages: Pick<ChatMessage, 'role' | 'content' | 'imageData'>[] = [
@@ -1774,6 +1921,14 @@ export async function executeWithFollowUp(
   clearCancellation(tabId)
   executionAbortControllers.delete(tabId)
   signalActivity(tabId, false)
+
+  // ── Auto-close research tabs on automation end ─────────────────────
+  // The AI often finishes without emitting RESEARCH_DONE, leaving tabs open.
+  const openResearchTabs = getResearchTabCount()
+  if (openResearchTabs > 0) {
+    await closeAllResearchTabs()
+    console.log(`[LocalAI] Auto-closed ${openResearchTabs} research tabs after automation ended`)
+  }
 
   // ── Release CDP session ──────────────────────────────────────────────
   if (cdpSession) {
@@ -2024,6 +2179,45 @@ function buildErrorSpecificHints(errorTypes: Set<ErrorCategory>, repeatCount: nu
   }
 
   return hints.join('\n\n')
+}
+
+/**
+ * Domain-aware error recovery — enhances generic hints with domain-specific
+ * recovery strategies from the DomainPersona system.
+ */
+export function buildDomainAwareRecovery(
+  errorTypes: Set<ErrorCategory>,
+  repeatCount: number,
+  suspiciousSuccess: boolean,
+  pageUrl?: string
+): string {
+  // Get generic hints first
+  const genericHints = buildErrorSpecificHints(errorTypes, repeatCount, suspiciousSuccess)
+
+  // Detect page type for domain-specific hints
+  if (!pageUrl) return genericHints
+
+  const classification = classifyPage(pageUrl, '', [], '')
+  const persona = getDomainPersona(classification.type)
+  if (!persona || persona.recoveryStrategies.length === 0) return genericHints
+
+  // Find relevant recovery strategies based on error type
+  const relevant: string[] = []
+  for (const strategy of persona.recoveryStrategies) {
+    const lower = strategy.toLowerCase()
+    if (errorTypes.has('not_found') && (lower.includes('not found') || lower.includes('fail') || lower.includes('try'))) {
+      relevant.push(strategy)
+    } else if (errorTypes.has('nothing_changed') && (lower.includes('nothing') || lower.includes('change') || lower.includes('click'))) {
+      relevant.push(strategy)
+    } else if (relevant.length < 2) {
+      // Include generic domain strategies if we don't have specific matches
+      relevant.push(strategy)
+    }
+  }
+
+  if (relevant.length === 0) return genericHints
+
+  return `${genericHints}\n\nDOMAIN-SPECIFIC RECOVERY (${classification.type}):\n${relevant.map(r => `- ${r}`).join('\n')}`
 }
 
 function sleep(ms: number): Promise<void> {

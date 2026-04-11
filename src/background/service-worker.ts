@@ -57,7 +57,7 @@ import {
 import { analyzeFullSupervisedSession } from './supervised-analyzer'
 import { findMatchingPlaybook } from './playbook-matcher'
 import { getAllPlaybooks, deletePlaybook, exportFullBackup, importFullBackup } from './memory-manager'
-import { logError } from './error-logger'
+import { logError, logTabEvent } from './error-logger'
 import { routeMessage, hasHandler } from './handlers/msg-router'
 import { registerClipboardHandlers } from './handlers/clipboard-handlers'
 import { registerWorkflowHandlers } from './handlers/workflow-handlers'
@@ -66,7 +66,10 @@ import { registerDebugHandlers } from './handlers/debug-handlers'
 import { getCDPAccessibilityTree, type CDPTreeResult } from './cdp-accessibility'
 import { captureMiniMap, type MiniMapResult } from './minimap-screenshot'
 import { recordPageVisit, getSitemapForPrompt, persistDirtySitemaps } from './visual-sitemap'
-import { getPersonaForPrompt } from './page-persona'
+import { getPersonaForPrompt, classifyPage } from './page-persona'
+import { buildPromptPipeline, type PromptPipelineOutput } from './prompt-engine'
+import { promptEngineerInstruction } from './instruction-manager'
+import { unregisterExtensionTab, pruneStaleExtensionTabs, isExtensionTab, registerExtensionTab } from './web-researcher'
 import {
   localMemoryEnabled, recallLocalMemories, recordLocalLesson,
   searchLocalMemory, clearLocalMemory, getLocalMemoryStats,
@@ -573,6 +576,10 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
       pollTelegramUpdates(s).catch(err => console.warn('[Telegram] Poll error:', err))
     }
   }
+  if (alarm.name === 'bg-summarize') {
+    // Periodic stale tab pruning — catches tabs closed while SW was suspended
+    pruneStaleExtensionTabs().catch(() => {})
+  }
   if (alarm.name === 'vault-auto-lock') {
     const s = await getSettings()
     const timeoutMin = s.vaultLockTimeoutMin ?? 15
@@ -694,12 +701,24 @@ async function runMempalaceLearningCycle(s: Settings): Promise<void> {
 
 // ─── Tab events ────────────────────────────────────────────────────────────────
 
+// Catch tabs opened by link clicks (target="_blank") or window.open during automation.
+// If a click causes a new tab, track it so it can be cleaned up.
+chrome.tabs.onCreated.addListener(async (tab) => {
+  if (!tab.id || !tab.openerTabId) return
+  // Only track if the opener tab is one we're automating (has panel open)
+  if (panelOpenTabs.has(tab.openerTabId) || isExtensionTab(tab.openerTabId)) {
+    registerExtensionTab(tab.id)
+    logTabEvent('created', tab.id, tab.pendingUrl ?? tab.url ?? '', 'click_popup')
+  }
+})
+
 chrome.tabs.onRemoved.addListener((tabId) => {
   tabState.delete(tabId)
   panelOpenTabs.delete(tabId)
   cleanupTabGroup(tabId)
   cleanupTelegramTab(tabId)
   cleanupWorkflowTab(tabId)
+  unregisterExtensionTab(tabId)
   flushBuffer(tabId).then(() => clearTabBuffer(tabId)).catch(() => {})
   // Auto-collector: flush pending inputs then clean up buffer
   triggerFlush(tabId).catch(() => {}).finally(() => clearBuffer(tabId))
@@ -840,7 +859,16 @@ async function handleAIChat(
 
   const extractedInstruction = tryExtractInstructionToSave(userText)
   if (extractedInstruction) {
-    await saveUserInstruction(extractedInstruction)
+    // Prompt-engineer the instruction before saving
+    const currentSnap = tabState.get(tabId)
+    const pageType = classifyPage(currentSnap?.url ?? '', currentSnap?.title ?? '', currentSnap?.headings ?? [], '').type
+    const formatted = await promptEngineerInstruction(
+      extractedInstruction,
+      pageType,
+      (msgs, maxTok) => callAI(msgs as Parameters<typeof callAI>[0], s, maxTok),
+    ).catch(() => extractedInstruction)
+    await saveUserInstruction(formatted)
+    port.postMessage({ type: MSG.STREAM_CHUNK, chunk: `> Saved to permanent memory: "${formatted}"\n\n` })
   }
 
   const piiMatches = detectPersonalData(userText)
@@ -963,7 +991,9 @@ async function handleAIChat(
   const behaviorText = formatBehaviorsForPrompt(userBehaviors)
 
   const userInstructionEntries = await getAllUserInstructions()
-  const userInstructionsText = formatUserInstructionsForPrompt(userInstructionEntries)
+  // Pass current page type so domain-tagged instructions are prioritized
+  const pageTypeForInstructions = classifyPage(tabState.get(tabId)?.url ?? '', tabState.get(tabId)?.title ?? '', tabState.get(tabId)?.headings ?? [], '').type
+  const userInstructionsText = formatUserInstructionsForPrompt(userInstructionEntries, pageTypeForInstructions)
 
   let mempalaceBlock: string | undefined
   if (mempalaceEnabled(s) && userText.trim().length > 0) {
@@ -987,38 +1017,32 @@ async function handleAIChat(
 
   // Build sitemap context for the current domain
   const sitemapText = await getSitemapForPrompt(currentDomain)
-
-  // Extract full page text so the AI can read the page content directly
   const currentSnap = tabState.get(tabId)
-  const maxPageText = s.liteMode ? 4000 : 10000
-  const pageTextForPrompt = (currentSnap?.completePageText ?? currentSnap?.pageText ?? '').slice(0, maxPageText)
 
-  // Detect page type and generate expert persona
-  const personaBlock = getPersonaForPrompt(
-    currentSnap?.url ?? '',
-    currentSnap?.title ?? '',
-    currentSnap?.headings ?? [],
-    currentSnap?.completePageText ?? currentSnap?.pageText ?? ''
-  )
+  // ── Prompt Pipeline: intent → structured context → optimized prompt ──
+  const isLocal = (s.activeProvider ?? 'local') === 'local'
+  const ctxWindow = s.contextWindowTokens || (s.liteMode ? 8192 : (isLocal ? 32768 : 131072))
 
-  // Choose system prompt based on lite mode (for small local models)
-  const systemPrompt = s.liteMode
-    ? buildCompactSystemPrompt(pageContext, accessibilityTree, viewportMeta, pageTextForPrompt || undefined, personaBlock || undefined)
-    : buildSystemPrompt(
-        pageContext,
-        memText,
-        effectiveCapabilities,
-        knownUserData,
-        skillsText || undefined,
-        accessibilityTree,
-        behaviorText || undefined,
-        userInstructionsText || undefined,
-        mempalaceBlock,
-        viewportMeta,
-        sitemapText || undefined,
-        pageTextForPrompt || undefined,
-        personaBlock || undefined
-      )
+  const pipelineResult = buildPromptPipeline({
+    userText,
+    pageSnapshot: currentSnap,
+    accessibilityTree,
+    viewportMeta,
+    memories: memText,
+    skills: skillsText,
+    behaviors: behaviorText,
+    instructions: userInstructionsText,
+    mempalace: mempalaceBlock,
+    sitemap: sitemapText,
+    capabilities: effectiveCapabilities,
+    isLocal,
+    contextWindow: ctxWindow,
+    liteMode: s.liteMode ?? false,
+    knownUserData,
+  })
+
+  const systemPrompt = pipelineResult.systemPrompt
+  console.log(`[LocalAI] Prompt pipeline: intent=${pipelineResult.intent.category} (${Math.round(pipelineResult.intent.confidence * 100)}%), complexity=${pipelineResult.intent.complexity}, page=${pipelineResult.pageClassification.type}, taskPlan=${pipelineResult.taskPlan ? pipelineResult.taskPlan.steps.length + ' steps' : 'none'}`)
 
   let messages: Pick<ChatMessage, 'role' | 'content' | 'imageData'>[] = [
     { role: 'system', content: systemPrompt },
@@ -1029,8 +1053,13 @@ async function handleAIChat(
     })),
   ]
 
+  // Replace last user message with enhanced version (if expanded)
+  if (pipelineResult.enhancedUserMessage !== userText) {
+    const lastUserIdx = messages.reduce((acc, m, i) => m.role === 'user' ? i : acc, -1)
+    if (lastUserIdx >= 0) messages[lastUserIdx].content = pipelineResult.enhancedUserMessage
+  }
+
   // Token-aware history truncation
-  const ctxWindow = s.contextWindowTokens || (s.liteMode ? 8192 : 32768)
   const systemTokens = estimateTokens(systemPrompt)
   const outputReserve = getAdaptiveMaxTokens(s, true)
   messages = [

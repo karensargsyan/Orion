@@ -1,3 +1,5 @@
+import { registerExtensionTab, unregisterExtensionTab, findExistingExtensionTab } from './web-researcher'
+
 // ─── Multi-Tab Workflow Engine ───────────────────────────────────────────────
 
 export interface WorkflowStep {
@@ -168,14 +170,18 @@ async function executeStep(step: WorkflowStep): Promise<void> {
       // Navigate existing tab
       await chrome.tabs.update(step.tabId, { url: step.url })
     } else {
-      // Dedup: check if URL already open in a workflow tab
-      const existingTabId = await findExistingWorkflowTab(step.url)
+      // Dedup: check if URL already open in any extension tab (cross-system)
+      const existingGlobal = await findExistingExtensionTab(step.url).catch(() => undefined)
+      const existingTabId = existingGlobal ?? await findExistingWorkflowTab(step.url)
       if (existingTabId != null) {
         step.tabId = existingTabId
       } else {
         const tab = await chrome.tabs.create({ url: step.url, active: false })
         step.tabId = tab.id
-        if (tab.id != null) workflowTabIds.add(tab.id)
+        if (tab.id != null) {
+          workflowTabIds.add(tab.id)
+          registerExtensionTab(tab.id)
+        }
       }
     }
     // Wait for the tab to finish loading
@@ -205,6 +211,7 @@ function closeWorkflowTabs(wf: Workflow): void {
   for (const step of wf.steps) {
     if (step.tabId != null && workflowTabIds.has(step.tabId)) {
       workflowTabIds.delete(step.tabId)
+      unregisterExtensionTab(step.tabId)
       chrome.tabs.remove(step.tabId).catch(() => {}) // already closed
     }
   }

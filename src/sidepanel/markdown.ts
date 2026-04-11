@@ -25,6 +25,18 @@ export function renderMarkdown(md: string): string {
 
   html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
 
+  // Auto-link bare URLs (not already inside an <a> tag or markdown link)
+  html = html.replace(
+    /(?<!href="|href='|]\()(?<!\w)(https?:\/\/[^\s<>"')\]]+)/g,
+    '<a href="$1" target="_blank" rel="noopener" class="auto-link">$1</a>'
+  )
+
+  // Auto-link email addresses
+  html = html.replace(
+    /(?<!\w)([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})/g,
+    '<a href="mailto:$1" class="auto-link email-link">$1</a>'
+  )
+
   html = html.replace(/^[*\-] (.+)$/gm, '<li>$1</li>')
   html = html.replace(/(<li>.*<\/li>\n?)+/g, match => `<ul>${match}</ul>`)
 

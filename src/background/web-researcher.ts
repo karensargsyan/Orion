@@ -7,10 +7,77 @@
 import { ensureContentScript } from './action-executor'
 import { MSG } from '../shared/constants'
 import type { SearchResult, PageContent } from '../shared/types'
+import { logTabEvent } from './error-logger'
 
 const researchTabIds = new Set<number>()
 const TAB_LOAD_TIMEOUT = 15_000
-const MAX_RESEARCH_TABS = 8
+const MAX_RESEARCH_TABS = 6
+
+// ─── Global Tab Registry ────────────────────────────────────────────────────
+// Tracks ALL tabs opened by any part of the extension (research, workflow, etc.)
+
+const extensionTabIds = new Set<number>()
+const GLOBAL_TAB_LIMIT = 12
+
+/** Register a tab as extension-managed. Enforces global limit. */
+export function registerExtensionTab(tabId: number): void {
+  extensionTabIds.add(tabId)
+  // Enforce global limit — close oldest if over
+  if (extensionTabIds.size > GLOBAL_TAB_LIMIT) {
+    const oldest = extensionTabIds.values().next().value
+    if (oldest !== undefined && oldest !== tabId) {
+      extensionTabIds.delete(oldest)
+      logTabEvent('limit_evicted', oldest, '', 'research')
+      chrome.tabs.remove(oldest).catch(() => {})
+      researchTabIds.delete(oldest) // also clean up if it was a research tab
+    }
+  }
+}
+
+/** Unregister a tab (called when tab is closed). */
+export function unregisterExtensionTab(tabId: number): void {
+  extensionTabIds.delete(tabId)
+}
+
+/** Get total count of extension-managed tabs. */
+export function getExtensionTabCount(): number {
+  return extensionTabIds.size
+}
+
+/** Check if tab is extension-managed. */
+export function isExtensionTab(tabId: number): boolean {
+  return extensionTabIds.has(tabId)
+}
+
+/** Find an existing extension tab with the same URL (cross-system dedup). */
+export async function findExistingExtensionTab(url: string): Promise<number | undefined> {
+  const targetHref = new URL(url).href
+  for (const tabId of extensionTabIds) {
+    try {
+      const tab = await chrome.tabs.get(tabId)
+      if (tab.url && new URL(tab.url).href === targetHref) return tabId
+    } catch { extensionTabIds.delete(tabId) } // tab was closed
+  }
+  return undefined
+}
+
+/**
+ * Prune stale entries from both registries.
+ * Tabs may have been closed externally (by the user or a crash) without
+ * the onRemoved listener firing (e.g. service worker was suspended).
+ * Called periodically from the alarm handler.
+ */
+export async function pruneStaleExtensionTabs(): Promise<number> {
+  let pruned = 0
+  for (const tabId of [...extensionTabIds]) {
+    try { await chrome.tabs.get(tabId) } catch {
+      extensionTabIds.delete(tabId)
+      researchTabIds.delete(tabId)
+      pruned++
+    }
+  }
+  return pruned
+}
 
 // ─── Tab Group Management ────────────────────────────────────────────────────
 //
@@ -198,6 +265,14 @@ export async function removeTabFromAIGroup(tabId: number): Promise<void> {
 }
 
 async function createResearchTab(url: string): Promise<chrome.tabs.Tab> {
+  // Cross-system dedup: check if ANY extension tab already has this URL
+  const existingTabId = await findExistingExtensionTab(url).catch(() => undefined)
+  if (existingTabId != null) {
+    const existingTab = await chrome.tabs.get(existingTabId)
+    researchTabIds.add(existingTabId)
+    return existingTab
+  }
+
   // Enforce max research tabs — close oldest if at limit
   if (researchTabIds.size >= MAX_RESEARCH_TABS) {
     const oldest = researchTabIds.values().next().value
@@ -206,6 +281,8 @@ async function createResearchTab(url: string): Promise<chrome.tabs.Tab> {
 
   const tab = await chrome.tabs.create({ url, active: false })
   researchTabIds.add(tab.id!)
+  registerExtensionTab(tab.id!)
+  logTabEvent('created', tab.id!, url, 'research')
   await addTabToAIGroup(tab.id!)
   // Enable sidebar on research tabs so it's visible if user switches to them
   await chrome.sidePanel.setOptions({
@@ -394,16 +471,20 @@ export async function openAndReadTab(url: string): Promise<PageContent> {
     const tabInfo = await chrome.tabs.get(tabId)
     const text = (response?.pageText ?? response?.visibleText ?? '').slice(0, 12_000)
 
-    return {
+    const result = {
       title: tabInfo.title ?? url,
       url: tabInfo.url ?? url,
       text: text || 'No readable content found on this page.',
     }
+
+    // Auto-close after reading — content is captured, no need to keep the tab open
+    await safeCloseTab(tabId)
+
+    return result
   } catch (err) {
+    if (tabId) await safeCloseTab(tabId).catch(() => {})
     return { title: url, url, text: `Error reading page: ${err}` }
   }
-  // NOTE: tab is NOT auto-closed here — it stays in the research group
-  // so the AI can revisit it or the user can see it. Cleaned up via closeAllResearchTabs().
 }
 
 /**
@@ -419,6 +500,8 @@ export async function openAndReadMultipleTabs(urls: string[]): Promise<PageConte
 
 async function safeCloseTab(tabId: number): Promise<void> {
   researchTabIds.delete(tabId)
+  extensionTabIds.delete(tabId)
+  logTabEvent('closed', tabId, '', 'research')
   try { await chrome.tabs.remove(tabId) } catch { /* already closed */ }
 }
 
@@ -431,6 +514,7 @@ export async function closeAllResearchTabs(): Promise<void> {
   researchTabIds.clear()
 
   for (const tabId of tabIds) {
+    extensionTabIds.delete(tabId) // explicit cleanup — don't rely solely on onRemoved
     try { await chrome.tabs.remove(tabId) } catch { /* already closed */ }
   }
 }

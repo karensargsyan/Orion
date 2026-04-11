@@ -964,6 +964,7 @@ function addBubble(state: TabChatState, role: 'user' | 'assistant', text: string
     attachWidgetHandlers(div, (_wid, val) => handleWidgetChoice(state, val))
     addMessageActions(state, div, text)
     addCodeBlockCopyButtons(div)
+    enhanceLinks(div)
   } else {
     div.textContent = text
   }
@@ -1088,6 +1089,51 @@ function addCodeBlockCopyButtons(el: HTMLElement): void {
   })
 }
 
+/** Enhance auto-linked URLs with copy-on-click tooltip */
+function enhanceLinks(el: HTMLElement): void {
+  el.querySelectorAll('a.auto-link').forEach(link => {
+    if (link.getAttribute('data-enhanced')) return
+    link.setAttribute('data-enhanced', '1')
+    const href = link.getAttribute('href') ?? ''
+
+    // Shorten displayed URL for readability (keep domain + first path segment)
+    try {
+      const u = new URL(href)
+      const short = u.hostname + (u.pathname.length > 1 ? u.pathname.slice(0, 30) + (u.pathname.length > 30 ? '...' : '') : '')
+      link.textContent = short
+      // The ::after pseudo-element adds the arrow icon via CSS
+    } catch { /* leave as-is for malformed URLs */ }
+
+    // Copy URL on middle-click or Ctrl+click
+    link.addEventListener('auxclick', (e) => {
+      if ((e as MouseEvent).button === 1) {
+        e.preventDefault()
+        navigator.clipboard.writeText(href).catch(() => {})
+        showCopyFeedback(link as HTMLElement)
+      }
+    })
+    link.addEventListener('click', (e) => {
+      if ((e as MouseEvent).ctrlKey || (e as MouseEvent).metaKey) {
+        e.preventDefault()
+        navigator.clipboard.writeText(href).catch(() => {})
+        showCopyFeedback(link as HTMLElement)
+      }
+    })
+    link.setAttribute('title', `${href}\n\nClick to open  |  Ctrl+click to copy`)
+  })
+}
+
+function showCopyFeedback(el: HTMLElement): void {
+  const original = el.style.background
+  el.style.background = 'rgba(138,92,246,0.3)'
+  el.setAttribute('title', 'Copied!')
+  setTimeout(() => {
+    el.style.background = original
+    const href = el.getAttribute('href') ?? ''
+    el.setAttribute('title', `${href}\n\nClick to open  |  Ctrl+click to copy`)
+  }, 1200)
+}
+
 function appendChunk(state: TabChatState, chunk: string): void {
   const messagesEl = getMessages(state)
   if (!state.currentBubble) {
@@ -1149,6 +1195,7 @@ function finalizeMessage(state: TabChatState, fullText: string): void {
     attachWidgetHandlers(state.currentBubble, (_wid, val) => handleWidgetChoice(state, val))
     addMessageActions(state, state.currentBubble, fullText)
     addCodeBlockCopyButtons(state.currentBubble)
+    enhanceLinks(state.currentBubble)
   }
   state.currentBubble = null
   state.currentBubbleRaw = ''

@@ -103,7 +103,7 @@ describe('error-logger', () => {
       logError('net', 'timeout')
       const info = formatDebugInfo()
       expect(info).toContain('Orion Debug Report')
-      expect(info).toContain('Errors in buffer: 1/200')
+      expect(info).toContain('Errors: 1/200')
       expect(info).toContain('net: timeout')
     })
 

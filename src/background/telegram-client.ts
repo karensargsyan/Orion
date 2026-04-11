@@ -25,7 +25,7 @@ import { MSG } from '../shared/constants'
 import type { StreamPort } from './ai-client'
 import { getSessionMessages, getAllSettings } from './memory-manager'
 import { localMemoryEnabled, searchLocalMemory } from './local-memory'
-import { createGroupForTab, updateGroupTitle } from './web-researcher'
+import { createGroupForTab, updateGroupTitle, registerExtensionTab, unregisterExtensionTab } from './web-researcher'
 import { handleConfirmResponse } from './confirmation-manager'
 
 // ─── Telegram API Types ────────────────────────────────────────────────────
@@ -318,6 +318,9 @@ async function createTelegramTab(
     const tab = await chrome.tabs.create({ url: 'about:blank', active: false })
     if (!tab.id) return null
 
+    // Register with global tab registry so it counts toward GLOBAL_TAB_LIMIT
+    registerExtensionTab(tab.id)
+
     // Get sequential name
     const counter = (tabCounters.get(chatId) ?? 0) + 1
     tabCounters.set(chatId, counter)
@@ -587,7 +590,8 @@ async function handleCloseTab(
   const tab = tabs[idx]
   const tabName = tab.name
 
-  // Close the Chrome tab
+  // Close the Chrome tab and unregister from global registry
+  unregisterExtensionTab(tab.tabId)
   try {
     await chrome.tabs.remove(tab.tabId)
   } catch {
