@@ -56,7 +56,7 @@ import {
 } from './supervised-recorder'
 import { analyzeFullSupervisedSession } from './supervised-analyzer'
 import { findMatchingPlaybook } from './playbook-matcher'
-import { getAllPlaybooks, deletePlaybook } from './memory-manager'
+import { getAllPlaybooks, deletePlaybook, exportFullBackup, importFullBackup } from './memory-manager'
 import { getCDPAccessibilityTree, type CDPTreeResult } from './cdp-accessibility'
 import { captureMiniMap, type MiniMapResult } from './minimap-screenshot'
 import { recordPageVisit, getSitemapForPrompt, persistDirtySitemaps } from './visual-sitemap'
@@ -300,6 +300,39 @@ chrome.commands.onCommand.addListener(async (command) => {
       broadcastToPanel({ type: 'SWITCH_TO_MEMORY' })
       break
   }
+})
+
+// ─── Omnibox Integration ────────────────────────────────────────────────────
+
+chrome.omnibox.onInputStarted.addListener(() => {
+  chrome.omnibox.setDefaultSuggestion({ description: 'Ask Orion: type your question or command' })
+})
+
+chrome.omnibox.onInputChanged.addListener((text, suggest) => {
+  const suggestions: chrome.omnibox.SuggestResult[] = []
+  const q = text.toLowerCase().trim()
+  if (q.startsWith('fill')) {
+    suggestions.push({ content: 'Fill the form on this page using my vault data', description: 'Fill form with vault data' })
+  }
+  if (q.startsWith('sum')) {
+    suggestions.push({ content: 'Summarize this page', description: 'Summarize current page' })
+  }
+  if (q.startsWith('res')) {
+    suggestions.push({ content: `Research this topic thoroughly: ${text.slice(4).trim() || '...'}`, description: 'Deep web research' })
+  }
+  if (q.startsWith('mem') || q.startsWith('recall')) {
+    suggestions.push({ content: `Search my memory for: ${text.replace(/^(mem|recall)\s*/i, '').trim() || '...'}`, description: 'Search memory' })
+  }
+  suggest(suggestions)
+})
+
+chrome.omnibox.onInputEntered.addListener(async (text, disposition) => {
+  void disposition // always open sidepanel
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+  if (!tab?.id) return
+  try { await chrome.sidePanel.open({ tabId: tab.id }) } catch {}
+  await sleep(400)
+  broadcastToPanel({ type: 'CONTEXT_MENU_CHAT', text, tabId: tab.id })
 })
 
 // ─── Badge Status ───────────────────────────────────────────────────────────
@@ -1697,6 +1730,16 @@ async function handleMessage(
     case MSG.MEMORY_EXPORT: {
       const data = await exportMemory()
       return { ok: true, data }
+    }
+
+    case MSG.FULL_BACKUP: {
+      const backup = await exportFullBackup()
+      return { ok: true, data: backup }
+    }
+
+    case MSG.FULL_RESTORE: {
+      const result = await importFullBackup(msg.backup as Record<string, unknown>)
+      return { ok: true, ...result }
     }
 
     // ── Stats ─────────────────────────────────────────────────────────────────

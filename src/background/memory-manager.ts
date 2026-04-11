@@ -170,6 +170,24 @@ export async function vaultDelete(id: string): Promise<void> {
 
 // ─── Memory export ─────────────────────────────────────────────────────────────
 
+/** All IDB stores included in full backup (vault excluded for security — exported separately). */
+const BACKUP_STORES = [
+  STORE.CHAT_HISTORY,
+  STORE.SESSION_MEMORY,
+  STORE.GLOBAL_MEMORY,
+  STORE.SETTINGS,
+  STORE.CALENDAR_EVENTS,
+  STORE.HABIT_PATTERNS,
+  STORE.DOMAIN_SKILLS,
+  STORE.USER_BEHAVIORS,
+  STORE.LEARNING_SESSIONS,
+  STORE.SUPERVISED_PLAYBOOKS,
+  STORE.SUPERVISED_SESSIONS,
+  STORE.VISUAL_SITEMAP,
+  STORE.LOCAL_MEMORY,
+  STORE.INPUT_JOURNAL,
+] as const
+
 export async function exportMemory(): Promise<object> {
   const [chatHistory, sessionMemory, globalMemory] = await Promise.all([
     dbGetAll(STORE.CHAT_HISTORY),
@@ -177,6 +195,49 @@ export async function exportMemory(): Promise<object> {
     dbGetAll(STORE.GLOBAL_MEMORY),
   ])
   return { chatHistory, sessionMemory, globalMemory, exportedAt: new Date().toISOString() }
+}
+
+/** Full backup — all 14 stores (vault excluded). */
+export async function exportFullBackup(): Promise<object> {
+  const data: Record<string, unknown[]> = {}
+  await Promise.all(BACKUP_STORES.map(async storeName => {
+    try {
+      data[storeName] = await dbGetAll(storeName)
+    } catch {
+      data[storeName] = []
+    }
+  }))
+  return {
+    _orionBackup: true,
+    version: 2,
+    exportedAt: new Date().toISOString(),
+    stores: data,
+  }
+}
+
+/** Import a full backup. Clears each store before restoring. */
+export async function importFullBackup(backup: Record<string, unknown>): Promise<{ restored: number; errors: string[] }> {
+  if (!backup._orionBackup || !backup.stores) {
+    return { restored: 0, errors: ['Invalid backup file format.'] }
+  }
+  const stores = backup.stores as Record<string, unknown[]>
+  let restored = 0
+  const errors: string[] = []
+
+  for (const storeName of BACKUP_STORES) {
+    const rows = stores[storeName]
+    if (!rows || !Array.isArray(rows)) continue
+    try {
+      await dbClear(storeName)
+      for (const row of rows) {
+        await dbPut(storeName, row)
+      }
+      restored += rows.length
+    } catch (e) {
+      errors.push(`${storeName}: ${String(e)}`)
+    }
+  }
+  return { restored, errors }
 }
 
 // ─── Domain Stats ─────────────────────────────────────────────────────────────

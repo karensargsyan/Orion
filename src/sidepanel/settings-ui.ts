@@ -19,7 +19,17 @@ export async function initSettings(container: HTMLElement): Promise<void> {
 
   container.innerHTML = `
     <div class="settings-form">
-      <h2>Settings</h2>
+      <div class="settings-tabs-bar">
+        <button class="settings-tab-btn active" data-stab="ai">AI</button>
+        <button class="settings-tab-btn" data-stab="automation">Automation</button>
+        <button class="settings-tab-btn" data-stab="memory">Memory</button>
+        <button class="settings-tab-btn" data-stab="security">Security</button>
+        <button class="settings-tab-btn" data-stab="integrations">Integrations</button>
+        <button class="settings-tab-btn" data-stab="advanced">Advanced</button>
+      </div>
+      <div class="settings-search-row">
+        <input type="text" id="settings-search" placeholder="Search settings..." class="settings-search-input">
+      </div>
 
       ${needsSetup ? `
       <div class="setup-banner">
@@ -31,7 +41,7 @@ export async function initSettings(container: HTMLElement): Promise<void> {
       </div>
       ` : ''}
 
-      <section class="settings-section">
+      <section class="settings-section" data-settings-tab="ai">
         <h3>AI Provider</h3>
         <div class="form-group">
           <label>Active Provider</label>
@@ -44,7 +54,7 @@ export async function initSettings(container: HTMLElement): Promise<void> {
         </div>
       </section>
 
-      <section class="settings-section provider-section" id="section-local" ${provider === 'local' ? '' : 'style="display:none"'}>
+      <section class="settings-section provider-section" data-settings-tab="ai" id="section-local" ${provider === 'local' ? '' : 'style="display:none"'}>
         <h3>Local AI Server</h3>
         ${renderConnectionInfo(s)}
         <div class="form-group">
@@ -78,7 +88,7 @@ export async function initSettings(container: HTMLElement): Promise<void> {
         </div>
       </section>
 
-      <section class="settings-section provider-section" id="section-gemini" ${provider === 'gemini' ? '' : 'style="display:none"'}>
+      <section class="settings-section provider-section" data-settings-tab="ai" id="section-gemini" ${provider === 'gemini' ? '' : 'style="display:none"'}>
         <h3>Google Gemini</h3>
         <div class="form-group">
           <label>API Key</label>
@@ -100,7 +110,7 @@ export async function initSettings(container: HTMLElement): Promise<void> {
         </div>
       </section>
 
-      <section class="settings-section provider-section" id="section-openai" ${provider === 'openai' ? '' : 'style="display:none"'}>
+      <section class="settings-section provider-section" data-settings-tab="ai" id="section-openai" ${provider === 'openai' ? '' : 'style="display:none"'}>
         <h3>OpenAI</h3>
         <div class="form-group">
           <label>API Key</label>
@@ -119,7 +129,7 @@ export async function initSettings(container: HTMLElement): Promise<void> {
         </div>
       </section>
 
-      <section class="settings-section provider-section" id="section-anthropic" ${provider === 'anthropic' ? '' : 'style="display:none"'}>
+      <section class="settings-section provider-section" data-settings-tab="ai" id="section-anthropic" ${provider === 'anthropic' ? '' : 'style="display:none"'}>
         <h3>Anthropic Claude</h3>
         <div class="form-group">
           <label>API Key</label>
@@ -138,7 +148,7 @@ export async function initSettings(container: HTMLElement): Promise<void> {
         </div>
       </section>
 
-      <section class="settings-section">
+      <section class="settings-section" data-settings-tab="ai">
         <h3>General</h3>
         <div class="form-group">
           <label>Rate Limit (requests/minute)</label>
@@ -160,7 +170,7 @@ export async function initSettings(container: HTMLElement): Promise<void> {
         </div>
       </section>
 
-      <section class="settings-section">
+      <section class="settings-section" data-settings-tab="automation">
         <h3>Monitoring</h3>
         <div class="form-group form-group-toggle">
           <label>Background monitoring</label>
@@ -218,7 +228,7 @@ export async function initSettings(container: HTMLElement): Promise<void> {
         </div>
       </section>
 
-      <section class="settings-section">
+      <section class="settings-section" data-settings-tab="integrations">
         <h3>Speech Recognition</h3>
         <p class="hint-text" style="margin-bottom:10px">
           Used during Supervised Learning. <strong>Web Speech</strong> calls Google’s online recognizer (often blocked by Brave Shields, VPNs, or firewalls—you’ll see a “network” STT error).
@@ -269,7 +279,7 @@ export async function initSettings(container: HTMLElement): Promise<void> {
         </div>
       </section>
 
-      <section class="settings-section">
+      <section class="settings-section" data-settings-tab="memory">
         <h3>MemPalace</h3>
         <p class="hint-text" style="margin-bottom:10px">
           Long-term memory runs in Python on your machine (<a href="https://github.com/milla-jovovich/mempalace" target="_blank" rel="noopener">MemPalace</a>).
@@ -294,7 +304,7 @@ export async function initSettings(container: HTMLElement): Promise<void> {
         <p id="mempalace-status" class="hint-text"></p>
       </section>
 
-      <section class="settings-section">
+      <section class="settings-section" data-settings-tab="security">
         <h3>Security</h3>
         <div class="form-group">
           <label>Vault auto-lock timeout (minutes)</label>
@@ -313,7 +323,7 @@ export async function initSettings(container: HTMLElement): Promise<void> {
         ` : '<p class="hint-text">No PIN set. Go to Vault to set up encryption.</p>'}
       </section>
 
-      <section class="settings-section">
+      <section class="settings-section" data-settings-tab="memory">
         <h3>Local Memory</h3>
         <p class="hint-text" style="margin-bottom:10px">
           Local memory stores lessons, errors, successes and domain knowledge in the browser (IndexedDB).
@@ -335,7 +345,7 @@ export async function initSettings(container: HTMLElement): Promise<void> {
         <p id="local-memory-status" class="hint-text"></p>
       </section>
 
-      <section class="settings-section">
+      <section class="settings-section" data-settings-tab="memory">
         <h3>Smart Auto-Collection</h3>
         <p class="hint-text" style="margin-bottom:10px">
           Monitors form inputs and extracts reusable personal data (name, email, phone, address, etc.)
@@ -357,7 +367,7 @@ export async function initSettings(container: HTMLElement): Promise<void> {
         </div>
       </section>
 
-      <section class="settings-section">
+      <section class="settings-section" data-settings-tab="memory">
         <h3>Total Recall</h3>
         <p class="hint-text" style="margin-bottom:10px">
           Records every form input (emails, usernames, passwords, addresses, etc.) so you can recall them later
@@ -369,16 +379,26 @@ export async function initSettings(container: HTMLElement): Promise<void> {
         </div>
       </section>
 
-      <section class="settings-section">
+      <section class="settings-section" data-settings-tab="advanced">
         <h3>Data</h3>
         <div class="form-row">
           <button id="btn-export-memory" class="btn-small">Export Memory</button>
           <button id="btn-clear-session-mem" class="btn-small btn-danger">Clear Session</button>
           <button id="btn-clear-all-mem" class="btn-small btn-danger">Clear All</button>
         </div>
+        <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
+          <label style="font-size:12px;color:var(--text-bright);margin-bottom:8px;display:block">Full Backup &amp; Restore</label>
+          <p class="hint-text" style="margin-bottom:8px">Exports all 14 data stores (vault excluded for security). Use to migrate or safeguard your data.</p>
+          <div class="form-row">
+            <button id="btn-full-backup" class="btn-small">Full Backup</button>
+            <button id="btn-full-restore" class="btn-small">Restore from File</button>
+            <input type="file" id="restore-file-input" accept=".json,.orion-backup" style="display:none">
+          </div>
+          <p id="backup-status" class="hint-text"></p>
+        </div>
       </section>
 
-      <section class="settings-section">
+      <section class="settings-section" data-settings-tab="integrations">
         <h3>Telegram Bot</h3>
         <p class="hint-text" style="margin-bottom:10px">
           Connect Orion to a Telegram bot so you can chat with the AI from your phone.
@@ -408,7 +428,20 @@ export async function initSettings(container: HTMLElement): Promise<void> {
         </div>
       </section>
 
-      <section class="settings-section">
+      <section class="settings-section" data-settings-tab="advanced">
+        <h3>Appearance</h3>
+        <div class="form-group">
+          <label>Theme</label>
+          <select id="theme-select">
+            <option value="dark" ${(s.theme ?? 'dark') === 'dark' ? 'selected' : ''}>Dark</option>
+            <option value="light" ${s.theme === 'light' ? 'selected' : ''}>Light</option>
+            <option value="system" ${s.theme === 'system' ? 'selected' : ''}>System (auto)</option>
+          </select>
+          <small style="color:var(--text-dim);font-size:11px">System follows your OS appearance preference.</small>
+        </div>
+      </section>
+
+      <section class="settings-section" data-settings-tab="advanced">
         <h3>About</h3>
         <p class="hint-text">
           <a href="#" id="btn-privacy-policy" style="color:var(--accent)">Privacy Policy</a>
@@ -427,6 +460,8 @@ export async function initSettings(container: HTMLElement): Promise<void> {
   wireSTTProviderToggle(container)
   wireMicrophoneSettingsPanel(container)
   wireBraveWebSpeechTools(container)
+  wireSettingsTabs(container)
+  wireSettingsSearch(container)
   void showBraveSpeechUi(container)
   void refreshMicPermissionStatusLine(container)
 }
@@ -823,8 +858,14 @@ function wireSettingsEvents(container: HTMLElement, s: Settings): void {
       telegramAllowedChatIds: (container.querySelector('#telegram-chat-ids') as HTMLInputElement).value
         .split(',').map(s => s.trim()).filter(Boolean),
       vaultLockTimeoutMin: Number((container.querySelector('#vault-lock-timeout') as HTMLInputElement).value),
+      theme: (container.querySelector('#theme-select') as HTMLSelectElement).value as 'system' | 'dark' | 'light',
     }
     await chrome.runtime.sendMessage({ type: MSG.SETTINGS_SET, partial })
+    // Apply theme immediately
+    if (partial.theme) {
+      const { applyTheme } = await import('./sidepanel')
+      applyTheme(partial.theme)
+    }
     const statusEl = container.querySelector('#save-status') as HTMLElement
     statusEl.textContent = 'Saved!'
     statusEl.style.color = 'var(--color-success)'
@@ -864,6 +905,64 @@ function wireSettingsEvents(container: HTMLElement, s: Settings): void {
   container.querySelector('#btn-clear-all-mem')?.addEventListener('click', async () => {
     if (!confirm('Clear ALL memory and chat history?')) return
     await chrome.runtime.sendMessage({ type: MSG.MEMORY_CLEAR })
+  })
+
+  // Full backup
+  container.querySelector('#btn-full-backup')?.addEventListener('click', async () => {
+    const statusEl = container.querySelector('#backup-status') as HTMLElement
+    statusEl.textContent = 'Creating backup...'
+    statusEl.style.color = ''
+    try {
+      const res = await chrome.runtime.sendMessage({ type: MSG.FULL_BACKUP }) as { ok: boolean; data?: object }
+      if (res.data) {
+        const blob = new Blob([JSON.stringify(res.data, null, 2)], { type: 'application/json' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `orion-full-backup-${new Date().toISOString().slice(0, 10)}.json`
+        a.click()
+        URL.revokeObjectURL(url)
+        statusEl.textContent = 'Backup downloaded!'
+        statusEl.style.color = 'var(--color-success)'
+      }
+    } catch (e) {
+      statusEl.textContent = `Backup failed: ${String(e)}`
+      statusEl.style.color = 'var(--color-error)'
+    }
+  })
+
+  // Full restore
+  const restoreInput = container.querySelector('#restore-file-input') as HTMLInputElement
+  container.querySelector('#btn-full-restore')?.addEventListener('click', () => restoreInput?.click())
+  restoreInput?.addEventListener('change', async () => {
+    const file = restoreInput.files?.[0]
+    if (!file) return
+    const statusEl = container.querySelector('#backup-status') as HTMLElement
+    if (!confirm('This will REPLACE all current data with the backup. Continue?')) {
+      restoreInput.value = ''
+      return
+    }
+    statusEl.textContent = 'Restoring...'
+    statusEl.style.color = ''
+    try {
+      const text = await file.text()
+      const backup = JSON.parse(text)
+      const res = await chrome.runtime.sendMessage({ type: MSG.FULL_RESTORE, backup }) as {
+        ok: boolean; restored?: number; errors?: string[]
+      }
+      if (res.ok) {
+        const errMsg = res.errors?.length ? ` (${res.errors.length} warnings)` : ''
+        statusEl.textContent = `Restored ${res.restored} records${errMsg}. Reload to see changes.`
+        statusEl.style.color = 'var(--color-success)'
+      } else {
+        statusEl.textContent = 'Restore failed.'
+        statusEl.style.color = 'var(--color-error)'
+      }
+    } catch (e) {
+      statusEl.textContent = `Invalid file: ${String(e)}`
+      statusEl.style.color = 'var(--color-error)'
+    }
+    restoreInput.value = ''
   })
 
   container.querySelector('#btn-mempalace-probe')?.addEventListener('click', async () => {
@@ -963,6 +1062,82 @@ function wireSettingsEvents(container: HTMLElement, s: Settings): void {
   container.querySelector('#btn-privacy-policy')?.addEventListener('click', (e) => {
     e.preventDefault()
     void chrome.tabs.create({ url: chrome.runtime.getURL('privacy-policy.html'), active: true })
+  })
+}
+
+// ─── Settings Tabs ──────────────────────────────────────────────────────────
+
+function wireSettingsTabs(container: HTMLElement): void {
+  const buttons = container.querySelectorAll<HTMLElement>('.settings-tab-btn')
+  const sections = container.querySelectorAll<HTMLElement>('.settings-section[data-settings-tab]')
+  const footer = container.querySelector<HTMLElement>('.settings-footer')
+  const setupBanner = container.querySelector<HTMLElement>('.setup-banner')
+
+  function activateTab(tab: string): void {
+    buttons.forEach(btn => btn.classList.toggle('active', btn.dataset.stab === tab))
+    sections.forEach(sec => {
+      const match = sec.dataset.settingsTab === tab
+      // Provider sections have their own show/hide logic — don't override
+      if (sec.classList.contains('provider-section')) {
+        if (!match) sec.style.display = 'none'
+        // When matching, let wireProviderToggle control visibility
+        else if (match && sec.style.display === 'none') {
+          // Keep hidden unless it's the active provider section
+        }
+      } else {
+        sec.style.display = match ? '' : 'none'
+      }
+    })
+    if (footer) footer.style.display = ''
+    if (setupBanner) setupBanner.style.display = tab === 'ai' ? '' : 'none'
+    // Re-trigger provider visibility when switching to AI tab
+    if (tab === 'ai') {
+      const sel = container.querySelector<HTMLSelectElement>('#active-provider')
+      if (sel) sel.dispatchEvent(new Event('change'))
+    }
+    // Clear search when switching tabs
+    const searchInput = container.querySelector<HTMLInputElement>('#settings-search')
+    if (searchInput) searchInput.value = ''
+  }
+
+  buttons.forEach(btn => {
+    btn.addEventListener('click', () => activateTab(btn.dataset.stab || 'ai'))
+  })
+
+  // Initialize: show only the AI tab (or first tab with setup banner)
+  activateTab('ai')
+}
+
+function wireSettingsSearch(container: HTMLElement): void {
+  const searchInput = container.querySelector<HTMLInputElement>('#settings-search')
+  if (!searchInput) return
+
+  const sections = container.querySelectorAll<HTMLElement>('.settings-section[data-settings-tab]')
+  const tabBtns = container.querySelectorAll<HTMLElement>('.settings-tab-btn')
+
+  searchInput.addEventListener('input', () => {
+    const q = searchInput.value.toLowerCase().trim()
+    if (!q) {
+      // Restore active tab view
+      const activeBtn = container.querySelector<HTMLElement>('.settings-tab-btn.active')
+      const activeTab = activeBtn?.dataset.stab || 'ai'
+      sections.forEach(sec => {
+        const match = sec.dataset.settingsTab === activeTab
+        if (!sec.classList.contains('provider-section')) {
+          sec.style.display = match ? '' : 'none'
+        }
+      })
+      tabBtns.forEach(b => b.style.opacity = '')
+      return
+    }
+
+    // Search mode: show all matching sections regardless of tab
+    tabBtns.forEach(b => b.style.opacity = '0.4')
+    sections.forEach(sec => {
+      if (sec.classList.contains('provider-section')) return // skip provider toggle logic
+      const text = sec.textContent?.toLowerCase() || ''
+      sec.style.display = text.includes(q) ? '' : 'none'
+    })
   })
 }
 

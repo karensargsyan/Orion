@@ -119,10 +119,23 @@ async function init(): Promise<void> {
     (provider === 'anthropic' && s?.anthropicApiKey)
   )
 
+  // Apply saved theme
+  applyTheme(s?.theme || 'dark')
+
   showMainUI(hasModel ? 'chat' : 'settings')
 
   // Connect a persistent port for receiving broadcasts from background (context menus, shortcuts)
   setupBroadcastListener()
+}
+
+/** Apply theme to <html> element. 'system' = no data-theme attr (uses media query). */
+export function applyTheme(theme: 'system' | 'dark' | 'light'): void {
+  const root = document.documentElement
+  if (theme === 'system') {
+    root.removeAttribute('data-theme')
+  } else {
+    root.setAttribute('data-theme', theme)
+  }
 }
 
 function setupBroadcastListener(): void {

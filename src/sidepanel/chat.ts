@@ -130,12 +130,7 @@ export async function initChat(parentContainer: HTMLElement, tabId: number): Pro
         </button>
       </div>
     </div>
-    <div class="quick-actions quick-actions-tab">
-      <button class="chip" data-action="summarize">Summarize page</button>
-      <button class="chip" data-action="fill">Fill forms</button>
-      <button class="chip" data-action="draft">Draft reply</button>
-      <button class="chip" data-action="rewrite">Rewrite text</button>
-    </div>
+    <div class="quick-actions quick-actions-tab"></div>
     <div class="messages chat-messages-tab">
     </div>
     <div class="typing-indicator typing-indicator-tab" style="display:none">
@@ -280,21 +275,8 @@ function wireEvents(state: TabChatState): void {
     })
   }
 
-  c.querySelectorAll('.chip').forEach(chip => {
-    const nc = chip.cloneNode(true) as HTMLElement
-    chip.parentNode!.replaceChild(nc, chip)
-    nc.addEventListener('click', () => {
-      const action = nc.dataset.action
-      const prompts: Record<string, string> = {
-        summarize: 'Summarize this page for me.',
-        fill: 'Fill the forms on this page.',
-        draft: 'Help me draft a reply to this conversation/email.',
-        rewrite: 'Rewrite the selected text to be more professional.',
-      }
-      getInput(state).value = prompts[action!] ?? ''
-      sendMessage(state)
-    })
-  })
+  // Populate contextual quick actions
+  populateQuickActions(state)
 
   // ── Microphone: press-and-hold OR double-click to toggle ──────────────────
   const micBtn = c.querySelector<HTMLButtonElement>('.btn-mic-tab')
@@ -628,6 +610,124 @@ function startHealthCheckLoop(state: TabChatState): void {
   if (healthCheckInterval) clearInterval(healthCheckInterval)
   checkAIHealth(state)
   healthCheckInterval = setInterval(() => checkAIHealth(state), 60_000)
+}
+
+// ─── Contextual Quick Actions ────────────────────────────────────────────────
+
+interface QuickAction { label: string; prompt: string }
+
+const PAGE_TYPE_ACTIONS: Record<string, QuickAction[]> = {
+  email: [
+    { label: 'Reply', prompt: 'Help me draft a reply to this email.' },
+    { label: 'Summarize thread', prompt: 'Summarize this email thread.' },
+    { label: 'Extract contacts', prompt: 'Extract all names and email addresses from this page.' },
+  ],
+  shopping: [
+    { label: 'Compare prices', prompt: 'Find and compare prices for this product across other retailers.' },
+    { label: 'Summarize reviews', prompt: 'Summarize the reviews for this product.' },
+    { label: 'Fill checkout', prompt: 'Fill the form on this page using my vault data.' },
+  ],
+  travel: [
+    { label: 'Compare options', prompt: 'Compare the travel options shown on this page.' },
+    { label: 'Summarize itinerary', prompt: 'Summarize the travel itinerary on this page.' },
+    { label: 'Fill booking', prompt: 'Fill the form on this page using my vault data.' },
+  ],
+  coding: [
+    { label: 'Explain code', prompt: 'Explain the code shown on this page.' },
+    { label: 'Summarize', prompt: 'Summarize this page for me.' },
+    { label: 'Find bugs', prompt: 'Review the code on this page and identify potential bugs or improvements.' },
+  ],
+  finance: [
+    { label: 'Summarize', prompt: 'Summarize the financial information on this page.' },
+    { label: 'Explain terms', prompt: 'Explain the financial terms and conditions on this page in simple language.' },
+  ],
+  jobs: [
+    { label: 'Match skills', prompt: 'Compare this job listing with my profile/vault data and highlight matching skills.' },
+    { label: 'Draft cover letter', prompt: 'Help me draft a cover letter for this job posting.' },
+    { label: 'Summarize role', prompt: 'Summarize this job posting with key requirements and salary info.' },
+  ],
+  news: [
+    { label: 'Key takeaways', prompt: 'Give me the key takeaways from this article.' },
+    { label: 'Summarize', prompt: 'Summarize this article for me.' },
+    { label: 'Fact check', prompt: 'What are the key claims in this article that could be fact-checked?' },
+  ],
+  social: [
+    { label: 'Draft post', prompt: 'Help me draft a post for this platform.' },
+    { label: 'Summarize', prompt: 'Summarize the content on this page.' },
+    { label: 'Reply', prompt: 'Help me draft a reply to this post.' },
+  ],
+  docs: [
+    { label: 'Summarize', prompt: 'Summarize this document for me.' },
+    { label: 'Key points', prompt: 'What are the key points in this document?' },
+    { label: 'Draft content', prompt: 'Help me draft new content for this document.' },
+  ],
+  video: [
+    { label: 'Summarize', prompt: 'Summarize what this video page is about.' },
+    { label: 'Key moments', prompt: 'What are the key topics or moments mentioned on this page?' },
+  ],
+  education: [
+    { label: 'Explain concept', prompt: 'Explain the main concept taught on this page in simple terms.' },
+    { label: 'Quiz me', prompt: 'Create a quick quiz based on the content of this page.' },
+    { label: 'Summarize lesson', prompt: 'Summarize this lesson for me.' },
+  ],
+  health: [
+    { label: 'Summarize', prompt: 'Summarize the health information on this page in plain language.' },
+    { label: 'Key facts', prompt: 'What are the key medical facts or recommendations on this page?' },
+  ],
+  realestate: [
+    { label: 'Summarize listing', prompt: 'Summarize this property listing with key details.' },
+    { label: 'Compare', prompt: 'What are the pros and cons of this property based on the listing?' },
+  ],
+  general: [
+    { label: 'Summarize', prompt: 'Summarize this page for me.' },
+    { label: 'Fill form', prompt: 'Fill the forms on this page using my vault data.' },
+    { label: 'Draft reply', prompt: 'Help me draft a reply to this conversation/email.' },
+    { label: 'Rewrite', prompt: 'Rewrite the selected text to be more professional.' },
+  ],
+}
+
+function detectPageType(domain: string, url: string): string {
+  const d = (domain + ' ' + url).toLowerCase()
+  if (/mail\.google|outlook\.(live|office)|yahoo\.com\/mail|protonmail|fastmail/.test(d)) return 'email'
+  if (/booking\.com|airbnb|expedia|skyscanner|kayak|google\.com\/travel|flightradar/.test(d)) return 'travel'
+  if (/amazon\.|ebay\.|aliexpress|etsy\.com|walmart|target\.com|bestbuy|zalando|temu|shein/.test(d)) return 'shopping'
+  if (/github\.com|gitlab|stackoverflow|codepen|npmjs\.com|pypi\.org/.test(d)) return 'coding'
+  if (/paypal|stripe|revolut|wise\.com|bank|trading|stock|crypto|coinbase|binance/.test(d)) return 'finance'
+  if (/indeed|glassdoor|monster|stepstone|linkedin.*\/jobs/.test(d)) return 'jobs'
+  if (/news\.google|cnn|bbc|reuters|nytimes|theguardian/.test(d)) return 'news'
+  if (/facebook|twitter|x\.com|instagram|linkedin|reddit|tiktok/.test(d)) return 'social'
+  if (/docs\.google|notion\.so|confluence|wiki/.test(d)) return 'docs'
+  if (/youtube|vimeo|twitch|netflix/.test(d)) return 'video'
+  if (/coursera|udemy|edx\.org|duolingo|khanacademy/.test(d)) return 'education'
+  if (/webmd|mayoclinic|healthline/.test(d)) return 'health'
+  if (/zillow|realtor|redfin|trulia|immobilien|immoscout/.test(d)) return 'realestate'
+  return 'general'
+}
+
+async function populateQuickActions(state: TabChatState): Promise<void> {
+  const qaContainer = state.container.querySelector('.quick-actions-tab')
+  if (!qaContainer) return
+
+  let url = ''
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+    url = tab?.url ?? ''
+  } catch { /* no tab */ }
+
+  const pageType = detectPageType(state.domain, url)
+  const actions = PAGE_TYPE_ACTIONS[pageType] || PAGE_TYPE_ACTIONS.general
+
+  qaContainer.innerHTML = actions.map(a =>
+    `<button class="chip" data-prompt="${a.prompt.replace(/"/g, '&quot;')}">${a.label}</button>`
+  ).join('')
+
+  qaContainer.querySelectorAll('.chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      const prompt = (chip as HTMLElement).dataset.prompt ?? ''
+      getInput(state).value = prompt
+      sendMessage(state)
+    })
+  })
 }
 
 async function loadTabHistory(state: TabChatState): Promise<void> {
