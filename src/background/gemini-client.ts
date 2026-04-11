@@ -33,7 +33,16 @@ function buildGeminiContents(
     if (m.imageData && m.role === 'user') {
       const match = m.imageData.match(/^data:([^;]+);base64,(.+)$/)
       if (match) {
-        parts.push({ inlineData: { mimeType: match[1], data: match[2] } })
+        const [, mimeType, base64] = match
+        // Validate base64: must be reasonable length, correct padding, valid chars
+        const isValidBase64 = base64.length > 100 &&
+          base64.length < 10_000_000 && // ~7.5MB max raw
+          base64.length % 4 === 0
+        if (isValidBase64) {
+          parts.push({ inlineData: { mimeType, data: base64 } })
+        } else {
+          console.warn(`[Gemini] Skipping malformed image: length=${base64.length}, padding=${base64.length % 4}`)
+        }
       }
     }
 

@@ -1080,8 +1080,9 @@ async function executeSingleAction(action: AIAction, tabId: number): Promise<AIA
       if (action.action === 'click' && response.ok && response.result?.includes('[COORDS:')) {
         const coordMatch = response.result.match(/\[COORDS:(\d+),(\d+)\]/)
         if (coordMatch) {
-          const cx = parseInt(coordMatch[1])
-          const cy = parseInt(coordMatch[2])
+          const cx = parseInt(coordMatch[1], 10)
+          const cy = parseInt(coordMatch[2], 10)
+          if (isNaN(cx) || isNaN(cy)) return result
           // Use CDP actions module if session active, else standalone
           if (isSessionActive(tabId)) {
             await cdpClickAt(tabId, cx, cy)
@@ -1094,8 +1095,9 @@ async function executeSingleAction(action: AIAction, tabId: number): Promise<AIA
               await chrome.debugger.sendCommand.call(chrome.debugger, { tabId }, 'Input.dispatchMouseEvent', {
                 type: 'mouseReleased', x: cx, y: cy, button: 'left', clickCount: 1,
               })
+            } catch { /* ok */ } finally {
               await chrome.debugger.detach({ tabId }).catch(() => {})
-            } catch { /* ok */ }
+            }
           }
           await sleep(300)
           result.result = result.result?.replace(/\[COORDS:\d+,\d+\]/, '').replace('WARNING:', 'retried with CDP click.')
@@ -1373,6 +1375,7 @@ export async function executeWithFollowUp(
     invalidateTreeCache() // fresh tree for new sequence
   }
 
+  try {
   // Helper: check if current tab is restricted (no DOM interaction possible)
   async function isTabRestricted(): Promise<boolean> {
     if (tabId <= 0) return true
@@ -1944,13 +1947,14 @@ export async function executeWithFollowUp(
     console.warn(`[LocalAI] Auto-closed ${openResearchTabs} research tabs after automation ended`)
   }
 
-  // ── Release CDP session ──────────────────────────────────────────────
-  if (cdpSession) {
-    await releaseSession(tabId).catch(() => {})
-    console.warn(`[LocalAI] CDP session released for tab ${tabId}`)
-  }
-
   learnFromExecution(tabId, sessionMessages, allParsedActions, allResults, hadSuccess, hadFailure)
+  } finally {
+    // ── Release CDP session (guaranteed cleanup) ──────────────────────
+    if (cdpSession) {
+      await releaseSession(tabId).catch(() => {})
+      console.warn(`[LocalAI] CDP session released for tab ${tabId}`)
+    }
+  }
 }
 
 const MALFORMED_RE = /call:[\w]*:?[\w]*\{/i

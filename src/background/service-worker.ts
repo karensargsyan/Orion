@@ -553,6 +553,8 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     if (!shouldSkipBackgroundAI()) {
       await runBackgroundSummarization()
     }
+    // Periodic stale tab pruning — catches tabs closed while SW was suspended
+    pruneStaleExtensionTabs().catch(() => {})
   }
   if (alarm.name === 'ai-action-learn') {
     await flushAllBuffers()
@@ -587,10 +589,6 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     if (telegramEnabled(s)) {
       pollTelegramUpdates(s).catch(err => console.warn('[Telegram] Poll error:', err))
     }
-  }
-  if (alarm.name === 'bg-summarize') {
-    // Periodic stale tab pruning — catches tabs closed while SW was suspended
-    pruneStaleExtensionTabs().catch(() => {})
   }
   if (alarm.name === 'vault-auto-lock') {
     const s = await getSettings()

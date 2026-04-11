@@ -163,6 +163,53 @@ async function handleContentMessage(msg: Record<string, unknown>): Promise<unkno
       return { ok: !!el }
     }
 
+    case MSG.GET_FOCUSED_FIELD: {
+      const focused = document.activeElement as HTMLElement | null
+      if (!focused || focused === document.body) {
+        return { ok: false, error: 'No focused editable field' }
+      }
+      const tag = focused.tagName.toLowerCase()
+      const isEditable = tag === 'input' || tag === 'textarea' || tag === 'select' ||
+        focused.isContentEditable || focused.getAttribute('role') === 'textbox'
+      if (!isEditable) {
+        return { ok: false, error: 'Focused element is not editable' }
+      }
+      // Build a robust selector
+      const selectors: string[] = []
+      if (focused.id) selectors.push(`#${CSS.escape(focused.id)}`)
+      if (focused.getAttribute('name')) selectors.push(`${tag}[name="${CSS.escape(focused.getAttribute('name')!)}"]`)
+      if (focused.getAttribute('aria-label')) selectors.push(`[aria-label="${CSS.escape(focused.getAttribute('aria-label')!)}"]`)
+      // Gather label
+      let label = ''
+      const inp = focused as HTMLInputElement
+      if (inp.labels && inp.labels.length > 0) label = inp.labels[0].textContent?.trim() ?? ''
+      if (!label) label = focused.getAttribute('aria-label') ?? focused.getAttribute('placeholder') ?? focused.getAttribute('name') ?? ''
+      // Gather nearby context for better AI understanding
+      const parent = focused.closest('form, fieldset, [role="group"], .form-group, .field, section') ?? focused.parentElement
+      const nearbyText = parent ? (parent.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 300) : ''
+      const inputType = focused.getAttribute('type') ?? (tag === 'textarea' ? 'textarea' : tag === 'select' ? 'select' : 'text')
+      const currentValue = (focused as HTMLInputElement).value ?? focused.textContent ?? ''
+      // Get options for select
+      const options: string[] = []
+      if (tag === 'select') {
+        for (const opt of (focused as HTMLSelectElement).options) {
+          if (opt.value) options.push(opt.text || opt.value)
+        }
+      }
+      return {
+        ok: true,
+        field: {
+          selector: selectors[0] || `${tag}`,
+          label,
+          inputType,
+          currentValue: currentValue.slice(0, 200),
+          nearbyText,
+          options: options.length > 0 ? options.slice(0, 30) : undefined,
+          required: focused.hasAttribute('required'),
+        }
+      }
+    }
+
     case MSG.FORM_COACH_START: {
       const fields = msg.fields as CoachField[]
       startCoach(fields, (summary) => {

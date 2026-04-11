@@ -27,6 +27,7 @@ import { getSessionMessages, getAllSettings } from './memory-manager'
 import { localMemoryEnabled, searchLocalMemory } from './local-memory'
 import { createGroupForTab, updateGroupTitle, registerExtensionTab, unregisterExtensionTab } from './web-researcher'
 import { handleConfirmResponse } from './confirmation-manager'
+import { captureHighQualityScreenshot } from './minimap-screenshot'
 
 // ─── Telegram API Types ────────────────────────────────────────────────────
 
@@ -186,6 +187,44 @@ async function telegramAPI<T>(
   } catch (err) {
     console.warn(`[Telegram] API error (${method}):`, err)
     return { ok: false, description: String(err) }
+  }
+}
+
+/**
+ * Send a photo to Telegram from a base64 data URL.
+ * Converts to a Blob and uses multipart/form-data upload.
+ */
+async function sendPhoto(
+  token: string,
+  chatId: number | string,
+  dataUrl: string,
+  caption?: string,
+): Promise<boolean> {
+  try {
+    // Convert data URL to Blob
+    const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/)
+    if (!match) return false
+
+    const byteString = atob(match[2])
+    const ab = new ArrayBuffer(byteString.length)
+    const ia = new Uint8Array(ab)
+    for (let i = 0; i < byteString.length; i++) {
+      ia[i] = byteString.charCodeAt(i)
+    }
+    const blob = new Blob([ab], { type: match[1] })
+
+    const form = new FormData()
+    form.append('chat_id', String(chatId))
+    form.append('photo', blob, 'screenshot.jpg')
+    if (caption) form.append('caption', caption)
+
+    const url = `${TELEGRAM_API}/bot${token}/sendPhoto`
+    const res = await fetch(url, { method: 'POST', body: form })
+    const json = await res.json() as TelegramResponse<unknown>
+    return json.ok === true
+  } catch (err) {
+    console.warn('[Telegram] sendPhoto failed:', err)
+    return false
   }
 }
 
@@ -462,6 +501,8 @@ async function handleStart(token: string, chatId: number): Promise<void> {
       `/tabs — List all open tabs\n` +
       `/tab N — Switch to tab N\n` +
       `/close N — Close tab N\n` +
+      `/screenshot — Screenshot active tab\n` +
+      `/screenshot all — Screenshot all tabs\n` +
       `/status — Check connection status\n` +
       `/memory <query> — Search local memory\n` +
       `/clear — Clear chat context\n\n` +
@@ -662,6 +703,90 @@ async function handleClear(
   await sendMessage(token, chatId, 'Chat context cleared.')
 }
 
+/**
+ * /screenshot [N] — Capture and send a screenshot of the active tab (or tab N).
+ * If no tab is specified, screenshots the current active tab.
+ * Supports: /screenshot, /screenshot 1, /screenshot all
+ */
+async function handleScreenshot(
+  token: string,
+  chatId: number,
+  arg: string,
+): Promise<void> {
+  const tabs = chatTabs.get(chatId)
+  if (!tabs || tabs.length === 0) {
+    await sendMessage(token, chatId, 'No open tabs. Use /newgrouptab to create one.')
+    return
+  }
+
+  // Determine which tabs to screenshot
+  const targetsToCapture: TelegramTab[] = []
+
+  if (arg === 'all') {
+    // Screenshot all tabs
+    for (const tab of tabs) {
+      if (await isTabAlive(tab.tabId)) targetsToCapture.push(tab)
+    }
+  } else if (arg && /^\d+$/.test(arg)) {
+    // Screenshot specific tab by number
+    const idx = parseInt(arg, 10) - 1
+    if (idx >= 0 && idx < tabs.length) {
+      targetsToCapture.push(tabs[idx])
+    } else {
+      await sendMessage(token, chatId, `Tab ${arg} not found. Use /tabs to see available tabs.`)
+      return
+    }
+  } else {
+    // Screenshot active tab
+    const active = getActiveTab(chatId)
+    if (active) targetsToCapture.push(active)
+  }
+
+  if (targetsToCapture.length === 0) {
+    await sendMessage(token, chatId, 'No live tabs to screenshot.')
+    return
+  }
+
+  await telegramAPI(token, 'sendChatAction', { chat_id: chatId, action: 'upload_photo' })
+
+  let sent = 0
+  let failed = 0
+
+  for (const tab of targetsToCapture) {
+    try {
+      // Focus the tab briefly so captureVisibleTab works
+      await chrome.tabs.update(tab.tabId, { active: true })
+      await new Promise(r => setTimeout(r, 500)) // Brief wait for render
+
+      const dataUrl = await captureHighQualityScreenshot(tab.tabId)
+
+      if (dataUrl) {
+        // Get tab info for caption
+        let tabTitle = tab.name
+        try {
+          const chromeTab = await chrome.tabs.get(tab.tabId)
+          tabTitle = chromeTab.title ?? tab.name
+        } catch { /* use stored name */ }
+
+        const caption = `${tabTitle}`
+        const ok = await sendPhoto(token, chatId, dataUrl, caption)
+        if (ok) sent++
+        else failed++
+      } else {
+        failed++
+      }
+    } catch {
+      failed++
+    }
+  }
+
+  if (sent === 0) {
+    await sendMessage(token, chatId, 'Could not capture screenshot. The tab may be on a restricted page (chrome://, devtools, etc.).')
+  } else if (failed > 0) {
+    await sendMessage(token, chatId, `Sent ${sent} screenshot${sent > 1 ? 's' : ''}. ${failed} failed (restricted pages).`)
+  }
+}
+
 // ─── Message Routing ───────────────────────────────────────────────────────
 
 async function handleIncomingMessage(
@@ -714,6 +839,19 @@ async function handleIncomingMessage(
 
   if (cmd === '/clear') {
     await handleClear(token, chatId)
+    return
+  }
+
+  if (cmd === '/screenshot' || cmd.startsWith('/screenshot ')) {
+    await handleScreenshot(token, chatId, cmd.slice(12).trim())
+    return
+  }
+
+  // ── Natural language screenshot detection ──
+  const screenshotRequest = /\b(screenshot|screen\s*shot|capture\s*(the\s+)?screen|show\s+(me\s+)?(the\s+)?screen|bildschirmfoto|bildschirm\s+zeigen|zeig\s+(mir\s+)?(den\s+)?bildschirm)\b/i
+  if (screenshotRequest.test(cmd)) {
+    const allMatch = /\b(all|alle|every|jede)\b/i.test(cmd)
+    await handleScreenshot(token, chatId, allMatch ? 'all' : '')
     return
   }
 

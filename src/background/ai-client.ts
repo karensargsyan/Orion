@@ -188,11 +188,15 @@ function buildOpenAIMessages(
 ): Array<{ role: string; content: string | OpenAIMessageContent[] }> {
   return messages.map(m => {
     if (visionEnabled && m.imageData && m.role === 'user') {
-      const parts: OpenAIMessageContent[] = [
-        { type: 'text', text: m.content },
-        { type: 'image_url', image_url: { url: m.imageData, detail: 'low' } },
-      ]
-      return { role: m.role, content: parts }
+      // Validate image data URL before sending
+      const isValid = m.imageData.startsWith('data:image/') && m.imageData.length > 200 && m.imageData.length < 10_000_000
+      if (isValid) {
+        const parts: OpenAIMessageContent[] = [
+          { type: 'text', text: m.content },
+          { type: 'image_url', image_url: { url: m.imageData, detail: 'low' } },
+        ]
+        return { role: m.role, content: parts }
+      }
     }
     return { role: m.role, content: m.content }
   })
@@ -219,10 +223,16 @@ function buildAnthropicMessages(
       const match = m.imageData.match(/^data:([^;]+);base64,(.+)$/)
       const blocks: AnthropicContentBlock[] = [{ type: 'text', text: m.content }]
       if (match) {
-        blocks.push({
-          type: 'image',
-          source: { type: 'base64', media_type: match[1], data: match[2] },
-        })
+        const [, mediaType, base64] = match
+        const isValid = base64.length > 100 && base64.length < 10_000_000 && base64.length % 4 === 0
+        if (isValid) {
+          blocks.push({
+            type: 'image',
+            source: { type: 'base64', media_type: mediaType, data: base64 },
+          })
+        } else {
+          console.warn(`[Anthropic] Skipping malformed image: length=${base64.length}`)
+        }
       }
       anthropicMessages.push({ role: m.role, content: blocks })
     } else {

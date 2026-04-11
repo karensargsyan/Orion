@@ -61,7 +61,8 @@ function blobToDataUrl(blob: Blob): Promise<string> {
 
 export async function captureMiniMap(tabId: number, resize = true): Promise<MiniMapResult | null> {
   try {
-    const dataUrl = await chrome.tabs.captureVisibleTab({ format: 'jpeg', quality: MINIMAP_JPEG_QUALITY })
+    const dataUrl = await captureWithTimeout(tabId, MINIMAP_JPEG_QUALITY)
+    if (!dataUrl) return null
     const viewport = await getTabViewport(tabId)
     const finalUrl = resize ? await resizeDataUrl(dataUrl, MAX_MINIMAP_WIDTH).catch(() => dataUrl) : dataUrl
     return { dataUrl: finalUrl, viewport }
@@ -70,9 +71,9 @@ export async function captureMiniMap(tabId: number, resize = true): Promise<Mini
   }
 }
 
-export async function captureHighQualityScreenshot(): Promise<string | null> {
+export async function captureHighQualityScreenshot(tabId?: number): Promise<string | null> {
   try {
-    return await chrome.tabs.captureVisibleTab({ format: 'jpeg', quality: 60 })
+    return await captureWithTimeout(tabId, 60)
   } catch {
     return null
   }
@@ -84,11 +85,48 @@ export async function captureHighQualityScreenshot(): Promise<string | null> {
  */
 export async function captureAutomationScreenshot(tabId: number): Promise<MiniMapResult | null> {
   try {
-    const dataUrl = await chrome.tabs.captureVisibleTab({ format: 'jpeg', quality: 20 })
+    const dataUrl = await captureWithTimeout(tabId, 20)
+    if (!dataUrl) return null
     const viewport = await getTabViewport(tabId)
     const finalUrl = await resizeDataUrl(dataUrl, 512).catch(() => dataUrl)
     return { dataUrl: finalUrl, viewport }
   } catch {
     return null
   }
+}
+
+/**
+ * Capture screenshot with timeout and CDP fallback.
+ * chrome.tabs.captureVisibleTab can fail on restricted pages (chrome://, devtools, etc.)
+ * or hang on slow pages. This adds a 5s timeout and falls back to CDP if available.
+ */
+async function captureWithTimeout(tabId: number | undefined, quality: number, timeoutMs = 5000): Promise<string | null> {
+  // First try the standard Chrome API with a timeout
+  try {
+    const dataUrl = await Promise.race([
+      chrome.tabs.captureVisibleTab({ format: 'jpeg', quality }),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs)),
+    ])
+    if (dataUrl) return dataUrl
+  } catch { /* standard capture failed — try CDP fallback */ }
+
+  // CDP fallback: works on more page types and is more reliable
+  if (tabId && tabId > 0) {
+    try {
+      const targets = await chrome.debugger.getTargets()
+      const attached = targets.some(t => t.tabId === tabId && t.attached)
+      if (attached) {
+        const result = await chrome.debugger.sendCommand(
+          { tabId },
+          'Page.captureScreenshot',
+          { format: 'jpeg', quality }
+        ) as { data?: string }
+        if (result?.data) {
+          return `data:image/jpeg;base64,${result.data}`
+        }
+      }
+    } catch { /* CDP not available */ }
+  }
+
+  return null
 }

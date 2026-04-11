@@ -169,6 +169,9 @@ export const MSG = {
   FORM_ASSIST: 'FORM_ASSIST',
   FORM_ASSIST_FILL_FIELD: 'FORM_ASSIST_FILL_FIELD',
 
+  // Context menu — insert value into focused editable field
+  GET_FOCUSED_FIELD: 'GET_FOCUSED_FIELD',
+
   /** Test local MemPalace bridge (GET /health). */
   MEMPALACE_PROBE: 'MEMPALACE_PROBE',
   /** Append recent session memory lines to bridge JSONL inbox for mining. */

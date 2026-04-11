@@ -120,11 +120,13 @@ export function classifyIntent(
   pageType: PageType,
   pageSnapshot?: PageSnapshot
 ): UserIntent {
-  const lower = userText.toLowerCase().trim()
+  // Guard against extremely large inputs that could hang regex operations
+  const safeText = userText.length > 10_000 ? userText.slice(0, 10_000) : userText
+  const lower = safeText.toLowerCase().trim()
 
-  // URL in text → navigate
-  if (/https?:\/\/[^\s]+/.test(userText)) {
-    const url = userText.match(/https?:\/\/[^\s]+/)?.[0]
+  // URL in text → navigate (trim trailing punctuation from extracted URL)
+  if (/https?:\/\/[^\s]+/.test(safeText)) {
+    const url = safeText.match(/https?:\/\/[^\s]+/)?.[0]?.replace(/[.,;:!?)}\]]+$/, '')
     return {
       category: 'navigate',
       entities: { destination: url },
@@ -168,8 +170,8 @@ export function classifyIntent(
   if (pageSnapshot && pageSnapshot.forms.length > 0) {
     const matchedFields: string[] = []
     for (const form of pageSnapshot.forms) {
-      for (const field of form.fields) {
-        const label = (field.label || field.name).toLowerCase()
+      for (const field of form.fields ?? []) {
+        const label = (field.label || field.name || '').toLowerCase()
         if (label && lower.includes(label)) {
           matchedFields.push(field.label || field.name)
         }
@@ -231,7 +233,7 @@ export function expandQuery(
     const emptyFields: string[] = []
     const filledFields: string[] = []
     for (const form of pageSnapshot.forms) {
-      for (const field of form.fields) {
+      for (const field of form.fields ?? []) {
         const label = field.label || field.name || field.selector
         if (field.value && field.value.length > 0) {
           filledFields.push(`${label}="${field.value.slice(0, 30)}"`)
@@ -299,7 +301,7 @@ export function decomposeTask(
   // Generic decomposition for multi-step tasks
   if (intent.category === 'fill_form' && pageSnapshot && pageSnapshot.forms.length > 0) {
     const form = pageSnapshot.forms[0]
-    const emptyFields = form.fields.filter(f => !f.value || f.value.length === 0)
+    const emptyFields = (form.fields ?? []).filter(f => !f.value || f.value.length === 0)
     if (emptyFields.length > 0) {
       steps.push({
         description: `Fill ${emptyFields.length} form fields`,

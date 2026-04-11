@@ -1319,7 +1319,11 @@ async function sendMessage(state: TabChatState): Promise<void> {
   inputEl.style.height = 'auto'
 
   // Show user message with optional image thumbnail
-  const bubble = addBubble(state, 'user', fileContext ? `[${fileName}] ${text.slice(text.indexOf('\n\n') + 2)}` : text)
+  // Extract the user's original text after the file context block (separated by \n\n)
+  const displayText = fileContext
+    ? (() => { const sep = text.indexOf('\n\n'); return `[${fileName}] ${sep >= 0 ? text.slice(sep + 2) : text}` })()
+    : text
+  const bubble = addBubble(state, 'user', displayText)
   if (imageData && imageData.startsWith('data:image/')) {
     const img = document.createElement('img')
     img.src = imageData

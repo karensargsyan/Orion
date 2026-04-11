@@ -172,7 +172,8 @@ RULES:
     const aiResponse = await callAI(messages as Parameters<typeof callAI>[0], settings, 4096)
 
     // Parse JSON from AI response (handle markdown code blocks)
-    const jsonMatch = aiResponse.match(/\[[\s\S]*\]/)
+    // Use non-greedy match to avoid capturing unrelated brackets
+    const jsonMatch = aiResponse.match(/\[[\s\S]*?\](?=\s*(?:```|$))/)
     if (jsonMatch) {
       const suggestions = JSON.parse(jsonMatch[0]) as Array<{ fieldId: string; value: string; confidence?: string }>
       for (const s of suggestions) {
