@@ -94,21 +94,33 @@ function escapeForRender(text: string): string {
     .replace(/>/g, '&gt;')
 }
 
+/** Check if a URL is safe (http/https/mailto only — blocks javascript:, data:, etc.) */
+function isSafeUrl(url: string): boolean {
+  const trimmed = url.trim().toLowerCase()
+  return trimmed.startsWith('http://') || trimmed.startsWith('https://') || trimmed.startsWith('mailto:')
+}
+
+/** Strip all attributes from an HTML tag, keeping only the tag name */
+function stripAttributes(tag: string, name: string): string {
+  const isClose = tag.startsWith('</')
+  return isClose ? `</${name}>` : `<${name}>`
+}
+
 /** Sanitize HTML output before inserting into DOM. Basic allow-list. */
 export function sanitizeHtml(html: string): string {
-  const allowed = new Set(['p','h1','h2','h3','strong','em','code','pre','ul','ol','li','a','hr','br','blockquote','div','span','button'])
+  const allowed = new Set(['p','h1','h2','h3','strong','em','code','pre','ul','ol','li','a','hr','br','blockquote','div','span','details','summary'])
 
   return html.replace(/<\/?([a-z][a-z0-9]*)[^>]*>/gi, (tag, name) => {
-    if (!allowed.has(name.toLowerCase())) return ''
-    if (name.toLowerCase() === 'a') {
-      const href = tag.match(/href="([^"]+)"/)
+    const lower = name.toLowerCase()
+    if (!allowed.has(lower)) return ''
+    if (lower === 'a') {
       const isClose = tag.startsWith('</')
       if (isClose) return '</a>'
-      return href ? `<a href="${href[1]}" target="_blank" rel="noopener noreferrer">` : ''
+      const href = tag.match(/href="([^"]+)"/)
+      if (!href || !isSafeUrl(href[1])) return ''
+      return `<a href="${href[1]}" target="_blank" rel="noopener noreferrer">`
     }
-    if (name.toLowerCase() === 'div' || name.toLowerCase() === 'span' || name.toLowerCase() === 'button') {
-      return tag
-    }
-    return tag.replace(/\s+[a-zA-Z\-]+="[^"]*"/g, '')
+    // Strip all attributes from non-link elements to prevent event handler injection
+    return stripAttributes(tag, lower)
   })
 }
