@@ -97,7 +97,7 @@ export async function cdpSend<T = unknown>(
     { tabId },
     method,
     params ?? {},
-  ) as Promise<T>
+  ) as unknown as Promise<T>
 }
 
 /**

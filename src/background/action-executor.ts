@@ -1,5 +1,5 @@
 import { MSG } from '../shared/constants'
-import type { AIAction, AIActionResult, Settings, ChatMessage, PageSnapshot, FillAssignment } from '../shared/types'
+import type { AIAction, AIActionType, AIActionResult, Settings, ChatMessage, PageSnapshot, FillAssignment } from '../shared/types'
 import { callAI, estimateTokens, truncateMessagesToFit } from './ai-client'
 import type { StreamPort } from './ai-client'
 import { tabState } from './tab-state'
@@ -363,7 +363,7 @@ function groupActionsIntoBatches(actions: AIAction[]): AIAction[][] {
     const target = action.selector ?? action.markerId ?? action.url ?? action.value ?? ''
     const key = `${action.action}:${target}`
     if (seen.has(key)) {
-      console.log(`[LocalAI] Dedup: skipping duplicate ${action.action} on "${target.slice(0, 60)}"`)
+      console.log(`[LocalAI] Dedup: skipping duplicate ${action.action} on "${String(target).slice(0, 60)}"`)
       continue
     }
     seen.add(key)
@@ -486,7 +486,7 @@ async function executeGuidedActions(
   for (const action of actions) {
     // Check cancellation
     if (isCancelled(tabId)) {
-      results.push({ action: action.action, success: false, error: 'Cancelled' })
+      results.push({ action: action.action as AIActionType, success: false, error: 'Cancelled' })
       break
     }
 
@@ -523,20 +523,20 @@ async function executeGuidedActions(
       if (response.stopped) {
         cancelAutomation(tabId)
         port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '\n> Guided mode stopped by user.\n' })
-        results.push({ action: action.action, success: false, error: 'User stopped guided mode' })
+        results.push({ action: action.action as AIActionType, success: false, error: 'User stopped guided mode' })
         break
       }
 
       if (response.skipped) {
         port.postMessage({ type: MSG.STREAM_CHUNK, chunk: ' *(skipped)*\n' })
-        results.push({ action: action.action, success: true, result: `User skipped: ${instruction}` })
+        results.push({ action: action.action as AIActionType, success: true, result: `User skipped: ${instruction}` })
         continue
       }
 
       if (response.clicked) {
         port.postMessage({ type: MSG.STREAM_CHUNK, chunk: ' *done*\n' })
         results.push({
-          action: action.action,
+          action: action.action as AIActionType,
           success: true,
           result: `User completed: ${instruction}${response.value ? ` (value: ${response.value})` : ''}`,
         })
@@ -545,7 +545,7 @@ async function executeGuidedActions(
       // Content script unreachable (page navigated mid-highlight, etc.)
       port.postMessage({ type: MSG.STREAM_CHUNK, chunk: ' *(element not found)*\n' })
       results.push({
-        action: action.action,
+        action: action.action as AIActionType,
         success: false,
         error: `Guided highlight failed: ${String(err)}`,
       })

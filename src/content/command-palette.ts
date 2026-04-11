@@ -301,7 +301,7 @@ function renderResults(): void {
       executeSelected()
     })
 
-    listEl.appendChild(item)
+    listEl?.appendChild(item)
   })
 }
 

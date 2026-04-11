@@ -84,6 +84,12 @@ import {
 } from './telegram-client'
 import { journalInput, searchInputJournal } from './input-journal'
 
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
 // ─── Background AI call failure tracking ─────────────────────────────────────
 
 /** Consecutive background AI call failures. Used for exponential backoff. */
@@ -387,13 +393,15 @@ function updateBadge(state: BadgeState, count?: number): void {
 // ─── Desktop Notifications ──────────────────────────────────────────────────
 
 function orionNotify(title: string, message: string): void {
-  chrome.notifications.create({
-    type: 'basic',
-    iconUrl: 'icons/icon-128.png',
-    title: `Orion: ${title}`,
-    message,
-    silent: true,
-  }).catch(() => {})
+  try {
+    chrome.notifications.create({
+      type: 'basic',
+      iconUrl: 'icons/icon-128.png',
+      title: `Orion: ${title}`,
+      message,
+      silent: true,
+    })
+  } catch { /* notification API may be unavailable */ }
 }
 
 // ─── Vault Auto-Lock ────────────────────────────────────────────────────────
@@ -1032,7 +1040,7 @@ async function handleAIChat(
     skills: skillsText,
     behaviors: behaviorText,
     instructions: userInstructionsText,
-    mempalace: mempalaceBlock,
+    mempalace: mempalaceBlock ?? '',
     sitemap: sitemapText,
     capabilities: effectiveCapabilities,
     isLocal,

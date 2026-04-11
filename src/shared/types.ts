@@ -14,6 +14,7 @@ export interface APICapabilities {
   supportsVision: boolean
   supportsEmbeddings: boolean
   supportsStreaming: boolean
+  supportsReasoning?: boolean
   availableModels: ModelInfo[]
   defaultModel: string
   serverType: string

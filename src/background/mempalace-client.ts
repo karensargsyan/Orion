@@ -25,6 +25,7 @@ export interface MempalaceHealth {
   ok: boolean
   mempalaceInstalled?: boolean
   palacePath?: string
+  inboxDir?: string
   error?: string
 }
 
