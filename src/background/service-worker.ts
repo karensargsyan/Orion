@@ -23,7 +23,8 @@ import { matchVaultToForm, matchCredentialsToForm, describeForm, classifyField }
 import { probeEndpoint, quickHealthCheck } from './api-detector'
 import { startScreenshotLoop, stopScreenshotLoop, captureScreenshot } from './screenshot-loop'
 import { executeActionsFromText, parseActionsFromText, executeWithFollowUp, ensureContentScript, requestFreshSnapshot, cancelAutomation } from './action-executor'
-import { createGroupForTab, ungroupTab, hasOrionGroup, isOrionTab, cleanupTabGroup, setActiveOriginTab, resolveGroupSession, updateGroupTitle } from './web-researcher'
+import { createGroupForTab, ungroupTab, hasOrionGroup, isOrionTab, cleanupTabGroup, setActiveOriginTab, resolveGroupSession, updateGroupTitle, pauseGroup, resumeGroup, isTabInPausedGroup, getActiveGroups, stopGroup, getTabsInGroup } from './web-researcher'
+import { analyzeAndGenerateFormValues } from './form-assist'
 import { analyzeHabits, getHabitPatterns } from './habit-tracker'
 import { getAllCalendarEvents } from './calendar-detector'
 import { detectPersonalData, storeDetectedPII } from './pii-detector'
@@ -111,7 +112,7 @@ function shouldSkipBackgroundAI(): boolean {
   const backoffMs = BG_BACKOFF_BASE_MS * Math.pow(2, bgCallFailures - 1)
   const elapsed = Date.now() - bgCallLastFailureMs
   if (elapsed < backoffMs) {
-    console.log(`[LocalAI] Background AI skipped — backoff ${Math.round(backoffMs / 1000)}s, ${Math.round((backoffMs - elapsed) / 1000)}s remaining`)
+    console.warn(`[LocalAI] Background AI skipped — backoff ${Math.round(backoffMs / 1000)}s, ${Math.round((backoffMs - elapsed) / 1000)}s remaining`)
     return true
   }
   return false
@@ -125,7 +126,7 @@ function recordBgCallFailure(): void {
 
 function recordBgCallSuccess(): void {
   if (bgCallFailures > 0) {
-    console.log(`[LocalAI] Background AI call succeeded — resetting failure counter (was ${bgCallFailures})`)
+    console.warn(`[LocalAI] Background AI call succeeded — resetting failure counter (was ${bgCallFailures})`)
   }
   bgCallFailures = 0
   bgCallLastFailureMs = 0
@@ -288,7 +289,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
       }
       break
     case 'orion-fill':
-      broadcastToPanel({ type: 'CONTEXT_MENU_CHAT', text: 'Fill the form on this page using my vault data', tabId })
+      broadcastToPanel({ type: 'CONTEXT_MENU_CHAT', text: 'Analyze and help me fill the form on this page', tabId, triggerFormAssist: true })
       break
   }
 })
@@ -296,7 +297,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 /** Send a message to all connected sidepanel ports. */
 function broadcastToPanel(msg: object): void {
   for (const port of activePanelPorts) {
-    try { port.postMessage(msg) } catch { /* disconnected */ }
+    try { port.postMessage(msg) } catch { activePanelPorts.delete(port) }
   }
 }
 
@@ -417,6 +418,7 @@ function touchUserActivity(): void {
 chrome.runtime.onInstalled.addListener(() => { initSW().catch(console.error) })
 chrome.runtime.onStartup.addListener(() => { initSW().catch(console.error) })
 chrome.runtime.onSuspend?.addListener(() => {
+  flushAllBuffers().catch(() => {})
   persistDirtySitemaps().catch(() => {})
 })
 
@@ -495,8 +497,8 @@ function relayToSttPort(msg: Record<string, unknown>): void {
 
 // GLOBAL default: panel DISABLED everywhere. No tab sees the panel unless
 // we explicitly enable it per-tab when the user clicks the icon.
-chrome.sidePanel.setOptions({ path: 'sidepanel/sidepanel.html', enabled: false }).catch(() => {})
-chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false }).catch(() => {})
+chrome.sidePanel.setOptions({ path: 'sidepanel/sidepanel.html', enabled: false }).catch(e => console.warn('[Orion] sidePanel.setOptions init failed:', e))
+chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false }).catch(e => console.warn('[Orion] sidePanel.setPanelBehavior init failed:', e))
 
 // Track tabs where the panel is open
 const panelOpenTabs = new Set<number>()
@@ -511,14 +513,16 @@ chrome.action.onClicked.addListener(async (tab) => {
     panelOpenTabs.delete(tabId)
     await chrome.sidePanel.setOptions({ tabId, enabled: false }).catch(() => {})
     await ungroupTab(tabId)
+    broadcastToPanel({ type: MSG.ACTIVE_GROUPS_CHANGED })
   } else {
     // Open ONLY on this specific tab
     panelOpenTabs.add(tabId)
     await chrome.sidePanel.setOptions({
       tabId, path: 'sidepanel/sidepanel.html', enabled: true,
-    }).catch(() => {})
-    await chrome.sidePanel.open({ tabId }).catch(() => {})
+    }).catch(e => console.warn('[Orion] sidePanel.setOptions enable failed:', e))
+    await chrome.sidePanel.open({ tabId }).catch(e => console.warn('[Orion] sidePanel.open failed:', e))
     await createGroupForTab(tabId)
+    broadcastToPanel({ type: MSG.ACTIVE_GROUPS_CHANGED })
   }
 })
 
@@ -597,7 +601,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         const unlocked = await isSessionUnlocked()
         if (unlocked) {
           await chrome.storage.session.remove('sessionKey')
-          console.log('[Orion] Vault auto-locked after idle timeout')
+          console.warn('[Orion] Vault auto-locked after idle timeout')
         }
       }
     }
@@ -730,6 +734,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   flushBuffer(tabId).then(() => clearTabBuffer(tabId)).catch(() => {})
   // Auto-collector: flush pending inputs then clean up buffer
   triggerFlush(tabId).catch(() => {}).finally(() => clearBuffer(tabId))
+  broadcastToPanel({ type: MSG.ACTIVE_GROUPS_CHANGED })
 })
 
 // Tab activation screenshot handled in the side panel onActivated listener above
@@ -856,6 +861,12 @@ async function handleAIChat(
   const chatSessionId = msg.sessionId as string ?? sessionId
   const tabId = msg.tabId as number ?? 0
   const userImageData = msg.imageData as string | undefined
+
+  // Pause guard — block AI calls for paused groups
+  if (tabId > 0 && isTabInPausedGroup(tabId)) {
+    port.postMessage({ type: MSG.STREAM_ERROR, error: 'Group is paused. Resume from the Groups panel.' })
+    return
+  }
 
       await appendChatMessage({
         sessionId: chatSessionId,
@@ -1050,7 +1061,18 @@ async function handleAIChat(
   })
 
   const systemPrompt = pipelineResult.systemPrompt
-  console.log(`[LocalAI] Prompt pipeline: intent=${pipelineResult.intent.category} (${Math.round(pipelineResult.intent.confidence * 100)}%), complexity=${pipelineResult.intent.complexity}, page=${pipelineResult.pageClassification.type}, taskPlan=${pipelineResult.taskPlan ? pipelineResult.taskPlan.steps.length + ' steps' : 'none'}`)
+  console.warn(`[LocalAI] Prompt pipeline: intent=${pipelineResult.intent.category} (${Math.round(pipelineResult.intent.confidence * 100)}%), complexity=${pipelineResult.intent.complexity}, page=${pipelineResult.pageClassification.type}, taskPlan=${pipelineResult.taskPlan ? pipelineResult.taskPlan.steps.length + ' steps' : 'none'}`)
+
+  // ── Form Assist: intercept fill_form intent when page has forms ──
+  if (pipelineResult.intent.category === 'fill_form' && currentSnap && currentSnap.forms.length > 0) {
+    try {
+      await analyzeAndGenerateFormValues(tabId, s, port)
+      return // Form assist card sent — skip normal AI flow
+    } catch (err) {
+      console.warn('[FormAssist] Falling back to normal AI flow:', err)
+      // Fall through to normal AI chat flow
+    }
+  }
 
   let messages: Pick<ChatMessage, 'role' | 'content' | 'imageData'>[] = [
     { role: 'system', content: systemPrompt },
@@ -1623,6 +1645,7 @@ async function handleMessage(
           tabId: tid, path: 'sidepanel/sidepanel.html', enabled: true,
         }).catch(() => {})
         await createGroupForTab(tid)
+        broadcastToPanel({ type: MSG.ACTIVE_GROUPS_CHANGED })
       }
       return { ok: true }
     }
@@ -1633,6 +1656,7 @@ async function handleMessage(
         panelOpenTabs.delete(tid)
         await chrome.sidePanel.setOptions({ tabId: tid, enabled: false }).catch(() => {})
         await ungroupTab(tid)
+        broadcastToPanel({ type: MSG.ACTIVE_GROUPS_CHANGED })
       }
       return { ok: true }
     }
@@ -1919,6 +1943,19 @@ async function handleMessage(
 
       await chrome.tabs.sendMessage(tabId, { type: MSG.DO_FILL, assignments })
       return { ok: true, fieldCount: assignments.length }
+    }
+
+    case MSG.FORM_ASSIST_FILL_FIELD: {
+      const { selector, value, inputType } = msg as { selector: string; value: string; inputType: string }
+      try {
+        await chrome.tabs.sendMessage(tabId, {
+          type: MSG.DO_FILL,
+          assignments: [{ selector, value, inputType }],
+        })
+        return { ok: true }
+      } catch {
+        return { ok: false, error: 'FILL_FAILED' }
+      }
     }
 
     case MSG.GET_TAB_SNAPSHOT: {
@@ -2211,6 +2248,48 @@ async function handleMessage(
       } catch {
         return { ok: false, error: 'DECRYPT_FAILED' }
       }
+    }
+
+    // ── Active Groups panel ────────────────────────────────────────────────
+    case MSG.GET_ACTIVE_GROUPS: {
+      const groups = await getActiveGroups()
+      return { ok: true, groups }
+    }
+
+    case MSG.PAUSE_GROUP: {
+      const gid = msg.groupId as number
+      pauseGroup(gid)
+      // Cancel running automation + abort LLM stream for every tab in the group
+      for (const tid of getTabsInGroup(gid)) {
+        cancelAutomation(tid)
+        abortStream(tid)
+      }
+      broadcastToPanel({ type: MSG.ACTIVE_GROUPS_CHANGED })
+      return { ok: true }
+    }
+
+    case MSG.RESUME_GROUP: {
+      const gid = msg.groupId as number
+      resumeGroup(gid)
+      broadcastToPanel({ type: MSG.ACTIVE_GROUPS_CHANGED })
+      return { ok: true }
+    }
+
+    case MSG.STOP_GROUP: {
+      const gid = msg.groupId as number
+      // Cancel automation + abort streams for all tabs first
+      for (const tid of getTabsInGroup(gid)) {
+        cancelAutomation(tid)
+        abortStream(tid)
+        panelOpenTabs.delete(tid)
+        try {
+          chrome.tabs.sendMessage(tid, { type: MSG.HIDE_ACTIVITY_BORDER })
+        } catch { /* tab may be gone */ }
+        await chrome.sidePanel.setOptions({ tabId: tid, enabled: false }).catch(() => {})
+      }
+      await stopGroup(gid)
+      broadcastToPanel({ type: MSG.ACTIVE_GROUPS_CHANGED })
+      return { ok: true }
     }
 
     default: {

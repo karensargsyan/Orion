@@ -3,7 +3,7 @@ import type { AIAction, AIActionType, AIActionResult, Settings, ChatMessage, Pag
 import { callAI, estimateTokens, truncateMessagesToFit } from './ai-client'
 import type { StreamPort } from './ai-client'
 import { tabState } from './tab-state'
-import { searchGoogle, openAndReadTab, closeAllResearchTabs, openAndReadMultipleTabs, getResearchTabCount } from './web-researcher'
+import { searchGoogle, openAndReadTab, closeAllResearchTabs, openAndReadMultipleTabs, getResearchTabCount, isTabInPausedGroup } from './web-researcher'
 import { sanitizeModelOutput, stripMalformedActions } from '../shared/sanitize-output'
 import { extractTaskPattern, buildCompactSequence, saveOrReinforceSkill, recordSkillFailure } from './skill-manager'
 import { recordActionFailure, recordActionSuccess, recallRelevantMemories } from './mempalace-learner'
@@ -316,14 +316,14 @@ export async function ensureContentScript(tabId: number): Promise<boolean> {
     return true
   } catch {
     try {
-      console.log(`[LocalAI] Injecting content script on ${tabUrl.slice(0, 80)}...`)
+      console.warn(`[LocalAI] Injecting content script on ${tabUrl.slice(0, 80)}...`)
       await chrome.scripting.executeScript({
         target: { tabId },
         files: ['content/content-main.js'],
       })
       await sleep(400)
       await chrome.tabs.sendMessage(tabId, { type: MSG.PING })
-      console.log(`[LocalAI] Content script injected successfully`)
+      console.warn(`[LocalAI] Content script injected successfully`)
       return true
     } catch (err) {
       console.warn(`[LocalAI] Content script injection failed on ${tabUrl.slice(0, 80)}:`, err)
@@ -363,7 +363,7 @@ function groupActionsIntoBatches(actions: AIAction[]): AIAction[][] {
     const target = action.selector ?? action.markerId ?? action.url ?? action.value ?? ''
     const key = `${action.action}:${target}`
     if (seen.has(key)) {
-      console.log(`[LocalAI] Dedup: skipping duplicate ${action.action} on "${String(target).slice(0, 60)}"`)
+      console.warn(`[LocalAI] Dedup: skipping duplicate ${action.action} on "${String(target).slice(0, 60)}"`)
       continue
     }
     seen.add(key)
@@ -1352,6 +1352,14 @@ export async function executeWithFollowUp(
 
   // Clear any stale cancellation for this tab, then show stop overlay
   clearCancellation(tabId)
+
+  // Pause guard — if the tab's group is paused, don't start automation
+  if (isTabInPausedGroup(tabId)) {
+    port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '\n\n> Group is paused. Resume from the Groups panel.\n\n' })
+    port.postMessage({ type: MSG.STREAM_END })
+    return
+  }
+
   const executionAbort = new AbortController()
   executionAbortControllers.set(tabId, executionAbort)
   signalActivity(tabId, true)
@@ -1361,7 +1369,7 @@ export async function executeWithFollowUp(
   // avoiding ~100ms attach/detach overhead per action.
   const cdpSession = await acquireSession(tabId).catch(() => null)
   if (cdpSession) {
-    console.log(`[LocalAI] CDP session acquired for tab ${tabId} — using trusted events`)
+    console.warn(`[LocalAI] CDP session acquired for tab ${tabId} — using trusted events`)
     invalidateTreeCache() // fresh tree for new sequence
   }
 
@@ -1380,7 +1388,7 @@ export async function executeWithFollowUp(
   if (!restricted && tabId > 0) {
     await ensureContentScript(tabId).catch(() => false)
   } else if (restricted) {
-    console.log(`[LocalAI] Tab is on restricted/blank page. DOM actions will use background alternatives.`)
+    console.warn(`[LocalAI] Tab is on restricted/blank page. DOM actions will use background alternatives.`)
   }
 
   let consecutiveFailures = 0
@@ -1392,6 +1400,12 @@ export async function executeWithFollowUp(
       break
     }
 
+    // Check if group was paused mid-execution
+    if (isTabInPausedGroup(tabId)) {
+      port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '\n\n> Group paused — automation suspended.\n\n' })
+      break
+    }
+
     // Check for is_complete signal from AI
     if (checkIsComplete(response)) {
       port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '' })
@@ -1399,22 +1413,22 @@ export async function executeWithFollowUp(
     }
 
     let actions = parseActionsFromText(response)
-    console.log(`[LocalAI] Round ${round + 1}: parsed ${actions.length} actions from AI response (${response.length} chars)`)
+    console.warn(`[LocalAI] Round ${round + 1}: parsed ${actions.length} actions from AI response (${response.length} chars)`)
     if (actions.length > 0) {
-      console.log(`[LocalAI] Actions: ${actions.map(a => `${a.action}(${JSON.stringify(a.params)})`).join(', ')}`)
+      console.warn(`[LocalAI] Actions: ${actions.map(a => `${a.action}(${JSON.stringify(a.params)})`).join(', ')}`)
     }
     // Log raw response for debugging empty selectors
     if (actions.some(a => !a.params.selector && !a.params.url && !a.params.query && !a.params.markerId && !a.params.key && !a.params.direction)) {
-      console.log(`[LocalAI] Raw AI response: ${response.slice(0, 300)}`)
+      console.warn(`[LocalAI] Raw AI response: ${response.slice(0, 300)}`)
     }
 
     // If no actions found on first round, try auto-kickstart based on user intent
     if (actions.length === 0 && round === 0) {
       const userGoal = sessionMessages.filter(m => m.role === 'user').pop()?.content ?? ''
-      console.log(`[LocalAI] No actions parsed. Trying auto-kickstart from user intent...`)
+      console.warn(`[LocalAI] No actions parsed. Trying auto-kickstart from user intent...`)
       const kickstart = detectIntentAndKickstart(userGoal)
       if (kickstart.length > 0) {
-        console.log(`[LocalAI] Auto-kickstart: ${kickstart.map(a => `${a.action}(${JSON.stringify(a.params)})`).join(', ')}`)
+        console.warn(`[LocalAI] Auto-kickstart: ${kickstart.map(a => `${a.action}(${JSON.stringify(a.params)})`).join(', ')}`)
         port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '\n\n> Starting actions...\n\n' })
         actions = kickstart
       }
@@ -1433,16 +1447,16 @@ export async function executeWithFollowUp(
         { role: 'user' as const, content: retryPrompt, imageData: undefined },
       ]
 
-      console.log(`[LocalAI] Retrying with clearer prompt (hasWrongFormat: ${hasWrongFormat})...`)
+      console.warn(`[LocalAI] Retrying with clearer prompt (hasWrongFormat: ${hasWrongFormat})...`)
       const retryResponse = await callAI(retryMessages, settings, 2048, false, executionAbort.signal)
       if (retryResponse) {
-        console.log(`[LocalAI] Retry response: ${retryResponse.slice(0, 200)}`)
+        console.warn(`[LocalAI] Retry response: ${retryResponse.slice(0, 200)}`)
         const cleanedRetry = stripActionMarkersForDisplay(retryResponse)
         if (cleanedRetry.trim()) {
           port.postMessage({ type: MSG.STREAM_CHUNK, chunk: cleanedRetry })
         }
         actions = parseActionsFromText(retryResponse)
-        console.log(`[LocalAI] Retry parsed ${actions.length} actions`)
+        console.warn(`[LocalAI] Retry parsed ${actions.length} actions`)
         if (actions.length > 0) {
           response = retryResponse
         }
@@ -1520,7 +1534,7 @@ export async function executeWithFollowUp(
     })
 
     if (actions.length === 0 && round > 0) {
-      console.log(`[LocalAI] All actions were duplicates on round ${round + 1}. Breaking.`)
+      console.warn(`[LocalAI] All actions were duplicates on round ${round + 1}. Breaking.`)
       port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '\n\n> Already visited those pages. Finishing up.\n\n' })
       break
     }
@@ -1569,13 +1583,13 @@ export async function executeWithFollowUp(
     } else {
       results = await executeParsedActions(actions, tabId)
     }
-    console.log(`[LocalAI] Executed ${results.length} actions: ${results.map(r => `${r.action}=${r.success ? 'OK' : 'FAIL'}${r.error ? `(${r.error.slice(0, 60)})` : ''}`).join(', ')}`)
+    console.warn(`[LocalAI] Executed ${results.length} actions: ${results.map(r => `${r.action}=${r.success ? 'OK' : 'FAIL'}${r.error ? `(${r.error.slice(0, 60)})` : ''}`).join(', ')}`)
 
     // If ALL actions failed due to content script unreachable (blank/restricted tab),
     // auto-recover: convert the user's intent into a background search action
     const allContentScriptFails = results.length > 0 && results.every(r => !r.success && r.error?.includes('Content script unreachable'))
     if (allContentScriptFails && round <= 1) {
-      console.log(`[LocalAI] All actions failed (restricted/blank page). Converting to background search...`)
+      console.warn(`[LocalAI] All actions failed (restricted/blank page). Converting to background search...`)
       const userGoal = sessionMessages.filter(m => m.role === 'user').pop()?.content ?? ''
       if (userGoal.length > 5) {
         // Use the search action which works without content script — strip filler words
@@ -1589,7 +1603,7 @@ export async function executeWithFollowUp(
           [{ action: 'search', params: { query } }],
           tabId
         )
-        console.log(`[LocalAI] Search fallback results: ${results.map(r => `${r.action}=${r.success ? 'OK' : 'FAIL'}`).join(', ')}`)
+        console.warn(`[LocalAI] Search fallback results: ${results.map(r => `${r.action}=${r.success ? 'OK' : 'FAIL'}`).join(', ')}`)
         if (results.some(r => r.success)) {
           // Search worked — continue the loop so AI can process results
           hadSuccess = true
@@ -1732,7 +1746,7 @@ export async function executeWithFollowUp(
         }
       }
     } else if (restricted) {
-      console.log(`[LocalAI] Skipping DOM ops on restricted tab — building lightweight follow-up`)
+      console.warn(`[LocalAI] Skipping DOM ops on restricted tab — building lightweight follow-up`)
     }
 
     // Error tracking
@@ -1851,14 +1865,14 @@ export async function executeWithFollowUp(
 
     // Truncate text if still over budget
     if (totalTextTokens > safeInputLimit) {
-      console.log(`[LocalAI] Follow-up text too large: ~${totalTextTokens} tokens (limit ~${safeInputLimit}). Truncating...`)
+      console.warn(`[LocalAI] Follow-up text too large: ~${totalTextTokens} tokens (limit ~${safeInputLimit}). Truncating...`)
       truncatedMessages = truncateMessagesToFit(
         truncatedMessages.map(m => ({ ...m, imageData: undefined })),
         0, ctxWindow, followUpMaxTokens + 500,
       )
     }
 
-    console.log(`[LocalAI] Calling AI for round ${round + 2}... (textTokens≈${totalTextTokens}, maxCtx=${ctxWindow}, restricted=${restricted})`)
+    console.warn(`[LocalAI] Calling AI for round ${round + 2}... (textTokens≈${totalTextTokens}, maxCtx=${ctxWindow}, restricted=${restricted})`)
     port.postMessage({ type: MSG.STREAM_CHUNK, chunk: `\n\n> Round ${round + 2}: thinking...\n` })
 
     // Timeout: 2 minutes for cloud, 30 minutes for local
@@ -1874,19 +1888,19 @@ export async function executeWithFollowUp(
     // ── Retry logic: progressively reduce context on empty response ──────
     if (!followUp) {
       // Retry 1: strip ALL images
-      console.log(`[LocalAI] Follow-up empty, retry 1/3: removing all images...`)
+      console.warn(`[LocalAI] Follow-up empty, retry 1/3: removing all images...`)
       const textOnly = truncatedMessages.map(m => ({ ...m, imageData: undefined }))
       followUp = await callWithTimeout(textOnly, followUpMaxTokens)
     }
     if (!followUp) {
       // Retry 2: keep only last user message (the current follow-up context)
-      console.log(`[LocalAI] Follow-up empty, retry 2/3: last message only...`)
+      console.warn(`[LocalAI] Follow-up empty, retry 2/3: last message only...`)
       const lastMsg = truncatedMessages.slice(-1).map(m => ({ ...m, imageData: undefined }))
       followUp = await callWithTimeout(lastMsg, Math.min(followUpMaxTokens, 2048))
     }
     if (!followUp) {
       // Retry 3: ultra-compact — just action results and instruction
-      console.log(`[LocalAI] Follow-up empty, retry 3/3: compact prompt...`)
+      console.warn(`[LocalAI] Follow-up empty, retry 3/3: compact prompt...`)
       const compactContent = `${resultSummary}\n\nRound ${round + 2}/${maxRounds}. Continue the task or give a SHORT summary.`
       const compact = [{ role: 'user' as const, content: compactContent, imageData: undefined }]
       followUp = await callWithTimeout(compact, Math.min(followUpMaxTokens, 1024))
@@ -1927,13 +1941,13 @@ export async function executeWithFollowUp(
   const openResearchTabs = getResearchTabCount()
   if (openResearchTabs > 0) {
     await closeAllResearchTabs()
-    console.log(`[LocalAI] Auto-closed ${openResearchTabs} research tabs after automation ended`)
+    console.warn(`[LocalAI] Auto-closed ${openResearchTabs} research tabs after automation ended`)
   }
 
   // ── Release CDP session ──────────────────────────────────────────────
   if (cdpSession) {
     await releaseSession(tabId).catch(() => {})
-    console.log(`[LocalAI] CDP session released for tab ${tabId}`)
+    console.warn(`[LocalAI] CDP session released for tab ${tabId}`)
   }
 
   learnFromExecution(tabId, sessionMessages, allParsedActions, allResults, hadSuccess, hadFailure)

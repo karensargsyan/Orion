@@ -1,6 +1,6 @@
 import { MSG, PORT_AI_STREAM } from '../shared/constants'
 import { renderMarkdown, sanitizeHtml } from './markdown'
-import { parseWidgets, parseActionResults, renderWidgetsInContainer, attachWidgetHandlers, createActionConfirmElement, createModeChoiceElement } from './chat-widgets'
+import { parseWidgets, parseActionResults, renderWidgetsInContainer, attachWidgetHandlers, createActionConfirmElement, createModeChoiceElement, createFormAssistElement, attachFormAssistHandlers } from './chat-widgets'
 import { sanitizeModelOutput, stripMalformedActions } from '../shared/sanitize-output'
 import type { Widget } from './chat-widgets'
 import * as speech from './speech-service'
@@ -22,6 +22,10 @@ interface TabChatState {
   pendingImageData: string | null
   pendingFileContext: string | null
   pendingFileName: string | null
+  /** Callback to stop mic recording, set by initMic */
+  _stopMic?: (() => void) | null
+  /** Callback to clear file attachment, set by initAttachButton */
+  _clearAttachment?: (() => void) | null
 }
 
 const sessionStates = new Map<string, TabChatState>()
@@ -62,7 +66,7 @@ function getPort(state: TabChatState): chrome.runtime.Port {
   return p
 }
 
-function handlePortMessage(state: TabChatState, msg: { type: string; chunk?: string; fullText?: string; error?: string; id?: string; description?: string; risk?: string; actions?: string[]; mode?: string; remember?: boolean }): void {
+function handlePortMessage(state: TabChatState, msg: { type: string; chunk?: string; fullText?: string; error?: string; id?: string; description?: string; risk?: string; actions?: string[]; mode?: string; remember?: boolean; formTitle?: string; fields?: unknown[]; autoFilledCount?: number }): void {
   switch (msg.type) {
     case MSG.STREAM_CHUNK:
       appendChunk(state, msg.chunk ?? '')
@@ -78,6 +82,9 @@ function handlePortMessage(state: TabChatState, msg: { type: string; chunk?: str
       break
     case MSG.MODE_CHOICE:
       showModeChoiceCard(state, msg.id!, msg.description!)
+      break
+    case MSG.FORM_ASSIST:
+      showFormAssistCard(state, msg.id!, msg.formTitle as string ?? 'Form', msg.fields as import('../shared/types').FormAssistField[] ?? [])
       break
   }
 }
@@ -131,6 +138,11 @@ export async function initChat(parentContainer: HTMLElement, tabId: number): Pro
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
         </button>
       </div>
+    </div>
+    <div class="group-paused-banner" style="display:none">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>
+      <span>Group paused</span>
+      <button class="btn-small btn-primary btn-resume-chat">Resume</button>
     </div>
     <div class="quick-actions quick-actions-tab"></div>
     <div class="proactive-bar proactive-bar-tab" style="display:none" aria-label="Page insights"></div>
@@ -214,6 +226,24 @@ function wireEvents(state: TabChatState): void {
 
   newSend.addEventListener('click', () => sendMessage(state))
   newStop.addEventListener('click', () => stopStream(state))
+
+  // ── Resume from pause banner ──
+  const resumeBtn = c.querySelector<HTMLButtonElement>('.btn-resume-chat')
+  if (resumeBtn) {
+    const newResume = resumeBtn.cloneNode(true) as HTMLButtonElement
+    resumeBtn.parentNode!.replaceChild(newResume, resumeBtn)
+    newResume.addEventListener('click', async () => {
+      try {
+        const resp = await chrome.runtime.sendMessage({ type: MSG.GET_ACTIVE_GROUPS })
+        if (!resp?.ok) return
+        const groups = resp.groups as Array<{ groupId: number; tabIds: number[] }> ?? []
+        const myGroup = groups.find(g => g.tabIds.includes(state.tabId))
+        if (myGroup) {
+          await chrome.runtime.sendMessage({ type: MSG.RESUME_GROUP, groupId: myGroup.groupId })
+        }
+      } catch { /* ignore */ }
+    })
+  }
 
   // ── Mode toggle (Auto ↔ Guided) ──
   const modeBtn = c.querySelector<HTMLButtonElement>('.btn-mode-tab')
@@ -339,7 +369,7 @@ function wireEvents(state: TabChatState): void {
     }
 
     // Expose stopMic so sendMessage can auto-stop recording
-    ;(state as any)._stopMic = stopMic
+    ;state._stopMic = stopMic
 
     const enterLockedMode = () => {
       // Cancel any pending hold
@@ -526,7 +556,7 @@ function wireEvents(state: TabChatState): void {
   }
 
   // Store clearAttachment on state for sendMessage to call
-  ;(state as any)._clearAttachment = clearAttachment
+  ;state._clearAttachment = clearAttachment
 }
 
 // ─── DOM accessors ────────────────────────────────────────────────────────────
@@ -1041,6 +1071,39 @@ function showModeChoiceCard(state: TabChatState, id: string, description: string
   )
 }
 
+function showFormAssistCard(
+  state: TabChatState,
+  id: string,
+  formTitle: string,
+  fields: import('../shared/types').FormAssistField[]
+): void {
+  const messagesEl = getMessages(state)
+  const cardEl = createFormAssistElement(id, fields, formTitle)
+  messagesEl.appendChild(cardEl)
+  scrollToBottom(messagesEl, true)
+
+  attachFormAssistHandlers(cardEl, {
+    onFillField: async (selector, value, inputType) => {
+      try {
+        const resp = await chrome.runtime.sendMessage({
+          type: MSG.FORM_ASSIST_FILL_FIELD,
+          selector, value, inputType,
+          tabId: state.tabId,
+        })
+        return resp?.ok ?? false
+      } catch {
+        return false
+      }
+    },
+    onCopyField: (value) => {
+      navigator.clipboard.writeText(value).catch(() => {})
+    },
+    onCopyAll: (text) => {
+      navigator.clipboard.writeText(text).catch(() => {})
+    },
+  })
+}
+
 function addMessageActions(state: TabChatState, bubble: HTMLElement, text: string): void {
   const actions = document.createElement('div')
   actions.className = 'message-actions'
@@ -1236,7 +1299,7 @@ async function sendMessage(state: TabChatState): Promise<void> {
   if (!text || state.isStreaming) return
 
   // Auto-stop mic recording if active
-  if ((state as any)._stopMic) (state as any)._stopMic()
+  if (state._stopMic) state._stopMic()
 
   if (state.pendingAbort) {
     state.pendingAbort.abort()
@@ -1265,7 +1328,7 @@ async function sendMessage(state: TabChatState): Promise<void> {
   }
 
   // Clear attachment after capturing
-  if ((state as any)._clearAttachment) (state as any)._clearAttachment()
+  if (state._clearAttachment) state._clearAttachment()
 
   setStreaming(state, true)
   showTypingIndicator(state, true)

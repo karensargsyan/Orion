@@ -156,7 +156,7 @@ export async function triggerFlush(tabId: number): Promise<void> {
   // Check vault is unlocked (encryption requires active key)
   const unlocked = await isSessionUnlocked().catch(() => false)
   if (!unlocked) {
-    console.log('[AutoCollect] Vault locked — skipping extraction (data will be lost)')
+    console.warn('[AutoCollect] Vault locked — skipping extraction (data will be lost)')
     return
   }
 
@@ -237,7 +237,7 @@ JSON array:`
 
     // Deduplicate against existing vault entries before storing
     await storeAutoCollected(entries, buffer.domain)
-    console.log(`[AutoCollect] Extracted ${entries.length} entries from ${buffer.domain}`)
+    console.warn(`[AutoCollect] Extracted ${entries.length} entries from ${buffer.domain}`)
   } catch (err) {
     console.warn('[AutoCollect] Extraction failed:', err)
   }

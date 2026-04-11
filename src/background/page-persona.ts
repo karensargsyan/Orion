@@ -518,7 +518,7 @@ export function getPersonaForPrompt(url: string, title: string, headings: string
     return ''
   }
 
-  console.log(`[LocalAI] Page persona: ${classification.type} (confidence: ${Math.round(classification.confidence * 100)}%)`)
+  console.warn(`[LocalAI] Page persona: ${classification.type} (confidence: ${Math.round(classification.confidence * 100)}%)`)
 
   return `## EXPERT ROLE — ${classification.type.toUpperCase()}
 ${classification.persona}`

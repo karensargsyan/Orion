@@ -285,7 +285,7 @@ export async function pollTelegramUpdates(settings: Settings): Promise<void> {
 
     const chatId = update.message.chat.id
     if (allowed.length > 0 && !allowed.includes(String(chatId))) {
-      console.log(`[Telegram] Ignoring message from non-allowed chat ${chatId}`)
+      console.warn(`[Telegram] Ignoring message from non-allowed chat ${chatId}`)
       continue
     }
 
@@ -404,7 +404,7 @@ export function cleanupTelegramTab(tabId: number): void {
   removeTelegramTab(chatId, tabId)
   tabIdToTelegramTab.delete(tabId)
 
-  console.log(`[Telegram] Tab ${tabId} closed externally, removed from chat ${chatId}`)
+  console.warn(`[Telegram] Tab ${tabId} closed externally, removed from chat ${chatId}`)
 }
 
 /** Check if a tab is owned by Telegram */
@@ -433,7 +433,7 @@ export async function notifyTabUrlChange(tabId: number, url: string): Promise<vo
     // Update Chrome tab group title
     await updateGroupTitle(tabId, domain)
 
-    console.log(`[Telegram] Tab renamed: "${oldName}" → "${domain}"`)
+    console.warn(`[Telegram] Tab renamed: "${oldName}" → "${domain}"`)
 
     // Notify the Telegram user about the rename
     const settings = await getAllSettings().catch(() => null)
