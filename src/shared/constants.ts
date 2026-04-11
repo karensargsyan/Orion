@@ -165,6 +165,10 @@ export const MSG = {
   // Page analysis
   ANALYZE_PAGE: 'ANALYZE_PAGE',
 
+  // Form Assist — interactive card with Copy/Fill per field
+  FORM_ASSIST: 'FORM_ASSIST',
+  FORM_ASSIST_FILL_FIELD: 'FORM_ASSIST_FILL_FIELD',
+
   /** Test local MemPalace bridge (GET /health). */
   MEMPALACE_PROBE: 'MEMPALACE_PROBE',
   /** Append recent session memory lines to bridge JSONL inbox for mining. */

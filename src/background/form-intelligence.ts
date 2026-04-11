@@ -154,7 +154,7 @@ export function matchCredentialsToForm(form: FormInfo, vaultData: VaultData): Fi
   return assignments
 }
 
-function resolveValue(hint: FieldHint, data: VaultData): string {
+export function resolveValue(hint: FieldHint, data: VaultData): string {
   const d = data as Record<string, string>
 
   switch (hint) {

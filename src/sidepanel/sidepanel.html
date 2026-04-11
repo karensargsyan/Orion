@@ -2028,6 +2028,165 @@
       border-color: #e74c3c;
       opacity: 0.5;
     }
+    /* ─── Active Groups Panel ─────────────────────────────────── */
+    .active-tabs-container { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+    .active-tabs-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px; border-bottom: 1px solid var(--border);
+    }
+    .active-tabs-header h2 { font-size: 15px; color: var(--text-bright); margin: 0; font-weight: 600; }
+    .active-tabs-list { flex: 1; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+
+    .active-tabs-empty {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 8px; height: 100%; text-align: center; color: var(--text-dim);
+    }
+    .active-tabs-empty p { margin: 0; font-size: 13px; }
+    .active-tabs-empty .hint { font-size: 11px; opacity: 0.6; }
+
+    .active-group-card {
+      display: flex; flex-direction: column; gap: 10px;
+      padding: 12px; background: var(--bg-surface); border: 1px solid var(--border);
+      border-radius: var(--radius); transition: border-color var(--transition);
+    }
+    .active-group-card:hover { border-color: var(--accent); }
+    .active-group-card.group-paused { border-color: rgba(255, 165, 0, 0.4); }
+
+    .group-info { display: flex; align-items: center; gap: 10px; }
+    .group-color-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+    .group-details { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+    .group-name { font-size: 13px; font-weight: 500; color: var(--text-bright); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .group-meta { font-size: 11px; color: var(--text-dim); display: flex; align-items: center; gap: 6px; }
+
+    .group-status {
+      display: inline-block; padding: 1px 6px; border-radius: 8px; font-size: 10px; font-weight: 600;
+    }
+    .status-running { background: rgba(0, 200, 100, 0.15); color: #00c864; }
+    .status-paused { background: rgba(255, 165, 0, 0.15); color: #e09000; }
+
+    .group-actions { display: flex; gap: 6px; }
+    .group-actions .btn-small { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; }
+
+    .btn-warning {
+      background: rgba(255, 165, 0, 0.12); color: #e09000; border: 1px solid rgba(255, 165, 0, 0.3);
+      padding: 4px 10px; border-radius: var(--radius-sm); cursor: pointer; font-size: 11px;
+      transition: background var(--transition);
+    }
+    .btn-warning:hover { background: rgba(255, 165, 0, 0.25); }
+
+    /* ─── Group Paused Banner (Chat) ──────────────────────────── */
+    .group-paused-banner {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 12px; background: rgba(255, 165, 0, 0.1);
+      border-bottom: 1px solid rgba(255, 165, 0, 0.3); color: #e09000;
+      font-size: 12px; font-weight: 500;
+    }
+    .group-paused-banner span { flex: 1; }
+    .group-paused-banner .btn-resume-chat { flex-shrink: 0; }
+
+    /* ─── Form Assist Card ─────────────────────────────────────── */
+    .form-assist-card {
+      background: var(--bg-surface); border: 1px solid var(--border);
+      border-radius: 12px; padding: 14px; margin: 8px 0; max-width: 420px;
+    }
+    .form-assist-header {
+      display: flex; align-items: center; gap: 10px; margin-bottom: 12px;
+    }
+    .form-assist-icon {
+      width: 34px; height: 34px; background: rgba(99, 102, 241, 0.12);
+      border-radius: 8px; display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0; color: var(--accent);
+    }
+    .form-assist-title { font-size: 13px; font-weight: 600; color: var(--text-bright); }
+    .form-assist-subtitle { font-size: 11px; color: var(--text-dim); margin-top: 1px; }
+
+    .form-assist-fields {
+      display: flex; flex-direction: column; gap: 8px;
+      max-height: 400px; overflow-y: auto; margin-bottom: 12px;
+      scrollbar-width: thin;
+    }
+    .form-assist-field {
+      padding: 8px 10px; background: var(--bg); border-radius: var(--radius);
+      border: 1px solid transparent; transition: border-color var(--transition);
+    }
+    .form-assist-field:focus-within { border-color: var(--accent); }
+
+    .form-assist-field-header {
+      display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;
+    }
+    .form-assist-label {
+      font-size: 11px; font-weight: 500; color: var(--text); flex: 1; min-width: 0;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .form-assist-label .required-star { color: #e74c3c; margin-left: 2px; }
+
+    .confidence-badge {
+      font-size: 9px; font-weight: 600; padding: 1px 6px; border-radius: 4px;
+      text-transform: uppercase; letter-spacing: 0.03em; flex-shrink: 0; margin-left: 6px;
+    }
+    .confidence-high { background: rgba(46, 204, 113, 0.15); color: #2ecc71; }
+    .confidence-medium { background: rgba(243, 156, 18, 0.15); color: #f39c12; }
+    .confidence-low { background: rgba(107, 112, 132, 0.12); color: var(--text-dim); }
+
+    .form-assist-value {
+      width: 100%; box-sizing: border-box;
+      background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius-sm);
+      color: var(--text-bright); padding: 6px 8px; font-size: 12px; font-family: var(--font);
+      outline: none; transition: border-color var(--transition); resize: vertical;
+    }
+    .form-assist-value:focus { border-color: var(--accent); }
+    .form-assist-value::placeholder { color: var(--text-dim); }
+    select.form-assist-value { cursor: pointer; }
+    textarea.form-assist-value { min-height: 48px; line-height: 1.4; }
+    .form-assist-checkbox { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); cursor: pointer; }
+    .form-assist-checkbox input { accent-color: var(--accent); }
+
+    .form-assist-field-actions {
+      display: flex; gap: 4px; margin-top: 6px;
+    }
+    .form-assist-field-actions .btn-small {
+      display: inline-flex; align-items: center; gap: 3px; font-size: 10px;
+      padding: 3px 8px; border-radius: var(--radius-sm); cursor: pointer;
+      border: 1px solid var(--border); background: transparent; color: var(--text);
+      transition: all 0.15s;
+    }
+    .form-assist-field-actions .btn-small:hover {
+      background: rgba(255, 255, 255, 0.06); border-color: var(--accent); color: var(--text-bright);
+    }
+    .form-assist-field-actions .btn-small.copied,
+    .form-assist-field-actions .btn-small.filled {
+      background: rgba(46, 204, 113, 0.15); border-color: #2ecc71; color: #2ecc71;
+    }
+    .form-assist-field-actions .btn-small.fill-failed {
+      background: rgba(243, 156, 18, 0.15); border-color: #f39c12; color: #f39c12;
+    }
+
+    .form-assist-footer {
+      display: flex; gap: 8px;
+    }
+    .form-assist-footer .btn-primary {
+      flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+      font-size: 13px; font-weight: 500;
+    }
+    .form-assist-footer .btn-small {
+      display: inline-flex; align-items: center; gap: 4px; font-size: 12px;
+      padding: 6px 12px; border-radius: var(--radius-sm); cursor: pointer;
+      border: 1px solid var(--border); background: transparent; color: var(--text);
+      transition: all 0.15s;
+    }
+    .form-assist-footer .btn-small:hover {
+      background: rgba(255, 255, 255, 0.06); border-color: var(--accent);
+    }
+    .form-assist-footer .btn-small.copied {
+      background: rgba(46, 204, 113, 0.15); border-color: #2ecc71; color: #2ecc71;
+    }
+
+    .form-assist-card.form-assist-done { opacity: 0.7; }
+    .form-assist-card.form-assist-done .form-assist-value { pointer-events: none; }
+    .form-assist-summary {
+      font-size: 12px; color: #2ecc71; text-align: center; padding: 8px 0; font-weight: 500;
+    }
+
     /* ─── Accessibility ────────────────────────────────────────── */
     *:focus-visible {
       outline: 2px solid var(--accent);

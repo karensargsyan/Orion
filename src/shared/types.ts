@@ -406,6 +406,20 @@ export interface FillAssignment {
   inputType: string
 }
 
+// ─── Form Assist ──────────────────────────────────────────────────────────────
+
+export interface FormAssistField {
+  fieldId: string
+  selector: string
+  label: string
+  inputType: string
+  value: string
+  confidence: 'high' | 'medium' | 'low'
+  hint: string
+  options?: string[]
+  required: boolean
+}
+
 // ─── AI Action Commands ───────────────────────────────────────────────────────
 
 export type AIActionType = 'click' | 'type' | 'fill_form' | 'scroll' | 'select' | 'navigate' | 'read' | 'screenshot' | 'select_option' | 'check' | 'clear' | 'wait' | 'read_options' | 'get_page_state' | 'get_page_text' | 'read_page' | 'hover' | 'doubleclick' | 'keypress' | 'focus' | 'back' | 'forward' | 'scroll_to' | 'select_text' | 'search' | 'open_tab' | 'read_tab' | 'close_tab' | 'batch_read' | 'analyze_file' | 'toggle' | 'sitemap_screenshot' | 'research_done' | 'form_coach'

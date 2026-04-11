@@ -4,11 +4,12 @@ import { initSettings } from './settings-ui'
 import { initMemory } from './memory-ui'
 import { initOnboarding } from './onboarding-ui'
 import { initStats } from './stats-ui'
+import { initActiveTabs, refreshGroupList } from './active-tabs-ui'
 import { MSG, PORT_AI_STREAM } from '../shared/constants'
 import type { Settings } from '../shared/types'
 import * as speech from './speech-service'
 
-type TabId = 'chat' | 'history' | 'vault' | 'memory' | 'insights' | 'settings'
+type TabId = 'chat' | 'history' | 'vault' | 'memory' | 'insights' | 'active-tabs' | 'settings'
 let activeTab: TabId = 'chat'
 let currentTabId = 0
 
@@ -30,6 +31,7 @@ function switchTab(tab: TabId): void {
   if (tab === 'vault') initVault(document.getElementById('panel-vault')!)
   if (tab === 'memory') initMemory(document.getElementById('panel-memory')!, currentTabId)
   if (tab === 'insights') initStats(document.getElementById('panel-insights')!)
+  if (tab === 'active-tabs') initActiveTabs(document.getElementById('panel-active-tabs')!)
   if (tab === 'settings') initSettings(document.getElementById('panel-settings')!)
 }
 
@@ -165,11 +167,39 @@ function setupBroadcastListener(): void {
         input?.focus()
       }, 100)
     }
+    if (msg.type === MSG.ACTIVE_GROUPS_CHANGED) {
+      // Refresh the groups panel if it's visible
+      if (activeTab === 'active-tabs') refreshGroupList()
+      // Update pause banner in chat if visible
+      if (activeTab === 'chat') updateChatPauseBanner()
+    }
   })
   port.onDisconnect.addListener(() => {
     // Reconnect after a short delay (e.g. service worker restart)
     setTimeout(setupBroadcastListener, 1000)
   })
+}
+
+/** Show/hide a pause banner in the chat panel when the group is paused */
+async function updateChatPauseBanner(): Promise<void> {
+  const banner = document.querySelector('.group-paused-banner') as HTMLElement | null
+  if (!banner || currentTabId <= 0) return
+
+  try {
+    const resp = await chrome.runtime.sendMessage({ type: MSG.GET_ACTIVE_GROUPS })
+    if (!resp?.ok) return
+    const groups = resp.groups as Array<{ paused: boolean; tabIds: number[]; groupId: number }> ?? []
+    const myGroup = groups.find(g => g.tabIds.includes(currentTabId))
+    const isPaused = myGroup?.paused ?? false
+
+    banner.style.display = isPaused ? 'flex' : 'none'
+
+    // Disable/enable chat input
+    const input = document.querySelector('.chat-input-tab') as HTMLTextAreaElement | null
+    const sendBtn = document.querySelector('.btn-send-tab') as HTMLButtonElement | null
+    if (input) input.disabled = isPaused
+    if (sendBtn) sendBtn.disabled = isPaused
+  } catch { /* ignore */ }
 }
 
 function showOnboarding(): void {
@@ -231,6 +261,10 @@ function showMainUI(startTab: TabId = 'chat'): void {
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg>
         <span>History</span>
       </button>
+      <button class="tab-btn" data-tab="active-tabs" title="Active Groups" role="tab" aria-selected="false" aria-controls="panel-active-tabs" aria-label="Active tab groups">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect></svg>
+        <span>Groups</span>
+      </button>
       <button class="tab-btn${startTab === 'settings' ? ' active' : ''}" data-tab="settings" title="Settings" role="tab" aria-selected="${startTab === 'settings'}" aria-controls="panel-settings" aria-label="Settings">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"></path></svg>
         <span>Settings</span>
@@ -245,6 +279,7 @@ function showMainUI(startTab: TabId = 'chat'): void {
     <div id="panel-insights" class="panel" role="tabpanel" aria-label="Insights panel"></div>
     <div id="panel-vault" class="panel" role="tabpanel" aria-label="Vault panel"></div>
     <div id="panel-history" class="panel" role="tabpanel" aria-label="History panel"></div>
+    <div id="panel-active-tabs" class="panel" role="tabpanel" aria-label="Active groups panel"></div>
     <div id="panel-settings" class="panel${startTab === 'settings' ? ' active' : ''}" role="tabpanel" aria-label="Settings panel"></div>
   `
 
