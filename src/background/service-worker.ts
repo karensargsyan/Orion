@@ -61,6 +61,7 @@ import { logError } from './error-logger'
 import { routeMessage, hasHandler } from './handlers/msg-router'
 import { registerClipboardHandlers } from './handlers/clipboard-handlers'
 import { registerWorkflowHandlers } from './handlers/workflow-handlers'
+import { cleanupWorkflowTab } from './workflow-engine'
 import { registerDebugHandlers } from './handlers/debug-handlers'
 import { getCDPAccessibilityTree, type CDPTreeResult } from './cdp-accessibility'
 import { captureMiniMap, type MiniMapResult } from './minimap-screenshot'
@@ -698,6 +699,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   panelOpenTabs.delete(tabId)
   cleanupTabGroup(tabId)
   cleanupTelegramTab(tabId)
+  cleanupWorkflowTab(tabId)
   flushBuffer(tabId).then(() => clearTabBuffer(tabId)).catch(() => {})
   // Auto-collector: flush pending inputs then clean up buffer
   triggerFlush(tabId).catch(() => {}).finally(() => clearBuffer(tabId))

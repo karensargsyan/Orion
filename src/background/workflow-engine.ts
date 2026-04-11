@@ -18,6 +18,15 @@ export interface Workflow {
   createdAt: number
 }
 
+// ─── Tab tracking ──────────────────────────────────────────────────────────
+
+const workflowTabIds = new Set<number>()
+
+/** Remove a tab from tracking (called from onRemoved listener). */
+export function cleanupWorkflowTab(tabId: number): void {
+  workflowTabIds.delete(tabId)
+}
+
 // ─── Circular buffer ────────────────────────────────────────────────────────
 
 const MAX_HISTORY = 20
@@ -101,6 +110,7 @@ export function cancelWorkflow(): void {
     }
   }
   wf.status = 'error'
+  closeWorkflowTabs(wf)
   activeId = null
   paused = false
 }
@@ -145,7 +155,8 @@ async function runSteps(wf: Workflow): Promise<void> {
     wf.currentStep++
   }
 
-  // All steps completed
+  // All steps completed — close tabs we opened
+  closeWorkflowTabs(wf)
   wf.status = 'done'
   activeId = null
 }
@@ -157,9 +168,15 @@ async function executeStep(step: WorkflowStep): Promise<void> {
       // Navigate existing tab
       await chrome.tabs.update(step.tabId, { url: step.url })
     } else {
-      // Open new tab
-      const tab = await chrome.tabs.create({ url: step.url, active: false })
-      step.tabId = tab.id
+      // Dedup: check if URL already open in a workflow tab
+      const existingTabId = await findExistingWorkflowTab(step.url)
+      if (existingTabId != null) {
+        step.tabId = existingTabId
+      } else {
+        const tab = await chrome.tabs.create({ url: step.url, active: false })
+        step.tabId = tab.id
+        if (tab.id != null) workflowTabIds.add(tab.id)
+      }
     }
     // Wait for the tab to finish loading
     if (step.tabId != null) {
@@ -169,6 +186,28 @@ async function executeStep(step: WorkflowStep): Promise<void> {
 
   // Store the action text for external processing
   step.result = step.action
+}
+
+/** Check if a URL is already open in a tracked workflow tab. */
+async function findExistingWorkflowTab(url: string): Promise<number | undefined> {
+  const targetHref = new URL(url).href
+  for (const tabId of workflowTabIds) {
+    try {
+      const tab = await chrome.tabs.get(tabId)
+      if (tab.url && new URL(tab.url).href === targetHref) return tabId
+    } catch { workflowTabIds.delete(tabId) } // tab was closed
+  }
+  return undefined
+}
+
+/** Close all tabs opened by a workflow. */
+function closeWorkflowTabs(wf: Workflow): void {
+  for (const step of wf.steps) {
+    if (step.tabId != null && workflowTabIds.has(step.tabId)) {
+      workflowTabIds.delete(step.tabId)
+      chrome.tabs.remove(step.tabId).catch(() => {}) // already closed
+    }
+  }
 }
 
 function waitForTabLoad(tabId: number): Promise<void> {
