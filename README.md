@@ -240,6 +240,7 @@ Recommended model: `distil-large-v3` (fast + accurate). Runs entirely on your ha
 
 | Model | Type | Notes |
 |-------|------|-------|
+| **Google Gemma 4 27B E4B** | Local (LM Studio) | Excellent performance — works very well for browsing, form filling, and multi-step automation. Recommended local model. |
 | **Google Gemma 4 26B (A4B)** | Local (LM Studio) | Good reasoning, works for most tasks |
 | **Gemini 2.5 Pro** | Cloud (Google) | Excellent for complex multi-step automation |
 | **GPT-4o** | Cloud (OpenAI) | OpenAI API compatible |
