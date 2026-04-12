@@ -222,10 +222,6 @@ export const MSG = {
   // Cross-Tab
   GET_TAB_LIST: 'GET_TAB_LIST',
 
-  // Multi-Step Actions
-  ACTION_PLAN: 'ACTION_PLAN',
-  STEP_UPDATE: 'STEP_UPDATE',
-
   // Context Stack (V3)
   GET_CONTEXT_STACK: 'GET_CONTEXT_STACK',
 

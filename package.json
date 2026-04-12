@@ -1,6 +1,6 @@
 {
   "name": "orion",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "private": true,
   "scripts": {
     "build": "npx tsx build.ts",
@@ -9,7 +9,11 @@
     "test": "npx playwright test",
     "test:unit": "vitest run",
     "test:headed": "npx playwright test --headed",
-    "test:ui": "npx playwright test --ui"
+    "test:ui": "npx playwright test --ui",
+    "scheduler:init": "npx tsx scripts/agent-scheduler.ts init",
+    "scheduler:run": "npx tsx scripts/agent-scheduler.ts run",
+    "scheduler:start": "npx tsx scripts/agent-scheduler.ts start",
+    "scheduler:once": "npx tsx scripts/agent-scheduler.ts once"
   },
   "devDependencies": {
     "@playwright/test": "^1.44.0",

@@ -8,7 +8,6 @@ import { extractPageText, extractVisibleText, extractCompletePageText, extractSe
 import { setupTextMonitor } from './text-monitor'
 import { findLabel, getUniqueSelector } from './dom-analyzer'
 import { injectMarkers, removeMarkers, buildAccessibilityTree, setLastMarkedElements, findElementByMarkerId, findElementByAIId, isControlElement, findNearbyControl, recoverStaleElement } from './element-markers'
-import { applySafetyBorderMessage, hideSafetyBorder } from './safety-border'
 import { setupComposeAssistant } from './compose-assistant'
 import { analyzeFileFromUrl, findAttachmentLinks, type FileAnalysisResult } from './file-analyzer'
 import { safeSendMessage } from './runtime-safe'
@@ -118,17 +117,6 @@ async function handleContentMessage(msg: Record<string, unknown>): Promise<unkno
     case MSG.PING:
       return { ok: true }
 
-    case MSG.SET_SAFETY_BORDER: {
-      applySafetyBorderMessage(msg)
-      return { ok: true }
-    }
-
-    case 'HIDE_SAFETY_BORDER': {
-      // Fired when user disables the heuristic feature in settings
-      hideSafetyBorder()
-      return { ok: true }
-    }
-
     case MSG.SHOW_CLICK_EFFECT: {
       const x = msg.x as number
       const y = msg.y as number
@@ -237,16 +225,6 @@ async function handleContentMessage(msg: Record<string, unknown>): Promise<unkno
     case MSG.GUIDED_HIDE: {
       const { hideGuidedHighlight } = await import('./guided-overlay')
       hideGuidedHighlight()
-      return { ok: true }
-    }
-
-    case MSG.SHOW_ACTIVITY_BORDER: {
-      showActivityBorder()
-      return { ok: true }
-    }
-
-    case MSG.HIDE_ACTIVITY_BORDER: {
-      hideActivityBorder()
       return { ok: true }
     }
 
@@ -1497,65 +1475,6 @@ function listClickableElements(): string {
     if (visible.length >= 35) break
   }
   return visible.join(', ') || 'none visible'
-}
-
-// ─── Activity overlay with stop button ──────────────────────────────────────
-
-const BORDER_ID = '__orion-activity-border'
-const STOP_BTN_ID = '__orion-stop-btn'
-
-function showActivityBorder(): void {
-  if (document.getElementById(BORDER_ID)) return
-
-  // Pulsing border frame
-  const el = document.createElement('div')
-  el.id = BORDER_ID
-  el.style.cssText = `
-    position:fixed;inset:0;pointer-events:none;z-index:2147483646;
-    border:2px solid rgba(108,92,231,0.6);
-    box-shadow:inset 0 0 30px rgba(108,92,231,0.08);
-    border-radius:0;animation:__orion-pulse 2s ease-in-out infinite;
-  `
-
-  // Floating stop button — top-right corner
-  const stopBtn = document.createElement('button')
-  stopBtn.id = STOP_BTN_ID
-  stopBtn.textContent = 'Stop AI'
-  stopBtn.style.cssText = `
-    position:fixed;bottom:18px;left:50%;transform:translateX(-50%);z-index:2147483647;
-    padding:8px 24px;border:none;border-radius:20px;
-    background:rgba(220,38,38,0.9);color:#fff;
-    font:600 13px/1 -apple-system,BlinkMacSystemFont,sans-serif;
-    cursor:pointer;pointer-events:auto;
-    box-shadow:0 4px 16px rgba(0,0,0,0.35);
-    transition:background 0.15s, transform 0.1s;
-  `
-  stopBtn.addEventListener('mouseenter', () => { stopBtn.style.background = 'rgba(185,28,28,0.95)' })
-  stopBtn.addEventListener('mouseleave', () => { stopBtn.style.background = 'rgba(220,38,38,0.9)' })
-  stopBtn.addEventListener('mousedown', () => { stopBtn.style.transform = 'translateX(-50%) scale(0.95)' })
-  stopBtn.addEventListener('mouseup', () => { stopBtn.style.transform = 'translateX(-50%)' })
-  stopBtn.addEventListener('click', () => {
-    chrome.runtime.sendMessage({ type: MSG.STOP_AUTOMATION }).catch(() => {})
-    hideActivityBorder()
-  })
-
-  const style = document.createElement('style')
-  style.id = `${BORDER_ID}-style`
-  style.textContent = `
-    @keyframes __orion-pulse {
-      0%,100%{border-color:rgba(108,92,231,0.6);box-shadow:inset 0 0 20px rgba(108,92,231,0.05)}
-      50%{border-color:rgba(108,92,231,0.9);box-shadow:inset 0 0 40px rgba(108,92,231,0.12)}
-    }
-  `
-  document.head.appendChild(style)
-  document.body.appendChild(el)
-  document.body.appendChild(stopBtn)
-}
-
-function hideActivityBorder(): void {
-  document.getElementById(BORDER_ID)?.remove()
-  document.getElementById(STOP_BTN_ID)?.remove()
-  document.getElementById(`${BORDER_ID}-style`)?.remove()
 }
 
 // ─── Init ─────────────────────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 import { MSG, PORT_AI_STREAM } from '../shared/constants'
 import { renderMarkdown, sanitizeHtml } from './markdown'
-import { parseWidgets, parseActionResults, renderWidgetsInContainer, attachWidgetHandlers, createActionConfirmElement, createModeChoiceElement, createFormAssistElement, attachFormAssistHandlers, createActionPlanElement, updateActionPlanStep } from './chat-widgets'
+import { parseWidgets, parseActionResults, renderWidgetsInContainer, attachWidgetHandlers, createActionConfirmElement, createModeChoiceElement, createFormAssistElement, attachFormAssistHandlers } from './chat-widgets'
 import { sanitizeModelOutput, stripMalformedActions } from '../shared/sanitize-output'
 import type { Widget } from './chat-widgets'
 import * as speech from './speech-service'
@@ -28,6 +28,8 @@ interface TabChatState {
   _stopMic?: (() => void) | null
   /** Callback to clear file attachment, set by initAttachButton */
   _clearAttachment?: (() => void) | null
+  /** Full text of a large paste (>400 chars), shown as a chip */
+  pendingLargeText: string | null
 }
 
 const sessionStates = new Map<string, TabChatState>()
@@ -92,12 +94,6 @@ function handlePortMessage(state: TabChatState, msg: { type: string; chunk?: str
       break
     case MSG.WATCH_EVENT:
       showWatchEventCard(state, msg.event as import('../shared/types').WatchEvent)
-      break
-    case MSG.ACTION_PLAN:
-      showActionPlanCard(state, msg as { planId?: string; title?: string; steps?: Array<{ description: string; status?: string }> })
-      break
-    case MSG.STEP_UPDATE:
-      handleStepUpdate(msg as { planId?: string; stepIndex?: number; status?: string; error?: string })
       break
   }
 }
@@ -249,6 +245,7 @@ export async function initChat(parentContainer: HTMLElement, tabId: number): Pro
     pendingImageData: null,
     pendingFileContext: null,
     pendingFileName: null,
+    pendingLargeText: null,
   }
   sessionStates.set(sessionId, state)
 
@@ -796,7 +793,7 @@ function wireEvents(state: TabChatState): void {
     nr.addEventListener('click', clearAttachment)
   }
 
-  // Paste image from clipboard
+  // Paste image from clipboard; collapse large text pastes into a chip
   newInput.addEventListener('paste', (e) => {
     const items = e.clipboardData?.items
     if (!items) return
@@ -808,6 +805,16 @@ function wireEvents(state: TabChatState): void {
         return
       }
     }
+    // After paste settles, check for large text
+    setTimeout(() => {
+      const val = newInput.value
+      if (val.length > 400 && !state.pendingLargeText) {
+        state.pendingLargeText = val
+        newInput.value = val.slice(0, 100) + '…'
+        newInput.style.height = 'auto'
+        showLargeTextChip(state, val.length)
+      }
+    }, 0)
   })
 
   // Drag & drop
@@ -824,6 +831,47 @@ function wireEvents(state: TabChatState): void {
 
   // Store clearAttachment on state for sendMessage to call
   ;state._clearAttachment = clearAttachment
+}
+
+// ─── Large paste chip ─────────────────────────────────────────────────────────
+
+function showLargeTextChip(state: TabChatState, charCount: number): void {
+  const inputRow = state.container.querySelector<HTMLElement>('.chat-input-row')
+  if (!inputRow) return
+  // Remove any existing chip
+  inputRow.querySelector('.large-text-chip')?.remove()
+
+  const chip = document.createElement('div')
+  chip.className = 'large-text-chip'
+  chip.innerHTML =
+    `<span class="chip-icon">📋</span>` +
+    `<span class="chip-label">${charCount.toLocaleString()} characters pasted</span>` +
+    `<button class="chip-expand" title="Expand to edit">↕ Expand</button>` +
+    `<button class="chip-clear" title="Remove pasted text">✕</button>`
+
+  chip.querySelector('.chip-expand')?.addEventListener('click', () => {
+    const input = state.container.querySelector<HTMLTextAreaElement>('.chat-input-tab')!
+    if (state.pendingLargeText) input.value = state.pendingLargeText
+    input.style.height = 'auto'
+    input.style.height = Math.min(input.scrollHeight, 300) + 'px'
+    chip.remove()
+    state.pendingLargeText = null
+    input.focus()
+  })
+
+  chip.querySelector('.chip-clear')?.addEventListener('click', () => {
+    clearLargeText(state)
+  })
+
+  inputRow.insertBefore(chip, inputRow.firstChild)
+}
+
+function clearLargeText(state: TabChatState): void {
+  state.container.querySelector('.large-text-chip')?.remove()
+  state.pendingLargeText = null
+  const input = state.container.querySelector<HTMLTextAreaElement>('.chat-input-tab')!
+  input.value = ''
+  input.style.height = 'auto'
 }
 
 // ─── DOM accessors ────────────────────────────────────────────────────────────
@@ -2493,40 +2541,6 @@ function showFormAssistCard(
   })
 }
 
-function showActionPlanCard(
-  state: TabChatState,
-  msg: { planId?: string; title?: string; steps?: Array<{ description: string; status?: string }> },
-): void {
-  if (!msg.planId || !msg.steps) return
-  const messagesEl = getMessages(state)
-  const planEl = createActionPlanElement(msg.planId, msg.title ?? 'Action Plan', msg.steps)
-
-  // Wire plan control buttons (and re-wire after plan state changes)
-  function wirePlanButtons(): void {
-    planEl.querySelector('.btn-plan-approve-next')?.addEventListener('click', () => {
-      chrome.runtime.sendMessage({ type: MSG.STEP_UPDATE, planId: msg.planId, action: 'approve_next' }).catch(() => {})
-    })
-    planEl.querySelector('.btn-plan-approve-all')?.addEventListener('click', () => {
-      chrome.runtime.sendMessage({ type: MSG.STEP_UPDATE, planId: msg.planId, action: 'approve_all' }).catch(() => {})
-    })
-    planEl.querySelector('.btn-plan-cancel')?.addEventListener('click', () => {
-      chrome.runtime.sendMessage({ type: MSG.STEP_UPDATE, planId: msg.planId, action: 'cancel' }).catch(() => {})
-      planEl.classList.add('plan-cancelled')
-      planEl.querySelectorAll<HTMLButtonElement>('.plan-controls button').forEach(b => { b.disabled = true })
-    })
-  }
-  wirePlanButtons()
-  planEl.addEventListener('plan-state-changed', () => wirePlanButtons())
-
-  messagesEl.appendChild(planEl)
-  scrollToBottom(messagesEl, true)
-}
-
-function handleStepUpdate(msg: { planId?: string; stepIndex?: number; status?: string; error?: string }): void {
-  if (!msg.planId || msg.stepIndex === undefined || !msg.status) return
-  updateActionPlanStep(msg.planId, msg.stepIndex, msg.status as 'pending' | 'active' | 'completed' | 'failed', msg.error)
-}
-
 function showWatchEventCard(state: TabChatState, event: import('../shared/types').WatchEvent): void {
   if (!event) return
   const messagesEl = getMessages(state)
@@ -2798,7 +2812,13 @@ function showError(state: TabChatState, error: string): void {
 
 async function sendMessage(state: TabChatState): Promise<void> {
   const inputEl = getInput(state)
-  let text = inputEl.value.trim()
+  // Use full pasted text if a large-text chip is active; otherwise use the visible input
+  let text = (state.pendingLargeText ?? inputEl.value).trim()
+  // Clear the chip before sending
+  if (state.pendingLargeText) {
+    state.container.querySelector('.large-text-chip')?.remove()
+    state.pendingLargeText = null
+  }
   if (!text || state.isStreaming) return
 
   // Auto-stop mic recording if active

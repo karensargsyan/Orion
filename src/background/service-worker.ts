@@ -33,7 +33,7 @@ import type { ConfirmResponseType } from '../shared/types'
 import { getSkillsForDomain, formatSkillsForPrompt } from './skill-manager'
 import { getBehaviorsForDomain, formatBehaviorsForPrompt } from './behavior-learner'
 import { tryExtractInstructionToSave, saveUserInstruction, getAllUserInstructions, formatUserInstructionsForPrompt } from './instruction-manager'
-import { assessPageThreat } from './threat-heuristics'
+// threat-heuristics removed — safety border feature removed
 import { runAIActionLearningCycle } from './ai-action-learner'
 import {
   buildMempalaceQuery,
@@ -535,6 +535,9 @@ chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false }).catch(e => 
 // Track tabs where the panel is open
 const panelOpenTabs = new Set<number>()
 
+/** Rate-limit passive page recording: same URL max once per 60 s */
+const recentlyRecordedUrls = new Map<string, number>()
+
 // Icon click: open panel on this tab (or close if already open)
 chrome.action.onClicked.addListener(async (tab) => {
   if (!tab.id) return
@@ -797,24 +800,34 @@ chrome.webNavigation.onCommitted.addListener(async (details) => {
     }
   }
 
-  // Only monitor tabs that belong to Orion
-  if (!panelOpenTabs.has(tid) && !isOrionTab(tid)) return
-
   await flushBuffer(tid)
   tabState.delete(tid)
   const s = await getSettings()
   if (!s.monitoringEnabled) return
 
-  await addSessionMemory({
-    type: 'page_visit',
-    url: details.url,
-    domain: extractDomain(details.url),
-    content: `Navigated to: ${details.url}`,
-    tags: ['navigation', `domain:${extractDomain(details.url)}`],
-    timestamp: Date.now(),
-    sessionId,
-    tabId: tid,
-  })
+  // Record ALL navigations passively (not just panel-open tabs)
+  const navDomain = extractDomain(details.url)
+  if (navDomain) {
+    const nowNav = Date.now()
+    const lastNav = recentlyRecordedUrls.get(details.url)
+    if (!lastNav || nowNav - lastNav >= 60_000) {
+      recentlyRecordedUrls.set(details.url, nowNav)
+      if (recentlyRecordedUrls.size > 500) {
+        const cutoffNav = nowNav - 120_000
+        for (const [u, t] of recentlyRecordedUrls) { if (t < cutoffNav) recentlyRecordedUrls.delete(u) }
+      }
+      await addSessionMemory({
+        type: 'page_visit',
+        url: details.url,
+        domain: navDomain,
+        content: `Visited: ${details.url}`,
+        tags: ['navigation', `domain:${navDomain}`],
+        timestamp: Date.now(),
+        sessionId,
+        tabId: tid,
+      })
+    }
+  }
 })
 
 // ─── Port-based streaming (sidepanel -> SW) ───────────────────────────────────
@@ -1273,20 +1286,6 @@ async function handleAIChat(
 
       updateBadge('active')
 
-      // Emit action plan card if the pipeline produced a task plan
-      if (pipelineResult.taskPlan && pipelineResult.taskPlan.steps.length > 1) {
-        const planId = `plan_${Date.now()}`
-        port.postMessage({
-          type: MSG.ACTION_PLAN,
-          planId,
-          title: `Task: ${pipelineResult.intent.category.replace(/_/g, ' ')} (${pipelineResult.taskPlan.steps.length} steps)`,
-          steps: pipelineResult.taskPlan.steps.map((s, i) => ({
-            description: s.description,
-            status: i === 0 ? 'active' : 'pending',
-          })),
-        })
-      }
-
       try {
         await executeWithFollowUp(
           fullText, tabId, s, port,
@@ -1534,14 +1533,31 @@ async function handleMessage(
 
   switch (msg.type) {
     case MSG.PAGE_SNAPSHOT: {
-      // Ignore snapshots from tabs not in Orion's group
-      if (tabId > 0 && !panelOpenTabs.has(tabId) && !isOrionTab(tabId)) return { ok: true }
       const snap = msg.payload as PageSnapshot
       tabState.set(tabId, snap)
       // Record page visit in visual sitemap (without screenshot — the screenshot loop handles that)
       const snapDomain = extractDomain(snap.url)
       if (snapDomain) {
         recordPageVisit(snapDomain, snap.url, snap).catch(() => {})
+      }
+      // Passive memory: record page content for ALL tabs when monitoring is on
+      if (s.monitoringEnabled && snapDomain && snap.url && !snap.url.startsWith('chrome://') && !snap.url.startsWith('chrome-extension://')) {
+        const nowSnap = Date.now()
+        const lastSnap = recentlyRecordedUrls.get(snap.url)
+        if (!lastSnap || nowSnap - lastSnap >= 60_000) {
+          recentlyRecordedUrls.set(snap.url, nowSnap)
+          const pageText = (snap.visibleText ?? snap.pageText ?? '').slice(0, 2000)
+          await addSessionMemory({
+            type: 'page_visit',
+            url: snap.url,
+            domain: snapDomain,
+            content: `${snap.title ?? ''}\n${snap.url}\n${pageText}`,
+            tags: ['page', `domain:${snapDomain}`],
+            timestamp: nowSnap,
+            sessionId,
+            tabId,
+          })
+        }
       }
       if (s.monitoringEnabled && snap.forms.length > 0) {
         await addSessionMemory({
@@ -1562,14 +1578,10 @@ async function handleMessage(
       // Stop button clicked on the page — cancel automation loop and abort any streaming
       cancelAutomation(tabId)
       abortStream(tabId)
-      // Hide the activity border
-      chrome.tabs.sendMessage(tabId, { type: MSG.HIDE_ACTIVITY_BORDER }).catch(() => {})
       return { ok: true }
     }
 
     case MSG.PAGE_TEXT: {
-      // Ignore text from tabs not in Orion's group
-      if (tabId > 0 && !panelOpenTabs.has(tabId) && !isOrionTab(tabId)) return { ok: true }
       const snap = tabState.get(tabId)
       if (snap) {
         snap.pageText = msg.pageText as string
@@ -1583,26 +1595,6 @@ async function handleMessage(
           const pagePII = detectPersonalData(snap.visibleText ?? '')
           if (pagePII.length > 0) {
             storeDetectedPII(pagePII, `page:${extractDomain(snap.url)}`).catch(() => {})
-          }
-        }
-
-        if (tabId > 0) {
-          if (s.safetyBorderEnabled !== false) {
-            const assessment = assessPageThreat(
-              snap.url,
-              snap.pageText ?? '',
-              snap.visibleText ?? '',
-              snap.completePageText ?? ''
-            )
-            const detail = `${assessment.score}/100 · ${assessment.reasons.slice(0, 2).join(' · ')}`
-            chrome.tabs.sendMessage(tabId, {
-              type: MSG.SET_SAFETY_BORDER,
-              level: assessment.level,
-              detail,
-              hidden: false,
-            }).catch(() => {})
-          } else {
-            chrome.tabs.sendMessage(tabId, { type: MSG.SET_SAFETY_BORDER, hidden: true }).catch(() => {})
           }
         }
       }
@@ -1769,16 +1761,6 @@ async function handleMessage(
       settings = null
       // Reset background AI failure counter when settings change (e.g., new model, new endpoint)
       resetBgCallFailures()
-      // If safetyBorderEnabled was just turned OFF, immediately hide the border on all open tabs
-      if (partial.safetyBorderEnabled === false) {
-        const tabs = await chrome.tabs.query({}).catch(() => [] as chrome.tabs.Tab[])
-        for (const t of tabs) {
-          if (t.id && t.id > 0) {
-            chrome.tabs.sendMessage(t.id, { type: MSG.HIDE_ACTIVITY_BORDER }).catch(() => {})
-            chrome.tabs.sendMessage(t.id, { type: 'HIDE_SAFETY_BORDER' }).catch(() => {})
-          }
-        }
-      }
       return { ok: true }
     }
 
@@ -2574,9 +2556,6 @@ async function handleMessage(
         cancelAutomation(tid)
         abortStream(tid)
         panelOpenTabs.delete(tid)
-        try {
-          chrome.tabs.sendMessage(tid, { type: MSG.HIDE_ACTIVITY_BORDER })
-        } catch { /* tab may be gone */ }
         await chrome.sidePanel.setOptions({ tabId: tid, enabled: false }).catch(() => {})
       }
       await stopGroup(gid)
@@ -2637,18 +2616,7 @@ function classifyFieldFromEvent(
   }) as InputFieldType
 }
 
-function signalActivityBorder(tabId: number, show: boolean): void {
-  if (tabId <= 0) return
-  // If trying to SHOW the border but the feature is disabled, hide it instead
-  if (show) {
-    getSettings().then(s => {
-      if (s.safetyBorderEnabled === false) {
-        chrome.tabs.sendMessage(tabId, { type: MSG.HIDE_ACTIVITY_BORDER }).catch(() => {})
-        return
-      }
-      chrome.tabs.sendMessage(tabId, { type: MSG.SHOW_ACTIVITY_BORDER }).catch(() => {})
-    }).catch(() => {})
-  } else {
-    chrome.tabs.sendMessage(tabId, { type: MSG.HIDE_ACTIVITY_BORDER }).catch(() => {})
-  }
+// Safety border removed — signalActivityBorder is now a no-op
+function signalActivityBorder(_tabId: number, _show: boolean): void {
+  // Border feature removed per user request
 }
