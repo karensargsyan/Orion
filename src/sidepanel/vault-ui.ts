@@ -1,5 +1,5 @@
 /**
- * Vault UI — encrypted storage CRUD with PIN lock/unlock screen.
+ * Vault UI — encrypted storage with PIN lock/unlock, live search, and click-to-reveal.
  */
 
 import { MSG } from '../shared/constants'
@@ -74,8 +74,9 @@ const CATEGORY_FIELDS: Record<VaultCategory, Array<{ key: string; label: string;
 
 let container: HTMLElement
 let isUnlocked = false
+let allEntries: VaultEntryMeta[] = []
 
-// ─── Main render ──────────────────────────────────────────────────────────────
+// ─── Main entry point ─────────────────────────────────────────────────────────
 
 export async function initVault(el: HTMLElement): Promise<void> {
   container = el
@@ -128,7 +129,6 @@ function renderSetupPin(): void {
 
     const res = await chrome.runtime.sendMessage({ type: MSG.SETUP_PIN, pin: pin1 }) as { ok: boolean }
     if (res.ok) {
-      // Sync hasPinSetup to IDB so it persists across sessions
       await chrome.runtime.sendMessage({ type: MSG.SETTINGS_SET, partial: { hasPinSetup: true } }).catch(() => {})
       await checkAndRender()
     } else {
@@ -189,52 +189,55 @@ async function renderVaultList(): Promise<void> {
     return
   }
 
-  const entries = res.entries ?? []
-  const autoCollected = entries.filter(e => e.autoCollected)
-  const approved = entries.filter(e => !e.autoCollected)
+  allEntries = res.entries ?? []
 
   container.innerHTML = `
     <div class="vault-header">
       <h2>Vault</h2>
       <button id="btn-add-entry" class="btn-primary btn-small">+ Add</button>
     </div>
-    ${autoCollected.length > 0 ? `
-      <div class="vault-auto-collected-section">
-        <div class="vault-auto-header">
-          <span class="auto-badge">${autoCollected.length} Auto-collected</span>
-          <button id="btn-approve-all" class="btn-small" style="margin-left:8px">Approve All</button>
-        </div>
-        ${autoCollected.map(item => `
-          <div class="vault-entry vault-entry-auto" data-id="${item.id}">
-            <div class="vault-entry-info">
-              <div class="vault-entry-label">${escHtml(item.label)}</div>
-              <div class="vault-entry-meta">${CATEGORY_LABELS[item.category] ?? item.category}${item.sourceDomain ? ` · ${escHtml(item.sourceDomain)}` : ''}</div>
-            </div>
-            <div class="vault-entry-actions">
-              <button class="btn-approve btn-small" title="Approve and keep">Approve</button>
-              <button class="btn-edit btn-small" title="Edit">Edit</button>
-              <button class="btn-delete btn-small btn-danger" title="Dismiss">Dismiss</button>
-            </div>
-          </div>
-        `).join('')}
-      </div>
-    ` : ''}
-    <div class="vault-categories">
-      ${renderCategoryGroups(approved)}
+    <div class="vault-search-row">
+      <input type="text" id="vault-search" class="vault-search-input" placeholder="🔍 Search by label, category, domain…" autocomplete="off">
     </div>
-    ${entries.length === 0 ? '<p class="empty-hint">No entries yet. Click <strong>+ Add</strong> to store your first profile.</p>' : ''}
+    <div id="vault-list-body" class="vault-categories"></div>
   `
 
   container.querySelector('#btn-add-entry')?.addEventListener('click', () => renderAddForm())
 
-  // Approve all auto-collected
-  container.querySelector('#btn-approve-all')?.addEventListener('click', async () => {
-    await chrome.runtime.sendMessage({ type: 'AUTO_COLLECT_APPROVE_ALL' })
-    await renderVaultList()
+  const searchInput = container.querySelector('#vault-search') as HTMLInputElement
+  searchInput.addEventListener('input', () => {
+    renderFilteredList(searchInput.value.toLowerCase().trim())
   })
 
-  container.querySelectorAll('.vault-entry').forEach(el => {
+  renderFilteredList('')
+}
+
+function renderFilteredList(query: string): void {
+  const body = container.querySelector('#vault-list-body')
+  if (!body) return
+
+  const filtered = query
+    ? allEntries.filter(e =>
+        e.label.toLowerCase().includes(query) ||
+        e.category.toLowerCase().includes(query) ||
+        (e.sourceDomain ?? '').toLowerCase().includes(query)
+      )
+    : allEntries
+
+  const autoCollected = filtered.filter(e => e.autoCollected)
+  const approved = filtered.filter(e => !e.autoCollected)
+
+  body.innerHTML = `
+    ${autoCollected.length > 0 ? renderAutoSection(autoCollected) : ''}
+    ${renderCategoryGroups(approved)}
+    ${filtered.length === 0 && allEntries.length > 0 ? '<p class="empty-hint">No matches found.</p>' : ''}
+    ${allEntries.length === 0 ? '<p class="empty-hint">No entries yet. Click <strong>+ Add</strong> to store your first profile.</p>' : ''}
+  `
+
+  // Wire all entry buttons
+  body.querySelectorAll('.vault-entry').forEach(el => {
     const id = el.getAttribute('data-id')!
+    el.querySelector('.btn-view')?.addEventListener('click', () => toggleReveal(el as HTMLElement, id))
     el.querySelector('.btn-edit')?.addEventListener('click', () => renderEditForm(id))
     el.querySelector('.btn-delete')?.addEventListener('click', () => deleteEntry(id))
     el.querySelector('.btn-fill')?.addEventListener('click', () => fillEntry(id))
@@ -243,6 +246,36 @@ async function renderVaultList(): Promise<void> {
       await renderVaultList()
     })
   })
+
+  body.querySelector('#btn-approve-all')?.addEventListener('click', async () => {
+    await chrome.runtime.sendMessage({ type: 'AUTO_COLLECT_APPROVE_ALL' })
+    await renderVaultList()
+  })
+}
+
+function renderAutoSection(items: VaultEntryMeta[]): string {
+  return `
+    <div class="vault-auto-collected-section">
+      <div class="vault-auto-header">
+        <span class="auto-badge">${items.length} Auto-collected</span>
+        <button id="btn-approve-all" class="btn-small" style="margin-left:8px">Approve All</button>
+      </div>
+      ${items.map(item => `
+        <div class="vault-entry vault-entry-auto" data-id="${item.id}">
+          <div class="vault-entry-info">
+            <div class="vault-entry-label">${escHtml(item.label)}</div>
+            <div class="vault-entry-meta">${CATEGORY_LABELS[item.category] ?? item.category}${item.sourceDomain ? ` · ${escHtml(item.sourceDomain)}` : ''}</div>
+          </div>
+          <div class="vault-entry-actions">
+            <button class="btn-view btn-small" title="View decrypted fields">View</button>
+            <button class="btn-approve btn-small" title="Approve and keep">Approve</button>
+            <button class="btn-edit btn-small" title="Edit">Edit</button>
+            <button class="btn-delete btn-small btn-danger" title="Dismiss">Dismiss</button>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+  `
 }
 
 function renderCategoryGroups(entries: VaultEntryMeta[]): string {
@@ -259,8 +292,12 @@ function renderCategoryGroups(entries: VaultEntryMeta[]): string {
       <div class="vault-group-label">${CATEGORY_LABELS[cat as VaultCategory] ?? cat}</div>
       ${items.map(item => `
         <div class="vault-entry" data-id="${item.id}">
-          <div class="vault-entry-label">${escHtml(item.label)}</div>
+          <div class="vault-entry-info">
+            <div class="vault-entry-label">${escHtml(item.label)}</div>
+            <div class="vault-entry-meta">${CATEGORY_LABELS[item.category] ?? item.category}${item.sourceDomain ? ` · ${escHtml(item.sourceDomain)}` : ''}</div>
+          </div>
           <div class="vault-entry-actions">
+            <button class="btn-view btn-small" title="View decrypted fields">View</button>
             <button class="btn-fill btn-small" title="Fill form with this">Fill</button>
             <button class="btn-edit btn-small" title="Edit">Edit</button>
             <button class="btn-delete btn-small btn-danger" title="Delete">✕</button>
@@ -271,9 +308,109 @@ function renderCategoryGroups(entries: VaultEntryMeta[]): string {
   `).join('')
 }
 
+// ─── Click-to-Reveal Panel ────────────────────────────────────────────────────
+
+async function toggleReveal(entryEl: HTMLElement, id: string): Promise<void> {
+  const body = container.querySelector('#vault-list-body')!
+
+  // Toggle: collapse if already open for this same entry
+  const existingPanel = entryEl.nextElementSibling
+  if (existingPanel?.classList.contains('vault-reveal-panel') && existingPanel.getAttribute('data-for') === id) {
+    existingPanel.remove()
+    entryEl.querySelector('.btn-view')?.classList.remove('btn-view-active')
+    return
+  }
+
+  // Close any other open panel and deactivate its button
+  body.querySelectorAll('.vault-reveal-panel').forEach(p => {
+    const prevEntry = p.previousElementSibling as HTMLElement
+    prevEntry?.querySelector('.btn-view')?.classList.remove('btn-view-active')
+    p.remove()
+  })
+
+  // Mark button as active
+  entryEl.querySelector('.btn-view')?.classList.add('btn-view-active')
+
+  // Placeholder while decrypting
+  const panel = document.createElement('div')
+  panel.className = 'vault-reveal-panel'
+  panel.dataset.for = id
+  panel.innerHTML = '<span class="vault-reveal-loading">Decrypting…</span>'
+  entryEl.insertAdjacentElement('afterend', panel)
+
+  const res = await chrome.runtime.sendMessage({ type: MSG.VAULT_GET, id }) as {
+    ok: boolean; data?: Record<string, string>; error?: string
+  }
+
+  if (!res.ok || !res.data) {
+    panel.innerHTML = `<span class="error-text">${escHtml(res.error ?? 'Failed to decrypt')}</span>`
+    return
+  }
+
+  const meta = allEntries.find(e => e.id === id)
+  if (!meta) { panel.remove(); return }
+
+  panel.innerHTML = ''
+  const fields = CATEGORY_FIELDS[meta.category] ?? []
+  let hasContent = false
+
+  for (const f of fields) {
+    const val = (res.data as Record<string, string>)[f.key] ?? ''
+    if (!val) continue
+    hasContent = true
+    const isSecret = f.type === 'password'
+
+    const row = document.createElement('div')
+    row.className = 'vault-field-row'
+
+    const labelSpan = document.createElement('span')
+    labelSpan.className = 'vault-field-label'
+    labelSpan.textContent = f.label
+
+    const valueSpan = document.createElement('span')
+    valueSpan.className = 'vault-field-value' + (isSecret ? ' vault-field-masked' : '')
+    valueSpan.textContent = isSecret ? '••••••••' : val
+
+    row.appendChild(labelSpan)
+    row.appendChild(valueSpan)
+
+    if (isSecret) {
+      const eyeBtn = document.createElement('button')
+      eyeBtn.className = 'btn-eye'
+      eyeBtn.title = 'Show / Hide'
+      eyeBtn.textContent = '👁'
+      let visible = false
+      eyeBtn.addEventListener('click', () => {
+        visible = !visible
+        valueSpan.textContent = visible ? val : '••••••••'
+        valueSpan.classList.toggle('vault-field-masked', !visible)
+        eyeBtn.textContent = visible ? '🙈' : '👁'
+      })
+      row.appendChild(eyeBtn)
+    }
+
+    const copyBtn = document.createElement('button')
+    copyBtn.className = 'btn-copy-field'
+    copyBtn.title = 'Copy to clipboard'
+    copyBtn.textContent = '⎘'
+    copyBtn.addEventListener('click', async () => {
+      await navigator.clipboard.writeText(val).catch(() => {})
+      copyBtn.textContent = '✓'
+      setTimeout(() => { copyBtn.textContent = '⎘' }, 1200)
+    })
+    row.appendChild(copyBtn)
+
+    panel.appendChild(row)
+  }
+
+  if (!hasContent) {
+    panel.innerHTML = '<span class="vault-reveal-loading">No fields stored</span>'
+  }
+}
+
 // ─── Add / Edit Form ──────────────────────────────────────────────────────────
 
-function renderAddForm(defaultCategory: VaultCategory = 'contact'): void {
+function renderAddForm(defaultCategory: VaultCategory = 'credential'): void {
   renderEntryForm(null, defaultCategory, null)
 }
 
@@ -313,10 +450,10 @@ function renderEntryForm(
             ).join('')}
           </select>
         </div>
-      ` : ''}
+      ` : `<div class="form-group"><label>Category</label><p style="margin:0;font-size:13px;color:var(--text-dim)">${CATEGORY_LABELS[category]}</p></div>`}
       <div class="form-group">
         <label>Label (nickname)</label>
-        <input type="text" id="entry-label" placeholder="e.g. Work email, Home address" value="${escHtml(existingData?.label ?? '')}">
+        <input type="text" id="entry-label" placeholder="e.g. Work email, Personal card" value="${escHtml(existingData?.label ?? '')}">
       </div>
       <div id="entry-fields">
         ${renderFieldsForCategory(category, existingData)}
@@ -329,12 +466,15 @@ function renderEntryForm(
     </div>
   `
 
-  // Dynamic field update when category changes
+  wireEyeToggles()
+
+  // Dynamic field update when category changes (add form only)
   const categorySelect = container.querySelector('#entry-category') as HTMLSelectElement | null
   categorySelect?.addEventListener('change', () => {
     const newCat = categorySelect.value as VaultCategory
     const fieldsEl = container.querySelector('#entry-fields')!
     fieldsEl.innerHTML = renderFieldsForCategory(newCat, null)
+    wireEyeToggles()
   })
 
   container.querySelector('#btn-back')?.addEventListener('click', () => renderVaultList())
@@ -345,14 +485,50 @@ function renderEntryForm(
   ))
 }
 
+function wireEyeToggles(): void {
+  container.querySelectorAll('.btn-eye-toggle').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const input = btn.previousElementSibling as HTMLInputElement
+      if (!input) return
+      if (input.type === 'password') {
+        input.type = 'text'
+        btn.textContent = '🙈'
+        ;(btn as HTMLElement).title = 'Hide'
+      } else {
+        input.type = 'password'
+        btn.textContent = '👁'
+        ;(btn as HTMLElement).title = 'Show'
+      }
+    })
+  })
+}
+
 function renderFieldsForCategory(category: VaultCategory, data: Record<string, string> | null): string {
   const fields = CATEGORY_FIELDS[category] ?? []
   return fields.map(f => {
     const val = escHtml(data?.[f.key] ?? '')
     if (f.type === 'textarea') {
-      return `<div class="form-group"><label>${f.label}</label><textarea name="${f.key}" rows="3">${val}</textarea></div>`
+      return `
+        <div class="form-group">
+          <label>${f.label}</label>
+          <textarea name="${f.key}" rows="3">${val}</textarea>
+        </div>`
     }
-    return `<div class="form-group"><label>${f.label}</label><input type="${f.type ?? 'text'}" name="${f.key}" value="${val}" autocomplete="off"></div>`
+    if (f.type === 'password') {
+      return `
+        <div class="form-group">
+          <label>${f.label}</label>
+          <div class="password-input-row">
+            <input type="password" name="${f.key}" value="${val}" autocomplete="off">
+            <button type="button" class="btn-eye-toggle" tabindex="-1" title="Show">👁</button>
+          </div>
+        </div>`
+    }
+    return `
+      <div class="form-group">
+        <label>${f.label}</label>
+        <input type="text" name="${f.key}" value="${val}" autocomplete="off">
+      </div>`
   }).join('')
 }
 
@@ -390,12 +566,13 @@ async function fillEntry(id: string): Promise<void> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
   if (!tab?.id) { alert('No active tab found'); return }
 
+  const meta = allEntries.find(e => e.id === id)
   const res = await chrome.runtime.sendMessage({
     type: MSG.FILL_FORM,
     vaultId: id,
     formSelector: '',
     tabId: tab.id,
-    includePasswords: id.includes('credential') || id.includes('login'),
+    includePasswords: meta?.category === 'credential' || meta?.category === 'card',
   }) as { ok: boolean; fieldCount?: number; error?: string }
 
   if (res.ok) {

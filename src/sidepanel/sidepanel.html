@@ -1068,6 +1068,67 @@
     .vault-form { padding: 14px; overflow-y: auto; height: 100%; }
     .vault-form-header { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
 
+    /* ── Vault search ── */
+    .vault-search-row {
+      padding: 8px 14px 6px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .vault-search-input {
+      width: 100%; box-sizing: border-box;
+      padding: 7px 10px;
+      background: var(--bg-input); border: 1px solid var(--border);
+      border-radius: var(--radius); color: var(--text-bright);
+      font-size: 12px; outline: none;
+    }
+    .vault-search-input:focus { border-color: var(--border-focus); }
+    .vault-search-input::placeholder { color: var(--text-dim); }
+
+    /* ── Click-to-reveal panel ── */
+    .vault-reveal-panel {
+      background: var(--bg-card);
+      border: 1px solid var(--border); border-top: none;
+      border-radius: 0 0 var(--radius) var(--radius);
+      padding: 8px 12px; margin-bottom: 4px;
+    }
+    .vault-reveal-loading { font-size: 12px; color: var(--text-dim); }
+    .vault-field-row {
+      display: flex; align-items: center; gap: 8px;
+      padding: 5px 0; border-bottom: 1px solid rgba(255,255,255,0.04);
+    }
+    .vault-field-row:last-child { border-bottom: none; }
+    .vault-field-label {
+      font-size: 11px; color: var(--text-dim);
+      min-width: 100px; flex-shrink: 0; font-weight: 500;
+    }
+    .vault-field-value {
+      flex: 1; font-size: 12px; color: var(--text-bright);
+      word-break: break-all; font-family: monospace;
+    }
+    .vault-field-masked {
+      letter-spacing: 4px; color: var(--text-dim);
+      font-size: 11px; user-select: none;
+    }
+    .btn-eye, .btn-copy-field {
+      background: none; border: none; cursor: pointer;
+      padding: 2px 5px; color: var(--text-dim); font-size: 13px;
+      flex-shrink: 0; border-radius: 3px;
+      transition: color 0.15s;
+    }
+    .btn-eye:hover, .btn-copy-field:hover { color: var(--accent); }
+    .btn-view-active { background: rgba(108,92,231,0.15) !important; color: var(--accent) !important; }
+
+    /* ── Password field with eye toggle in form ── */
+    .password-input-row { display: flex; align-items: center; gap: 6px; }
+    .password-input-row input { flex: 1; }
+    .btn-eye-toggle {
+      background: none; border: 1px solid var(--border);
+      border-radius: var(--radius); cursor: pointer;
+      padding: 6px 10px; color: var(--text-dim); font-size: 14px;
+      flex-shrink: 0; transition: border-color 0.15s, color 0.15s;
+    }
+    .btn-eye-toggle:hover { border-color: var(--accent); color: var(--accent); }
+
     /* ─── Memory ──────────────────────────────────────────────────────── */
     .memory-container { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
 
