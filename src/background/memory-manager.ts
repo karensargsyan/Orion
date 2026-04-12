@@ -1,5 +1,5 @@
 import {
-  dbGet, dbGetAll, dbGetAllByIndex, dbGetByIndexRange, dbPut, dbDelete, dbClear,
+  openDB, dbGet, dbGetAll, dbGetAllByIndex, dbGetByIndexRange, dbPut, dbDelete, dbClear,
 } from '../shared/idb'
 import { STORE, DEFAULTS } from '../shared/constants'
 import type {
@@ -123,6 +123,27 @@ export async function getSessionMemoryByDomain(domain: string, limit = 50): Prom
 
 export async function clearSessionMemory(): Promise<void> {
   await dbClear(STORE.SESSION_MEMORY)
+}
+
+/** Delete session memory entries older than `maxAgeDays` days. Returns count deleted. */
+export async function pruneOldSessionMemory(maxAgeDays = 30): Promise<number> {
+  const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000
+  const db = await openDB()
+  let deleted = 0
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE.SESSION_MEMORY, 'readwrite')
+    const req = tx.objectStore(STORE.SESSION_MEMORY).index('by_timestamp')
+                   .openCursor(IDBKeyRange.upperBound(cutoff))
+    req.onsuccess = () => {
+      const cursor = req.result
+      if (!cursor) { resolve(); return }
+      cursor.delete()
+      deleted++
+      cursor.continue()
+    }
+    req.onerror = () => reject(req.error)
+  })
+  return deleted
 }
 
 // ─── Global Memory ────────────────────────────────────────────────────────────

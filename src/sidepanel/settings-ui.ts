@@ -210,13 +210,6 @@ export async function initSettings(container: HTMLElement): Promise<void> {
             <input type="number" id="screenshot-interval" value="${s.screenshotIntervalSec ?? 10}" min="5" max="120">
             <p class="hint-text-inline">How often to capture a new screenshot. Lower = more aware but uses more tokens.</p>
           </div>
-          <div class="form-group form-group-toggle">
-            <div>
-              <label>Tab safety border</label>
-              <p class="hint-text-inline">Scores pages for phishing/scam signals using local heuristics. Shows a colored border around the tab. Fully local, no data sent externally.</p>
-            </div>
-            <input type="checkbox" id="safety-border-enabled" ${s.safetyBorderEnabled ? 'checked' : ''}>
-          </div>
         </div>
 
         <div class="settings-card">
@@ -901,7 +894,6 @@ function wireSettingsEvents(container: HTMLElement, s: Settings): void {
       visionEnabled: (container.querySelector('#vision-enabled') as HTMLInputElement).checked,
       screenshotIntervalSec: Number((container.querySelector('#screenshot-interval') as HTMLInputElement).value),
       textRewriteEnabled: (container.querySelector('#text-rewrite-enabled') as HTMLInputElement).checked,
-      safetyBorderEnabled: (container.querySelector('#safety-border-enabled') as HTMLInputElement).checked,
       composeAssistantEnabled: (container.querySelector('#compose-assistant-enabled') as HTMLInputElement).checked,
       aiActionLearningEnabled: (container.querySelector('#ai-action-learning-enabled') as HTMLInputElement).checked,
       automationPreference: (container.querySelector('#automation-preference') as HTMLSelectElement).value as 'ask' | 'auto' | 'guided',

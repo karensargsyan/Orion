@@ -17,6 +17,7 @@ import {
   addSessionMemory, getRecentSessionMemory, getSessionMemoryByDomain, getTabMemory,
   clearSessionMemory, clearGlobalMemory, getAllGlobalMemory, exportMemory, clearChatHistory,
   getDomainStats, getGlobalMemoryByDomain, clearSessionChat, searchAllHistory,
+  pruneOldSessionMemory,
 } from './memory-manager'
 import { recordAction, flushAllBuffers, flushBuffer, clearTabBuffer } from './action-recorder'
 import { matchVaultToForm, matchCredentialsToForm, describeForm, classifyField } from './form-intelligence'
@@ -147,6 +148,8 @@ let currentExecutionMode: import('../shared/types').ExecutionMode = 'approve'
 chrome.storage.local.get('executionMode').then(r => {
   if (r.executionMode) currentExecutionMode = r.executionMode
 }).catch(() => {})
+// Prune session memory older than 30 days on each SW startup
+pruneOldSessionMemory(30).catch(() => {})
 // Side panel is always enabled globally via setPanelBehavior + setOptions
 
 async function getSettings(): Promise<Settings> {
@@ -802,32 +805,6 @@ chrome.webNavigation.onCommitted.addListener(async (details) => {
 
   await flushBuffer(tid)
   tabState.delete(tid)
-  const s = await getSettings()
-  if (!s.monitoringEnabled) return
-
-  // Record ALL navigations passively (not just panel-open tabs)
-  const navDomain = extractDomain(details.url)
-  if (navDomain) {
-    const nowNav = Date.now()
-    const lastNav = recentlyRecordedUrls.get(details.url)
-    if (!lastNav || nowNav - lastNav >= 60_000) {
-      recentlyRecordedUrls.set(details.url, nowNav)
-      if (recentlyRecordedUrls.size > 500) {
-        const cutoffNav = nowNav - 120_000
-        for (const [u, t] of recentlyRecordedUrls) { if (t < cutoffNav) recentlyRecordedUrls.delete(u) }
-      }
-      await addSessionMemory({
-        type: 'page_visit',
-        url: details.url,
-        domain: navDomain,
-        content: `Visited: ${details.url}`,
-        tags: ['navigation', `domain:${navDomain}`],
-        timestamp: Date.now(),
-        sessionId,
-        tabId: tid,
-      })
-    }
-  }
 })
 
 // ─── Port-based streaming (sidepanel -> SW) ───────────────────────────────────
@@ -1540,25 +1517,6 @@ async function handleMessage(
       if (snapDomain) {
         recordPageVisit(snapDomain, snap.url, snap).catch(() => {})
       }
-      // Passive memory: record page content for ALL tabs when monitoring is on
-      if (s.monitoringEnabled && snapDomain && snap.url && !snap.url.startsWith('chrome://') && !snap.url.startsWith('chrome-extension://')) {
-        const nowSnap = Date.now()
-        const lastSnap = recentlyRecordedUrls.get(snap.url)
-        if (!lastSnap || nowSnap - lastSnap >= 60_000) {
-          recentlyRecordedUrls.set(snap.url, nowSnap)
-          const pageText = (snap.visibleText ?? snap.pageText ?? '').slice(0, 2000)
-          await addSessionMemory({
-            type: 'page_visit',
-            url: snap.url,
-            domain: snapDomain,
-            content: `${snap.title ?? ''}\n${snap.url}\n${pageText}`,
-            tags: ['page', `domain:${snapDomain}`],
-            timestamp: nowSnap,
-            sessionId,
-            tabId,
-          })
-        }
-      }
       if (s.monitoringEnabled && snap.forms.length > 0) {
         await addSessionMemory({
           type: 'form_detected',
@@ -1595,6 +1553,40 @@ async function handleMessage(
           const pagePII = detectPersonalData(snap.visibleText ?? '')
           if (pagePII.length > 0) {
             storeDetectedPII(pagePII, `page:${extractDomain(snap.url)}`).catch(() => {})
+          }
+        }
+
+        // Record page visit with real text content (now available).
+        // Recording here — not in PAGE_SNAPSHOT — is correct: snapshots arrive before
+        // text extraction completes, so snap.visibleText is always undefined at snapshot time.
+        if (s.monitoringEnabled && snap.url &&
+            !snap.url.startsWith('chrome://') && !snap.url.startsWith('chrome-extension://')) {
+          const ptDomain = extractDomain(snap.url)
+          if (ptDomain) {
+            const nowPt = Date.now()
+            const lastPt = recentlyRecordedUrls.get(snap.url)
+            if (!lastPt || nowPt - lastPt >= 60_000) {
+              recentlyRecordedUrls.set(snap.url, nowPt)
+              // Keep map bounded
+              if (recentlyRecordedUrls.size > 500) {
+                const cutoffPt = nowPt - 120_000
+                for (const [u, t] of recentlyRecordedUrls) { if (t < cutoffPt) recentlyRecordedUrls.delete(u) }
+              }
+              const pageVisitText = (snap.visibleText ?? snap.pageText ?? '').slice(0, 2000)
+              // Only store if there is something meaningful to recall
+              if (pageVisitText.trim().length > 20 || (snap.title ?? '').trim().length > 0) {
+                await addSessionMemory({
+                  type: 'page_visit',
+                  url: snap.url,
+                  domain: ptDomain,
+                  content: `${snap.title ?? ''}\n${snap.url}\n${pageVisitText}`,
+                  tags: ['page', `domain:${ptDomain}`],
+                  timestamp: nowPt,
+                  sessionId,
+                  tabId,
+                })
+              }
+            }
           }
         }
       }
