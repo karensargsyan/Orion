@@ -1764,10 +1764,21 @@ async function handleMessage(
     }
 
     case MSG.SETTINGS_SET: {
-      await setSettings(msg.partial as Partial<Settings>)
+      const partial = msg.partial as Partial<Settings>
+      await setSettings(partial)
       settings = null
       // Reset background AI failure counter when settings change (e.g., new model, new endpoint)
       resetBgCallFailures()
+      // If safetyBorderEnabled was just turned OFF, immediately hide the border on all open tabs
+      if (partial.safetyBorderEnabled === false) {
+        const tabs = await chrome.tabs.query({}).catch(() => [] as chrome.tabs.Tab[])
+        for (const t of tabs) {
+          if (t.id && t.id > 0) {
+            chrome.tabs.sendMessage(t.id, { type: MSG.HIDE_ACTIVITY_BORDER }).catch(() => {})
+            chrome.tabs.sendMessage(t.id, { type: 'HIDE_SAFETY_BORDER' }).catch(() => {})
+          }
+        }
+      }
       return { ok: true }
     }
 
@@ -2628,6 +2639,16 @@ function classifyFieldFromEvent(
 
 function signalActivityBorder(tabId: number, show: boolean): void {
   if (tabId <= 0) return
-  const type = show ? MSG.SHOW_ACTIVITY_BORDER : MSG.HIDE_ACTIVITY_BORDER
-  chrome.tabs.sendMessage(tabId, { type }).catch(() => {})
+  // If trying to SHOW the border but the feature is disabled, hide it instead
+  if (show) {
+    getSettings().then(s => {
+      if (s.safetyBorderEnabled === false) {
+        chrome.tabs.sendMessage(tabId, { type: MSG.HIDE_ACTIVITY_BORDER }).catch(() => {})
+        return
+      }
+      chrome.tabs.sendMessage(tabId, { type: MSG.SHOW_ACTIVITY_BORDER }).catch(() => {})
+    }).catch(() => {})
+  } else {
+    chrome.tabs.sendMessage(tabId, { type: MSG.HIDE_ACTIVITY_BORDER }).catch(() => {})
+  }
 }

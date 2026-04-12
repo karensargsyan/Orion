@@ -8,7 +8,7 @@ import { extractPageText, extractVisibleText, extractCompletePageText, extractSe
 import { setupTextMonitor } from './text-monitor'
 import { findLabel, getUniqueSelector } from './dom-analyzer'
 import { injectMarkers, removeMarkers, buildAccessibilityTree, setLastMarkedElements, findElementByMarkerId, findElementByAIId, isControlElement, findNearbyControl, recoverStaleElement } from './element-markers'
-import { applySafetyBorderMessage } from './safety-border'
+import { applySafetyBorderMessage, hideSafetyBorder } from './safety-border'
 import { setupComposeAssistant } from './compose-assistant'
 import { analyzeFileFromUrl, findAttachmentLinks, type FileAnalysisResult } from './file-analyzer'
 import { safeSendMessage } from './runtime-safe'
@@ -120,6 +120,12 @@ async function handleContentMessage(msg: Record<string, unknown>): Promise<unkno
 
     case MSG.SET_SAFETY_BORDER: {
       applySafetyBorderMessage(msg)
+      return { ok: true }
+    }
+
+    case 'HIDE_SAFETY_BORDER': {
+      // Fired when user disables the heuristic feature in settings
+      hideSafetyBorder()
       return { ok: true }
     }
 
