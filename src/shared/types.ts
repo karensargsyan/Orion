@@ -53,6 +53,11 @@ export interface PageButton {
   selector: string
   text: string
   role: string
+  // Submit Guard metadata:
+  formAction?: string       // parent form's action URL
+  isSubmitType?: boolean     // type="submit" or button inside form with no explicit type
+  isPrimary?: boolean        // has primary/CTA styling (btn-primary, cta, etc.)
+  ariaLabel?: string         // aria-label text
 }
 
 export interface PageLink {
@@ -71,6 +76,8 @@ export interface PageSnapshot {
   links: PageLink[]
   headings: string[]
   metaDescription: string
+  language?: string
+  readyState?: string
   screenshot?: string
   pageText?: string
   /** Full body text (viewport + off-screen + typical DOM-hidden copy); capped at extraction time. */
@@ -565,9 +572,69 @@ export interface PageContent {
   text: string
 }
 
+// ─── Pinned Facts ─────────────────────────────────────────────────────────
+
+export interface PinnedFact {
+  id: string
+  sessionId: string
+  label: string
+  value: string
+  sourceUrl: string
+  pinnedAt: number
+}
+
+// ─── Watch Mode ──────────────────────────────────────────────────────────
+
+export interface WatchSession {
+  tabId: number
+  selector?: string
+  baseline: string
+  startedAt: number
+  intervalSec: number
+  alarmName: string
+  eventCount: number
+}
+
+// ─── Execution Modes (V3: FR-V3-8) ──────────────────────────────────────────
+export type ExecutionMode = 'ask_only' | 'suggest' | 'approve' | 'auto_low_risk'
+
+export type WatchChangeCategory = 'price_change' | 'status_change' | 'content_update' | 'element_state' | 'cosmetic'
+
+export interface WatchEvent {
+  tabId: number
+  selector?: string
+  oldValue: string
+  newValue: string
+  timestamp: number
+  category?: WatchChangeCategory
+  summary?: string
+  numericDelta?: number
+  isSignificant?: boolean
+}
+
+// ─── Saved Workflows (V3: FR-V3-1, Appendix C) ─────────────────────────────
+
+export type SavedWorkflowStepType = 'scan' | 'extract' | 'compare' | 'propose_action' | 'run_action' | 'watch' | 'export'
+
+export interface SavedWorkflowStep {
+  type: SavedWorkflowStepType
+  params: Record<string, unknown>
+  requiresConfirmation?: boolean
+}
+
+export interface SavedWorkflow {
+  id: string
+  name: string
+  description?: string
+  steps: SavedWorkflowStep[]
+  executionMode: ExecutionMode
+  createdAt: number
+  updatedAt: number
+}
+
 // ─── PII Detection ─────────────────────────────────────────────────────────
 
-export type PIIType = 'email' | 'phone' | 'card' | 'name' | 'address'
+export type PIIType = 'email' | 'phone' | 'card' | 'name' | 'address' | 'ssn' | 'api_key'
 
 export interface PIIMatch {
   type: PIIType

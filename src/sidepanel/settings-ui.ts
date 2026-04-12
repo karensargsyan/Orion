@@ -171,61 +171,102 @@ export async function initSettings(container: HTMLElement): Promise<void> {
       </section>
 
       <section class="settings-section" data-settings-tab="automation">
-        <h3>Monitoring</h3>
-        <div class="form-group form-group-toggle">
-          <label>Background monitoring</label>
-          <input type="checkbox" id="monitoring-enabled" ${s.monitoringEnabled ? 'checked' : ''}>
+
+        <div class="settings-card">
+          <h3>Automation Control</h3>
+          <div class="form-group">
+            <label>Execution mode</label>
+            <select id="automation-preference">
+              <option value="ask" ${(s.automationPreference ?? 'ask') === 'ask' ? 'selected' : ''}>Ask each time</option>
+              <option value="auto" ${s.automationPreference === 'auto' ? 'selected' : ''}>Always auto (click for me)</option>
+              <option value="guided" ${s.automationPreference === 'guided' ? 'selected' : ''}>Always guided (highlight for me)</option>
+            </select>
+          </div>
+          <p class="hint-text" style="margin-top:-4px">
+            <strong>Ask:</strong> prompts you to choose Guided or Auto for each task.<br>
+            <strong>Auto:</strong> AI clicks elements automatically — fastest, hands-free.<br>
+            <strong>Guided:</strong> AI highlights what to click and you do it yourself — safest.
+          </p>
         </div>
-        <div class="form-group form-group-toggle">
-          <label>Vision mode (screenshots to AI)</label>
-          <input type="checkbox" id="vision-enabled" ${s.visionEnabled ? 'checked' : ''}>
+
+        <div class="settings-card">
+          <h3>Page Monitoring</h3>
+          <div class="form-group form-group-toggle">
+            <div>
+              <label>Background monitoring</label>
+              <p class="hint-text-inline">Periodically captures page state so the AI stays aware of changes.</p>
+            </div>
+            <input type="checkbox" id="monitoring-enabled" ${s.monitoringEnabled ? 'checked' : ''}>
+          </div>
+          <div class="form-group form-group-toggle">
+            <div>
+              <label>Vision mode (screenshots to AI)</label>
+              <p class="hint-text-inline">Sends page screenshots to the AI for visual understanding. Requires a vision-capable model.</p>
+            </div>
+            <input type="checkbox" id="vision-enabled" ${s.visionEnabled ? 'checked' : ''}>
+          </div>
+          <div class="form-group settings-dependent" id="screenshot-interval-group" style="${s.visionEnabled ? '' : 'display:none'}">
+            <label>Screenshot interval (seconds)</label>
+            <input type="number" id="screenshot-interval" value="${s.screenshotIntervalSec ?? 10}" min="5" max="120">
+            <p class="hint-text-inline">How often to capture a new screenshot. Lower = more aware but uses more tokens.</p>
+          </div>
+          <div class="form-group form-group-toggle">
+            <div>
+              <label>Tab safety border</label>
+              <p class="hint-text-inline">Scores pages for phishing/scam signals using local heuristics. Shows a colored border around the tab. Fully local, no data sent externally.</p>
+            </div>
+            <input type="checkbox" id="safety-border-enabled" ${s.safetyBorderEnabled ? 'checked' : ''}>
+          </div>
         </div>
-        <div class="form-group">
-          <label>Screenshot interval (seconds)</label>
-          <input type="number" id="screenshot-interval" value="${s.screenshotIntervalSec ?? 10}" min="5" max="120">
+
+        <div class="settings-card">
+          <h3>Writing Assistance</h3>
+          <div class="form-group form-group-toggle">
+            <div>
+              <label>Compose assistant</label>
+              <p class="hint-text-inline">Shows an inline AI helper on text areas for real-time writing suggestions while you type.</p>
+            </div>
+            <input type="checkbox" id="compose-assistant-enabled" ${s.composeAssistantEnabled !== false ? 'checked' : ''}>
+          </div>
+          <div class="form-group form-group-toggle">
+            <div>
+              <label>Text rewrite suggestions</label>
+              <p class="hint-text-inline">Right-click selected text to rewrite it in different tones: professional, casual, concise, etc.</p>
+            </div>
+            <input type="checkbox" id="text-rewrite-enabled" ${s.textRewriteEnabled ? 'checked' : ''}>
+          </div>
         </div>
-        <div class="form-group form-group-toggle">
-          <label>Text rewrite suggestions</label>
-          <input type="checkbox" id="text-rewrite-enabled" ${s.textRewriteEnabled ? 'checked' : ''}>
+
+        <div class="settings-card">
+          <h3>Intelligence</h3>
+          <div class="form-group form-group-toggle">
+            <div>
+              <label>AI action learning</label>
+              <p class="hint-text-inline">Learns from successful actions on each domain to improve accuracy over time. Analysis stays local.</p>
+            </div>
+            <input type="checkbox" id="ai-action-learning-enabled" ${s.aiActionLearningEnabled !== false ? 'checked' : ''}>
+          </div>
+          <div class="form-group settings-dependent" id="learning-interval-group" style="${s.aiActionLearningEnabled !== false ? '' : 'display:none'}">
+            <label>Learning snapshot interval (seconds)</label>
+            <input type="number" id="learning-interval" value="${s.learningSnapshotIntervalSec ?? 3}" min="1" max="30">
+            <p class="hint-text-inline">How often to capture DOM snapshots during learning. Lower = more data but higher CPU.</p>
+          </div>
+          <div class="form-group form-group-toggle">
+            <div>
+              <label>Calendar detection</label>
+              <p class="hint-text-inline">Automatically detects events, dates, and appointments on pages. Offers to create calendar entries.</p>
+            </div>
+            <input type="checkbox" id="calendar-detection" ${s.calendarDetectionEnabled ? 'checked' : ''}>
+          </div>
+          <div class="form-group form-group-toggle">
+            <div>
+              <label>Input journal (Total Recall)</label>
+              <p class="hint-text-inline">Records all form inputs for later recall. Helps the AI remember what you've typed across sessions.</p>
+            </div>
+            <input type="checkbox" id="input-journal-enabled" ${s.inputJournalEnabled ? 'checked' : ''}>
+          </div>
         </div>
-        <div class="form-group form-group-toggle">
-          <label>Tab safety border (heuristic threat detection)</label>
-          <input type="checkbox" id="safety-border-enabled" ${s.safetyBorderEnabled ? 'checked' : ''}>
-        </div>
-        <p class="hint-text" style="margin-top:-8px;margin-bottom:10px">
-          Scores each page for phishing/scam signals using local heuristics (suspicious TLDs, fake login forms, urgency phrases).
-          Shows a green/orange/red border around the browser tab. No data is sent externally — analysis is fully local.
-          Disabled by default; may produce false positives on legitimate sites.
-        </p>
-        <div class="form-group form-group-toggle">
-          <label>Compose assistant (inline revised text while typing)</label>
-          <input type="checkbox" id="compose-assistant-enabled" ${s.composeAssistantEnabled !== false ? 'checked' : ''}>
-        </div>
-        <div class="form-group form-group-toggle">
-          <label>AI learning from your actions (periodic local model analysis)</label>
-          <input type="checkbox" id="ai-action-learning-enabled" ${s.aiActionLearningEnabled !== false ? 'checked' : ''}>
-        </div>
-        <div class="form-group">
-          <label>Automation mode</label>
-          <select id="automation-preference">
-            <option value="ask" ${(s.automationPreference ?? 'ask') === 'ask' ? 'selected' : ''}>Ask each time</option>
-            <option value="auto" ${s.automationPreference === 'auto' ? 'selected' : ''}>Always auto (click for me)</option>
-            <option value="guided" ${s.automationPreference === 'guided' ? 'selected' : ''}>Always guided (highlight for me)</option>
-          </select>
-        </div>
-        <p class="hint-text" style="margin-top:-8px;margin-bottom:10px">
-          Ask: prompts you to choose Guide or Auto for each task.
-          Auto: AI clicks elements automatically.
-          Guided: AI highlights what to click and you do it yourself.
-        </p>
-        <div class="form-group">
-          <label>Learning mode snapshot interval (seconds)</label>
-          <input type="number" id="learning-interval" value="${s.learningSnapshotIntervalSec ?? 3}" min="1" max="30">
-        </div>
-        <div class="form-group form-group-toggle">
-          <label>Calendar detection</label>
-          <input type="checkbox" id="calendar-detection" ${s.calendarDetectionEnabled ? 'checked' : ''}>
-        </div>
+
       </section>
 
       <section class="settings-section" data-settings-tab="integrations">
@@ -306,6 +347,21 @@ export async function initSettings(container: HTMLElement): Promise<void> {
 
       <section class="settings-section" data-settings-tab="security">
         <h3>Security</h3>
+
+        <div class="form-group">
+          <label style="font-weight:600;margin-bottom:6px">Extension Permissions</label>
+          <div style="font-size:11px;color:var(--text-dim);line-height:1.6;background:var(--bg-surface);padding:10px 12px;border-radius:var(--radius);border:1px solid var(--border)">
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px"><span style="color:var(--color-success)">&#x2713;</span> <strong>Current tab</strong> — read page content and interact with elements</div>
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px"><span style="color:var(--color-success)">&#x2713;</span> <strong>Page text &amp; forms</strong> — extract text, detect forms, read tables</div>
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px"><span style="color:var(--color-success)">&#x2713;</span> <strong>Screenshots</strong> — capture viewport for visual analysis</div>
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px"><span style="color:var(--color-success)">&#x2713;</span> <strong>Tab management</strong> — open, close, and group tabs</div>
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px"><span style="color:var(--color-success)">&#x2713;</span> <strong>Storage</strong> — save settings, vault, memory locally</div>
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px"><span style="color:var(--color-success)">&#x2713;</span> <strong>Input controls</strong> — click, type, and fill form fields</div>
+            <div style="display:flex;align-items:center;gap:6px"><span style="color:var(--color-success)">&#x2713;</span> <strong>Clipboard</strong> — copy extracted data when requested</div>
+          </div>
+          <small style="color:var(--text-dim);font-size:10px;margin-top:4px;display:block">All data stays local unless you configure a cloud AI provider.</small>
+        </div>
+
         <div class="form-group">
           <label>Vault auto-lock timeout (minutes)</label>
           <input type="number" id="vault-lock-timeout" value="${s.vaultLockTimeoutMin ?? 15}" min="1" max="120">
@@ -1067,6 +1123,18 @@ function wireSettingsEvents(container: HTMLElement, s: Settings): void {
   container.querySelector('#telegram-enabled')?.addEventListener('change', async () => {
     const enabled = (container.querySelector('#telegram-enabled') as HTMLInputElement).checked
     await chrome.runtime.sendMessage({ type: 'TELEGRAM_TOGGLE', enabled })
+  })
+
+  // ── Conditional visibility for dependent settings ──────────────────────
+  container.querySelector('#vision-enabled')?.addEventListener('change', () => {
+    const on = (container.querySelector('#vision-enabled') as HTMLInputElement).checked
+    const group = container.querySelector('#screenshot-interval-group') as HTMLElement
+    if (group) group.style.display = on ? '' : 'none'
+  })
+  container.querySelector('#ai-action-learning-enabled')?.addEventListener('change', () => {
+    const on = (container.querySelector('#ai-action-learning-enabled') as HTMLInputElement).checked
+    const group = container.querySelector('#learning-interval-group') as HTMLElement
+    if (group) group.style.display = on ? '' : 'none'
   })
 
   // ── Debug panel ──────────────────────────────────────────────────────────

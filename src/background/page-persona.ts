@@ -36,6 +36,8 @@ export interface DomainPersona {
   selectorHints: string[]
   recoveryStrategies: string[]
   taskTemplates: Record<string, string[]>
+  /** Page-type-specific extraction schema — fields to extract when intent is extract_info */
+  extractionHints?: string[]
 }
 
 export interface PageClassification {
@@ -169,6 +171,11 @@ const DOMAIN_PERSONAS: Record<PageType, DomainPersona> = {
       'book hotel': ['Enter location/city', 'Set check-in/out dates', 'Set guests', 'Click search', 'Filter/sort results', 'Read details', 'Select hotel'],
       'compare prices': ['Search on first site', 'Note prices', 'Open second site in new tab', 'Search same route', 'Compare and summarize'],
     },
+    extractionHints: [
+      'Airline', 'Route', 'Departure time', 'Arrival time', 'Duration', 'Stops',
+      'Price', 'Cabin class', 'Baggage included', 'Booking link',
+      'Hotel name', 'Check-in', 'Check-out', 'Rate per night', 'Rating', 'Location',
+    ],
   },
 
   shopping: {
@@ -204,6 +211,10 @@ const DOMAIN_PERSONAS: Record<PageType, DomainPersona> = {
       'add to cart': ['Navigate to product', 'Select variant', 'Click Add to Cart', 'Confirm'],
       'compare prices': ['Search product on site A', 'Note price + shipping', 'Open site B', 'Search same product', 'Summarize comparison'],
     },
+    extractionHints: [
+      'Product name', 'Price', 'Original price', 'Discount %', 'Rating', 'Review count',
+      'Availability', 'SKU/ASIN', 'Shipping cost', 'Seller', 'Brand', 'Key specs',
+    ],
   },
 
   realestate: {
@@ -230,6 +241,10 @@ const DOMAIN_PERSONAS: Record<PageType, DomainPersona> = {
       'search properties': ['Enter location', 'Set price range', 'Set rooms/size', 'Search', 'Read results'],
       'analyze listing': ['Open listing', 'Read details', 'Calculate price/sqm', 'Check location on map', 'Summarize'],
     },
+    extractionHints: [
+      'Address', 'Price', 'Price per sqm', 'Rooms', 'Size (sqm)', 'Floor',
+      'Year built', 'Condition', 'Energy rating', 'Heating type', 'Parking', 'Agent/contact',
+    ],
   },
 
   finance: {
@@ -257,6 +272,10 @@ const DOMAIN_PERSONAS: Record<PageType, DomainPersona> = {
       'check balance': ['Navigate to account overview', 'Read balance', 'Summarize recent transactions'],
       'make transfer': ['Click Transfer', 'Fill recipient details', 'Enter amount', 'Review', 'Confirm'],
     },
+    extractionHints: [
+      'Account name', 'Balance', 'Currency', 'Transaction date', 'Description',
+      'Amount', 'Category', 'Running total', 'Fees', 'Interest rate',
+    ],
   },
 
   social: {
@@ -369,6 +388,10 @@ const DOMAIN_PERSONAS: Record<PageType, DomainPersona> = {
     selectorHints: ['Address fields: "Delivery address", "Your address", "Lieferadresse"'],
     recoveryStrategies: ['If menu items not clickable: SCROLL to load lazy items, then try again'],
     taskTemplates: { 'order food': ['Enter address', 'Search restaurant/cuisine', 'Browse menu', 'Add items', 'Checkout'] },
+    extractionHints: [
+      'Restaurant name', 'Cuisine', 'Rating', 'Delivery time', 'Delivery fee',
+      'Minimum order', 'Menu item', 'Price', 'Dietary tags',
+    ],
   },
 
   health: {
@@ -378,6 +401,10 @@ const DOMAIN_PERSONAS: Record<PageType, DomainPersona> = {
     selectorHints: ['Appointment slots: usually button/card elements with time and date'],
     recoveryStrategies: ['If appointment form fails: check if registration/login is required first'],
     taskTemplates: { 'book appointment': ['Search doctor/specialty', 'Select date', 'Choose time slot', 'Fill details', 'Confirm'] },
+    extractionHints: [
+      'Doctor/provider name', 'Specialty', 'Location', 'Available dates',
+      'Insurance accepted', 'Rating', 'Phone', 'Next available',
+    ],
   },
 
   jobs: {
@@ -397,6 +424,10 @@ const DOMAIN_PERSONAS: Record<PageType, DomainPersona> = {
       'search jobs': ['Enter keywords', 'Set location', 'Set filters', 'Search', 'Read results'],
       'apply to job': ['Open listing', 'Click Apply', 'Fill form steps', 'Upload resume', 'Submit'],
     },
+    extractionHints: [
+      'Job title', 'Company', 'Location', 'Salary range', 'Employment type',
+      'Requirements', 'Benefits', 'Posted date', 'Application deadline', 'Remote/hybrid',
+    ],
   },
 
   legal: {
@@ -569,6 +600,16 @@ export function getExpandedPersonaForPrompt(
   if (dp.selectorHints.length > 0 && budget > 100 &&
       (!intentCategory || intentCategory === 'fill_form' || intentCategory === 'interact')) {
     const section = `\n\n### Selector Hints\n${dp.selectorHints.map(h => `- ${h}`).join('\n')}`
+    if (estTokens(section) <= budget) {
+      parts.push(section)
+      budget -= estTokens(section)
+    }
+  }
+
+  // Extraction hints — useful for extract_info intent
+  if (dp.extractionHints && dp.extractionHints.length > 0 && budget > 80 &&
+      (!intentCategory || intentCategory === 'extract_info' || intentCategory === 'analyze')) {
+    const section = `\n\n### Extraction Template for ${classification.type}\nWhen extracting data from this page type, look for these fields:\n${dp.extractionHints.map(h => `- ${h}`).join('\n')}\nUse [EXTRACT] tags to present the results as a structured card.`
     if (estTokens(section) <= budget) {
       parts.push(section)
       budget -= estTokens(section)

@@ -314,6 +314,18 @@ async function handleContentMessage(msg: Record<string, unknown>): Promise<unkno
       return { ...result, userActive: userIsInteracting, snapshot: freshSnap }
     }
 
+    case MSG.WATCH_CHECK: {
+      const selector = msg.selector as string | undefined
+      let currentValue = ''
+      if (selector) {
+        const el = document.querySelector(selector)
+        currentValue = el?.textContent?.trim() ?? ''
+      } else {
+        currentValue = document.body.innerText?.slice(0, 5000) ?? ''
+      }
+      return { ok: true, selector, currentValue, timestamp: Date.now() }
+    }
+
     default:
       return { ok: false, error: 'Unknown message' }
   }

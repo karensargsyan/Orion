@@ -4,6 +4,10 @@ import { addGlobalMemory } from './memory-manager'
 const EMAIL_RE = /\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b/g
 const PHONE_RE = /(?:\+?\d{1,3}[\s\-.]?)?\(?\d{2,4}\)?[\s\-.]?\d{3,4}[\s\-.]?\d{2,4}\b/g
 const CARD_RE = /\b(?:\d{4}[\s\-]?){3}\d{1,4}\b/g
+const SSN_RE = /\b\d{3}-\d{2}-\d{4}\b/g
+const API_KEY_RE = /\b(?:sk|pk|api|key|token|secret|bearer|access)[_\-]?[A-Za-z0-9]{20,}\b/gi
+const AUTH_HEADER_RE = /\b(?:Bearer|Basic)\s+[A-Za-z0-9+/=_\-.]{20,}\b/g
+const CVV_CONTEXT_RE = /\b(?:cvv|cvc|cvv2|cvc2|security\s*code)\s*[:=]?\s*(\d{3,4})\b/gi
 const NAME_KEYWORDS = /\b(?:name|call me|i am|i'm|my name)\b/i
 
 function luhnCheck(num: string): boolean {
@@ -35,6 +39,14 @@ function maskPhone(phone: string): string {
   return `***${digits.slice(-4)}`
 }
 
+function maskSSN(ssn: string): string {
+  return `***-**-${ssn.slice(-4)}`
+}
+
+function maskApiKey(key: string): string {
+  return `${key.slice(0, 4)}${'*'.repeat(Math.min(key.length - 4, 20))}`
+}
+
 export function detectPersonalData(text: string): PIIMatch[] {
   const matches: PIIMatch[] = []
   const seen = new Set<string>()
@@ -59,6 +71,31 @@ export function detectPersonalData(text: string): PIIMatch[] {
     if (seen.has(digits)) continue
     seen.add(digits)
     matches.push({ type: 'card', value: maskCard(m[0]), masked: maskCard(m[0]) })
+  }
+
+  for (const m of text.matchAll(CVV_CONTEXT_RE)) {
+    const cvv = m[1]
+    if (seen.has(cvv)) continue
+    seen.add(cvv)
+    matches.push({ type: 'card', value: `CVV: ${cvv}`, masked: 'CVV: ***' })
+  }
+
+  for (const m of text.matchAll(SSN_RE)) {
+    if (seen.has(m[0])) continue
+    seen.add(m[0])
+    matches.push({ type: 'ssn', value: m[0], masked: maskSSN(m[0]) })
+  }
+
+  for (const m of text.matchAll(API_KEY_RE)) {
+    if (seen.has(m[0])) continue
+    seen.add(m[0])
+    matches.push({ type: 'api_key', value: m[0], masked: maskApiKey(m[0]) })
+  }
+
+  for (const m of text.matchAll(AUTH_HEADER_RE)) {
+    if (seen.has(m[0])) continue
+    seen.add(m[0])
+    matches.push({ type: 'api_key', value: m[0], masked: maskApiKey(m[0]) })
   }
 
   if (NAME_KEYWORDS.test(text)) {

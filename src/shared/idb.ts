@@ -147,6 +147,24 @@ function setupSchema(db: IDBDatabase, tx: IDBTransaction, oldVersion: number): v
       ij.createIndex('by_fieldType_domain', ['fieldType', 'domain'], { unique: false })
     }
   }
+
+  // v9 -> v10: pinned facts store
+  if (oldVersion < 10) {
+    if (!db.objectStoreNames.contains(STORE.PINNED_FACTS)) {
+      const pf = db.createObjectStore(STORE.PINNED_FACTS, { keyPath: 'id' })
+      pf.createIndex('by_session', 'sessionId', { unique: false })
+      pf.createIndex('by_pinned', 'pinnedAt', { unique: false })
+    }
+  }
+
+  // v10 -> v11: saved workflows store (V3: FR-V3-1)
+  if (oldVersion < 11) {
+    if (!db.objectStoreNames.contains(STORE.WORKFLOWS)) {
+      const wf = db.createObjectStore(STORE.WORKFLOWS, { keyPath: 'id' })
+      wf.createIndex('by_name', 'name', { unique: false })
+      wf.createIndex('by_updated', 'updatedAt', { unique: false })
+    }
+  }
 }
 
 // ─── Generic helpers ──────────────────────────────────────────────────────────

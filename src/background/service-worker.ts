@@ -28,7 +28,7 @@ import { analyzeAndGenerateFormValues } from './form-assist'
 import { analyzeHabits, getHabitPatterns } from './habit-tracker'
 import { getAllCalendarEvents } from './calendar-detector'
 import { detectPersonalData, storeDetectedPII } from './pii-detector'
-import { classifyActionRisk, needsConfirmation, requestConfirmation, handleConfirmResponse, requestModeChoice, handleModeChoiceResponse } from './confirmation-manager'
+import { classifyActionRisk, isSubmitGuardAction, needsConfirmation, requestConfirmation, handleConfirmResponse, requestModeChoice, handleModeChoiceResponse, shouldDisableExecution, shouldSuppressActions, shouldAutoApprove } from './confirmation-manager'
 import type { ConfirmResponseType } from '../shared/types'
 import { getSkillsForDomain, formatSkillsForPrompt } from './skill-manager'
 import { getBehaviorsForDomain, formatBehaviorsForPrompt } from './behavior-learner'
@@ -58,7 +58,7 @@ import {
 import { analyzeFullSupervisedSession } from './supervised-analyzer'
 import { findMatchingPlaybook } from './playbook-matcher'
 import { getAllPlaybooks, deletePlaybook, exportFullBackup, importFullBackup } from './memory-manager'
-import { logError, logTabEvent } from './error-logger'
+import { logError, logTabEvent, getRecentActions } from './error-logger'
 import { routeMessage, hasHandler } from './handlers/msg-router'
 import { registerClipboardHandlers } from './handlers/clipboard-handlers'
 import { registerWorkflowHandlers } from './handlers/workflow-handlers'
@@ -141,6 +141,12 @@ function resetBgCallFailures(): void {
 
 let settings: Settings | null = null
 const sessionId = `session_${Date.now()}`
+/** Current execution mode (V3: FR-V3-8). Stored in memory, persisted to chrome.storage.local. */
+let currentExecutionMode: import('../shared/types').ExecutionMode = 'approve'
+// Restore execution mode from storage on startup
+chrome.storage.local.get('executionMode').then(r => {
+  if (r.executionMode) currentExecutionMode = r.executionMode
+}).catch(() => {})
 // Side panel is always enabled globally via setPanelBehavior + setOptions
 
 async function getSettings(): Promise<Settings> {
@@ -245,11 +251,19 @@ async function initSW(): Promise<void> {
 
 function setupContextMenus(): void {
   chrome.contextMenus.removeAll(() => {
+    // Text operations (when text is selected)
+    chrome.contextMenus.create({ id: 'orion-fix-grammar', title: 'Fix grammar & spelling', contexts: ['selection', 'editable'] })
+    chrome.contextMenus.create({ id: 'orion-improve', title: 'Improve writing', contexts: ['selection', 'editable'] })
+    chrome.contextMenus.create({ id: 'orion-separator-1', type: 'separator', contexts: ['selection'] })
+
+    // Existing options
     chrome.contextMenus.create({ id: 'orion-ask', title: 'Ask Orion about this', contexts: ['selection'] })
-    chrome.contextMenus.create({ id: 'orion-summarize', title: 'Summarize this page', contexts: ['page'] })
     chrome.contextMenus.create({ id: 'orion-explain', title: 'Explain this', contexts: ['selection'] })
     chrome.contextMenus.create({ id: 'orion-research', title: 'Research this topic', contexts: ['selection'] })
-    chrome.contextMenus.create({ id: 'orion-separator', type: 'separator', contexts: ['all'] })
+    chrome.contextMenus.create({ id: 'orion-separator-2', type: 'separator', contexts: ['all'] })
+
+    // Page-level actions
+    chrome.contextMenus.create({ id: 'orion-summarize', title: 'Summarize this page', contexts: ['page'] })
     chrome.contextMenus.create({ id: 'orion-fill', title: 'Fill this form with Orion', contexts: ['page', 'editable'] })
   })
 }
@@ -270,6 +284,24 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   const pageUrl = tab.url ?? ''
 
   switch (info.menuItemId) {
+    case 'orion-fix-grammar':
+      if (selectedText) {
+        broadcastToPanel({
+          type: 'CONTEXT_MENU_CHAT',
+          text: `Fix grammar and spelling in this text:\n\n"${selectedText}"\n\nProvide corrected version.`,
+          tabId
+        })
+      }
+      break
+    case 'orion-improve':
+      if (selectedText) {
+        broadcastToPanel({
+          type: 'CONTEXT_MENU_CHAT',
+          text: `Improve the clarity, tone, and professionalism of this text:\n\n"${selectedText}"\n\nProvide rewritten version.`,
+          tabId
+        })
+      }
+      break
     case 'orion-ask':
       if (selectedText) {
         broadcastToPanel({ type: 'CONTEXT_MENU_CHAT', text: `What is this: "${selectedText}"`, tabId })
@@ -604,6 +636,17 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
       }
     }
   }
+  // Watch mode alarm
+  if (alarm.name.startsWith('watch-')) {
+    const { parseWatchAlarmName, handleWatchAlarm } = await import('./watch-manager')
+    const watchTabId = parseWatchAlarmName(alarm.name)
+    if (watchTabId !== undefined) {
+      const event = await handleWatchAlarm(watchTabId)
+      if (event) {
+        broadcastToPanel({ type: MSG.WATCH_EVENT, event })
+      }
+    }
+  }
 })
 
 async function runBackgroundSummarization(): Promise<void> {
@@ -786,13 +829,20 @@ chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== PORT_AI_STREAM) return
 
   // Track panel ports for broadcasting (context menus, keyboard shortcuts)
+  // Guard against memory leak: max 10 active ports
+  if (activePanelPorts.size >= 10) {
+    const oldest = activePanelPorts.values().next().value
+    if (oldest) activePanelPorts.delete(oldest)
+  }
   activePanelPorts.add(port)
   touchUserActivity()
 
   const streamPort = wrapStreamPort(port)
   port.onDisconnect.addListener(() => {
     activePanelPorts.delete(port)
-    abortAllStreams()
+    // Only abort streaming AI responses — do NOT cancel ongoing automation (action loops
+    // must continue even if the side panel navigates away during a NAVIGATE action).
+    // abortAllStreams() was too aggressive — it killed follow-up AI calls mid-automation.
   })
 
   port.onMessage.addListener((msg: Record<string, unknown>) => {
@@ -964,6 +1014,19 @@ async function handleAIChat(
     }
   }
 
+      // PII redaction preview (PRD 13.3): detect and notify about redacted data
+      const piiSnap = tabState.get(tabId)
+      if (piiSnap && !isBlankTab) {
+        const pageTextForPII = (piiSnap.visibleText ?? piiSnap.pageText ?? '').slice(0, 5000)
+        const pagePIIMatches = detectPersonalData(pageTextForPII)
+        if (pagePIIMatches.length > 0) {
+          const typeCounts = new Map<string, number>()
+          for (const m of pagePIIMatches) { typeCounts.set(m.type, (typeCounts.get(m.type) ?? 0) + 1) }
+          const summary = Array.from(typeCounts.entries()).map(([t, c]) => `${c} ${t}`).join(', ')
+          port.postMessage({ type: MSG.STREAM_CHUNK, chunk: `> Detected sensitive data on page (${summary}) — masked before analysis\n\n` })
+        }
+      }
+
       let pageContext = tabState.summarize(tabId)
       if (isBlankTab) {
         pageContext = `This is a BLANK TAB — no website is loaded. You CANNOT type, click, or interact with any page elements.\nTo fulfill the user's request, use these background actions:\n- [ACTION:SEARCH query="..."] — Google search (works without a loaded page)\n- [ACTION:NAVIGATE url="..."] — open a website\n- [ACTION:OPEN_TAB url="..."] — open a URL in a research tab\nDo NOT use CLICK, TYPE, or other DOM actions until you have navigated to a real website.`
@@ -1040,6 +1103,32 @@ async function handleAIChat(
   const isLocal = (s.activeProvider ?? 'local') === 'local'
   const ctxWindow = s.contextWindowTokens || (s.liteMode ? 8192 : (isLocal ? 32768 : 131072))
 
+  // Load pinned facts for prompt context
+  let pinnedFactsText = ''
+  try {
+    const { getPinnedFacts, formatPinnedFactsForPrompt } = await import('./pinned-facts-manager')
+    const pinnedFacts = await getPinnedFacts()
+    pinnedFactsText = formatPinnedFactsForPrompt(pinnedFacts)
+  } catch { /* ignore — store may not exist yet */ }
+
+  // Load additional tab contexts for cross-tab compare
+  let additionalTabs: Array<{ title: string; url: string; text: string }> | undefined
+  const additionalTabIds = msg.additionalTabIds as number[] | undefined
+  if (additionalTabIds && additionalTabIds.length > 0) {
+    additionalTabs = []
+    for (const atId of additionalTabIds.slice(0, 3)) {
+      try {
+        const tab = await chrome.tabs.get(atId)
+        const textResp = await chrome.tabs.sendMessage(atId, { type: MSG.REQUEST_PAGE_TEXT }) as { ok?: boolean; text?: string }
+        additionalTabs.push({
+          title: tab.title ?? '',
+          url: tab.url ?? '',
+          text: (textResp?.text ?? '').slice(0, 7000),
+        })
+      } catch { /* tab may not have content script */ }
+    }
+  }
+
   const pipelineResult = buildPromptPipeline({
     userText,
     pageSnapshot: currentSnap,
@@ -1056,6 +1145,9 @@ async function handleAIChat(
     contextWindow: ctxWindow,
     liteMode: s.liteMode ?? false,
     knownUserData,
+    explanationDepth: (msg.explanationDepth as 'quick' | 'standard' | 'deep') || undefined,
+    pinnedFacts: pinnedFactsText,
+    additionalTabs,
   })
 
   const systemPrompt = pipelineResult.systemPrompt
@@ -1122,15 +1214,44 @@ async function handleAIChat(
 
     const actions = parseActionsFromText(fullText)
     if (tabId > 0) {
+      // If AI produced no actions, trust that decision — skip the entire execution pipeline.
+      // This prevents auto-kickstart from forcing unnecessary action loops for questions,
+      // text corrections, explanations, and other text-only responses.
+      if (actions.length === 0) {
+        return
+      }
+
       let guided = false
+
+      if (actions.length > 0) {
+        // V3: Execution mode check — suppress or disable actions if needed
+        if (shouldSuppressActions(currentExecutionMode)) {
+          // ask_only mode: strip all actions, just show text
+          actions.length = 0
+        } else if (shouldDisableExecution(currentExecutionMode)) {
+          // suggest mode: show action descriptions in chat but don't execute
+          const desc = actions.map(a => `- **${a.action}** ${a.params.selector ?? a.params.value ?? ''}`).join('\n')
+          port.postMessage({ type: MSG.STREAM_CHUNK, chunk: `\n\n**Suggested actions** (execution disabled in current mode):\n${desc}\n` })
+          actions.length = 0
+        }
+      }
 
       if (actions.length > 0) {
         const risk = classifyActionRisk(actions)
         const domain = extractDomain(tabState.get(tabId)?.url ?? '')
+        const currentSnapshot = tabState.get(tabId)
 
-        // Destructive actions always need confirmation regardless of mode
-        if (risk === 'destructive') {
-          const confirmed = await requestConfirmation(port, actions, risk, tabId, chatSessionId)
+        // Submit Guard: detect final/irreversible actions even if keyword risk is just 'write'
+        const needsSubmitGuard = risk !== 'destructive' &&
+          isSubmitGuardAction(actions, currentSnapshot)
+        const effectiveRisk = needsSubmitGuard ? 'destructive' as const : risk
+
+        // V3: Auto-approve based on execution mode
+        const modeAutoApproved = shouldAutoApprove(currentExecutionMode, effectiveRisk)
+
+        // Destructive or submit-guarded actions need confirmation (dual-channel: chat + Telegram)
+        if (effectiveRisk === 'destructive' && !modeAutoApproved) {
+          const confirmed = await requestConfirmation(port, actions, effectiveRisk, tabId, chatSessionId, currentSnapshot)
           if (!confirmed) {
             port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '\n\n*Action declined by user.*\n' })
             port.postMessage({ type: MSG.STREAM_END, fullText: fullText + '\n\n*Action declined by user.*' })
@@ -1151,6 +1272,21 @@ async function handleAIChat(
       }
 
       updateBadge('active')
+
+      // Emit action plan card if the pipeline produced a task plan
+      if (pipelineResult.taskPlan && pipelineResult.taskPlan.steps.length > 1) {
+        const planId = `plan_${Date.now()}`
+        port.postMessage({
+          type: MSG.ACTION_PLAN,
+          planId,
+          title: `Task: ${pipelineResult.intent.category.replace(/_/g, ' ')} (${pipelineResult.taskPlan.steps.length} steps)`,
+          steps: pipelineResult.taskPlan.steps.map((s, i) => ({
+            description: s.description,
+            status: i === 0 ? 'active' : 'pending',
+          })),
+        })
+      }
+
       try {
         await executeWithFollowUp(
           fullText, tabId, s, port,
@@ -1635,6 +1771,12 @@ async function handleMessage(
       return { ok: true }
     }
 
+    case MSG.SET_EXECUTION_MODE: {
+      currentExecutionMode = (msg.mode as import('../shared/types').ExecutionMode) || 'approve'
+      chrome.storage.local.set({ executionMode: currentExecutionMode }).catch(() => {})
+      return { ok: true, mode: currentExecutionMode }
+    }
+
     case 'GROUP_ACTIVE_TAB': {
       const tid = msg.tabId as number
       if (tid > 0) {
@@ -1824,6 +1966,142 @@ async function handleMessage(
       return { ok: true, ...result }
     }
 
+    // ── Cross-Tab ─────────────────────────────────────────────────────────────
+    case MSG.GET_TAB_LIST: {
+      const tabs = await chrome.tabs.query({ currentWindow: true })
+      const list = tabs
+        .filter(t => t.id && !t.url?.startsWith('chrome://') && !t.url?.startsWith('chrome-extension://'))
+        .map(t => ({ id: t.id!, title: t.title ?? '', url: t.url ?? '', active: t.active ?? false }))
+      return { ok: true, tabs: list }
+    }
+
+    // ── Watch Mode ────────────────────────────────────────────────────────────
+    case MSG.WATCH_START: {
+      const { startWatch } = await import('./watch-manager')
+      const watchTabId = (msg.tabId as number) || sender.tab?.id
+      if (!watchTabId) return { ok: false, error: 'No tab' }
+      // Get initial baseline from content script
+      let baseline = ''
+      try {
+        const snap = await chrome.tabs.sendMessage(watchTabId, {
+          type: MSG.WATCH_CHECK,
+          selector: msg.selector as string | undefined,
+        }) as { ok?: boolean; currentValue?: string }
+        if (snap?.ok) baseline = snap.currentValue ?? ''
+      } catch { /* tab may not have content script */ }
+      const session = startWatch(watchTabId, msg.selector as string | undefined, baseline, msg.intervalSec as number | undefined)
+      return { ok: true, session }
+    }
+    case MSG.WATCH_STOP: {
+      const { stopWatch } = await import('./watch-manager')
+      const wTabId = (msg.tabId as number) || sender.tab?.id
+      if (wTabId) stopWatch(wTabId)
+      return { ok: true }
+    }
+    case MSG.WATCH_SNAPSHOT: {
+      const { getWatchSession } = await import('./watch-manager')
+      const sTabId = (msg.tabId as number) || sender.tab?.id
+      const session = sTabId ? getWatchSession(sTabId) : undefined
+      return { ok: true, session: session ?? null }
+    }
+
+    // ── Pinned Facts ──────────────────────────────────────────────────────────
+    case MSG.PIN_FACT: {
+      const { addPinnedFact } = await import('./pinned-facts-manager')
+      await addPinnedFact(msg.fact as import('../shared/types').PinnedFact)
+      return { ok: true }
+    }
+    case MSG.UNPIN_FACT: {
+      const { deletePinnedFact } = await import('./pinned-facts-manager')
+      await deletePinnedFact(msg.id as string)
+      return { ok: true }
+    }
+    case MSG.GET_PINS: {
+      const { getPinnedFacts } = await import('./pinned-facts-manager')
+      const facts = await getPinnedFacts()
+      return { ok: true, facts }
+    }
+
+    // ── Saved Workflows (V3: FR-V3-1) ──────────────────────────────────────────
+    case MSG.SAVE_WORKFLOW: {
+      const { saveWorkflow } = await import('./workflow-engine')
+      await saveWorkflow(msg.workflow as import('../shared/types').SavedWorkflow)
+      return { ok: true }
+    }
+    case MSG.LOAD_WORKFLOWS: {
+      const { loadWorkflows } = await import('./workflow-engine')
+      const wfs = await loadWorkflows(msg.limit as number | undefined)
+      return { ok: true, workflows: wfs }
+    }
+    case MSG.DELETE_WORKFLOW: {
+      const { deleteWorkflowById } = await import('./workflow-engine')
+      await deleteWorkflowById(msg.id as string)
+      return { ok: true }
+    }
+    case MSG.RUN_WORKFLOW: {
+      const { getWorkflowById, createWorkflow, startWorkflow } = await import('./workflow-engine')
+      const saved = await getWorkflowById(msg.id as string)
+      if (!saved) return { ok: false, error: 'Workflow not found' }
+      // Convert SavedWorkflow steps into runtime WorkflowSteps
+      const runtimeSteps = saved.steps.map(s => ({
+        description: `${s.type}: ${JSON.stringify(s.params)}`,
+        action: s.type,
+      }))
+      const wf = createWorkflow(saved.name, runtimeSteps)
+      startWorkflow(wf.id).catch(() => {})
+      return { ok: true, workflowId: wf.id }
+    }
+
+    // ── Context Stack (V3: FR-V3-2) ────────────────────────────────────────────
+    case MSG.GET_CONTEXT_STACK: {
+      const csTabId = (msg.tabId as number) || sender.tab?.id || 0
+      const currentDomain = extractDomain(tabState.get(csTabId)?.url ?? '')
+      const { getContextSources } = await import('./prompt-engine')
+      const { getPinnedFacts, formatPinnedFactsForPrompt } = await import('./pinned-facts-manager')
+
+      const snap = tabState.get(csTabId)
+      const tabMem = await getTabMemory(csTabId, 8)
+      const memText = tabMem.map(m => m.content).join('\n').slice(0, 1400)
+      const domainSkills = await getSkillsForDomain(currentDomain)
+      const skillsText = formatSkillsForPrompt(domainSkills)
+      const userBehaviors = await getBehaviorsForDomain(currentDomain)
+      const behaviorText = formatBehaviorsForPrompt(userBehaviors)
+      const instructionEntries = await getAllUserInstructions()
+      const instructionsText = formatUserInstructionsForPrompt(instructionEntries, 'general')
+      const sitemapText = await getSitemapForPrompt(currentDomain)
+      let pinnedText = ''
+      try { pinnedText = formatPinnedFactsForPrompt(await getPinnedFacts()) } catch { /* */ }
+      let mempalaceText = ''
+      if (mempalaceEnabled(s) && currentDomain) {
+        try { mempalaceText = await recallRelevantMemories(s, '', currentDomain).catch(() => '') || '' } catch { /* */ }
+      }
+      if (localMemoryEnabled(s) && currentDomain) {
+        try {
+          const lr = await recallLocalMemories('', currentDomain).catch(() => '')
+          if (lr) mempalaceText = mempalaceText ? mempalaceText + '\n' + lr : lr
+        } catch { /* */ }
+      }
+
+      const sources = getContextSources({
+        userText: '',
+        pageSnapshot: snap,
+        accessibilityTree: snap ? (tabState as unknown as { getA11yTree?: (id: number) => string }).getA11yTree?.(csTabId) ?? '' : '',
+        memories: memText,
+        skills: skillsText,
+        behaviors: behaviorText,
+        instructions: instructionsText,
+        mempalace: mempalaceText,
+        sitemap: sitemapText,
+        pinnedFacts: pinnedText,
+        isLocal: (s.activeProvider ?? 'local') === 'local',
+        contextWindow: s.contextWindowTokens || 32768,
+        liteMode: s.liteMode ?? false,
+      })
+
+      const totalTokens = sources.reduce((sum, src) => sum + src.tokens, 0)
+      return { ok: true, sources, totalTokens }
+    }
+
     // ── Modular handlers (clipboard, workflow, debug) are in handlers/ ──
     // They're routed via the msg-router at the end of this switch (default case).
 
@@ -1913,6 +2191,11 @@ async function handleMessage(
     case MSG.GET_CALENDAR_EVENTS: {
       const events = await getAllCalendarEvents()
       return { ok: true, events }
+    }
+
+    case MSG.GET_ACTION_LOG: {
+      const actions = await getRecentActions(50)
+      return { ok: true, actions }
     }
 
     // ── Form fill ─────────────────────────────────────────────────────────────

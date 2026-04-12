@@ -100,17 +100,18 @@ export const test = base.extend<ExtensionFixtures>({
     // the cache later from the page context using SETTINGS_SET message.
     await serviceWorker.evaluate(async (mockUrl: string) => {
       const DB_NAME = 'pwa_memory'
-      const DB_VERSION = 7
+      const DB_VERSION = 11
 
       const db = await new Promise<IDBDatabase>((resolve, reject) => {
         const req = indexedDB.open(DB_NAME, DB_VERSION)
         req.onupgradeneeded = () => {
           const d = req.result
-          // Create stores if they don't exist (first run)
+          // Create stores if they don't exist (first run) — keep in sync with idb.ts v11
           const stores = ['chat_history', 'session_memory', 'global_memory', 'vault',
             'settings', 'calendar_events', 'habit_patterns', 'domain_skills',
             'user_behaviors', 'learning_sessions', 'supervised_playbooks',
-            'supervised_sessions', 'visual_sitemap']
+            'supervised_sessions', 'visual_sitemap', 'local_memory', 'input_journal',
+            'pinned_facts', 'workflows']
           for (const name of stores) {
             if (!d.objectStoreNames.contains(name)) {
               d.createObjectStore(name, { keyPath: 'key' })
@@ -143,6 +144,7 @@ export const test = base.extend<ExtensionFixtures>({
         sttProvider: 'web-speech',
         confirmationPreferences: [],
         globalAutoAccept: true,
+        automationPreference: 'auto',  // skip mode-choice dialog in tests
       }
 
       const tx = db.transaction('settings', 'readwrite')
@@ -191,6 +193,7 @@ export const test = base.extend<ExtensionFixtures>({
           calendarDetectionEnabled: false,
           aiActionLearningEnabled: false,
           globalAutoAccept: true,
+          automationPreference: 'auto',  // skip mode-choice dialog in tests
         },
       })
     }, mockAI.url)

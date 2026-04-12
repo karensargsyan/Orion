@@ -32,6 +32,8 @@ export interface UserIntent {
     fields?: string[]
     targetElement?: string
     value?: string
+    analysisType?: string
+    textOperation?: string
   }
   complexity: 'simple' | 'multi_step' | 'compound'
   confidence: number
@@ -78,6 +80,10 @@ export interface PromptPipelineInput {
   contextWindow: number
   liteMode: boolean
   knownUserData?: string
+  explanationDepth?: 'quick' | 'standard' | 'deep'
+  pinnedFacts?: string
+  /** Additional tab contexts for cross-tab comparison (max 3) */
+  additionalTabs?: Array<{ title: string; url: string; text: string }>
 }
 
 export interface PromptPipelineOutput {
@@ -95,22 +101,28 @@ export interface PromptPipelineOutput {
 const INTENT_PATTERNS: Array<{ category: IntentCategory; pattern: RegExp; confidence: number }> = [
   // Remember / memory
   { category: 'remember', pattern: /\b(remember|memorize|save\s+to\s+memory|add\s+to\s+.*memory|never\s+forget|from\s+now\s+on|always|merke?\s+dir)\b/i, confidence: 0.95 },
+  // Grammar/spelling check — HIGH PRIORITY for user experience
+  { category: 'analyze', pattern: /\b(check|fix|correct|improve)\s+(grammar|spelling|typo|writing|this\s+text|mistakes?|errors?)\b/i, confidence: 0.90 },
   // Navigate
   { category: 'navigate', pattern: /\b(go\s+to|open|navigate|visit|gehe?\s+zu|öffne|besuche?)\b/i, confidence: 0.85 },
-  // Fill form
-  { category: 'fill_form', pattern: /\b(fill|enter|type\s+in|ausfüllen|eingeben|eintragen|fill\s+(in|out)|complete\s+the\s+form)\b/i, confidence: 0.85 },
-  // Compose
+  // Fill form — ENHANCED with casual variants
+  { category: 'fill_form', pattern: /\b(fill|enter|type\s+in|complete|ausfüllen|eingeben|eintragen|help\s+(me\s+)?with\s+(this|the)\s+form|fill\s+(this|these|the)\s+(field|form|input)|enter\s+my\s+(info|information|details))\b/i, confidence: 0.85 },
+  // Text improvement — NEW for "make this better"
+  { category: 'compose', pattern: /\b(make\s+(this|it)\s+(better|clearer|more\s+professional|shorter|longer)|improve\s+(this|the)\s+(text|writing|message)|rewrite\s+this|polish\s+this)\b/i, confidence: 0.85 },
+  // Compose (original)
   { category: 'compose', pattern: /\b(write|compose|draft|reply|respond|schreibe?|verfass|antwort)\b/i, confidence: 0.80 },
+  // Validation/verification — NEW for "check if this is correct"
+  { category: 'analyze', pattern: /\b(validate|verify|check\s+(if|whether)|is\s+this\s+(correct|right|valid|complete)|does\s+this\s+work)\b/i, confidence: 0.80 },
   // Search / find (travel, shopping, etc.)
   { category: 'search', pattern: /\b(suche?n?|find|search|flug|fl[üu]ge?|tickets?|book|buchen|finde|compare|vergleich|price|preis|hotel|cheapest|günstigste|billigste|kaufen?|shop|reise|travel|flight)\b/i, confidence: 0.80 },
   // Research (multi-tab)
   { category: 'research', pattern: /\b(research|recherche?|investigate|look\s+up|deep\s+dive|find\s+out|herausfinden)\b/i, confidence: 0.80 },
-  // Analyze
+  // Analyze (general)
   { category: 'analyze', pattern: /\b(analy[sz]e?|report|bericht|summarize|zusammenfass|check|prüfe?|review|examine)\b/i, confidence: 0.75 },
   // Extract info (questions)
   { category: 'extract_info', pattern: /\b(what|how\s+much|how\s+many|when|where|who|which|show\s+me|tell\s+me|was\s+ist|wie\s+viel|wann|wo|wer|welche?)\b/i, confidence: 0.70 },
   // Interact
-  { category: 'interact', pattern: /\b(click|press|tap|select|toggle|scroll|klicke?|drücke?|wähle?)\b/i, confidence: 0.85 },
+  { category: 'interact', pattern: /\b(click|press|tap|select|toggle|scroll|klicke?|drücke?|wähle?|mach|starte?|beginn|anfangen|durchführ|ausführ|absend|submit|continue|weiter|bestätig|confirm|run|execute|los)\b/i, confidence: 0.85 },
   // Configure
   { category: 'configure', pattern: /\b(set|change|update|config|setting|einstell|änder|aktualisier)\b/i, confidence: 0.70 },
 ]
@@ -303,17 +315,42 @@ export function decomposeTask(
     const form = pageSnapshot.forms[0]
     const emptyFields = (form.fields ?? []).filter(f => !f.value || f.value.length === 0)
     if (emptyFields.length > 0) {
+      // Detect wizard/multi-step indicators from page text
+      const pageText = (pageSnapshot.completePageText ?? '').toLowerCase()
+      const stepMatch = pageText.match(/step\s+(\d+)\s+(?:of|\/)\s+(\d+)/i)
+        ?? pageText.match(/(\d+)\s*\/\s*(\d+)\s*steps?/i)
+      const hasNextButton = (pageSnapshot.buttons ?? []).some(b =>
+        /^(next|continue|proceed|weiter|siguiente)$/i.test(b.text?.trim() ?? ''))
+      const isWizard = !!(stepMatch || hasNextButton)
+      const currentStep = stepMatch ? Number(stepMatch[1]) : 1
+      const totalSteps = stepMatch ? Number(stepMatch[2]) : (hasNextButton ? 2 : 1)
+      const stepLabel = isWizard ? ` (Step ${currentStep} of ${totalSteps})` : ''
+
+      const fieldNames = emptyFields.map(f => f.label || f.name).filter(Boolean)
       steps.push({
-        description: `Fill ${emptyFields.length} form fields`,
+        description: `Fill ${emptyFields.length} form fields${stepLabel}: ${fieldNames.slice(0, 4).join(', ')}${fieldNames.length > 4 ? '…' : ''}`,
         expectedActions: emptyFields.map(f => `TYPE ${f.label || f.name}`),
-        successCriteria: 'All form fields populated',
+        successCriteria: 'All visible form fields populated',
       })
-      steps.push({
-        description: 'Submit form',
-        expectedActions: ['CLICK submit button'],
-        successCriteria: 'Form submitted, page navigated or confirmation shown',
-      })
-      return { steps, currentStep: 0, fallbackStrategy: 'Fill fields one by one if batch fill fails.' }
+
+      if (isWizard && currentStep < totalSteps) {
+        steps.push({
+          description: `Advance to next step (click Next/Continue)`,
+          expectedActions: ['CLICK Next', 'CLICK Continue'],
+          successCriteria: 'Page advances to next form step; previous selectors invalid',
+        })
+      } else {
+        steps.push({
+          description: 'Submit form',
+          expectedActions: ['CLICK submit button'],
+          successCriteria: 'Form submitted, page navigated or confirmation shown',
+        })
+      }
+
+      const fallback = isWizard
+        ? 'If a field is missing, try scrolling — wizard forms often hide fields below fold. After clicking Next, wait for new fields to load before interacting.'
+        : 'Fill fields one by one using TYPE if FILL_FORM fails.'
+      return { steps, currentStep: 0, fallbackStrategy: fallback }
     }
   }
 
@@ -444,6 +481,18 @@ export function buildActionReference(intent: UserIntent, hasA11y: boolean): stri
   sections.push(`## ACTIONS — TEXT SELECTORS (most reliable)
 Use visible text, labels, placeholders, or aria-labels as selectors:`)
 
+  // Form filling decision rules (only for fill_form intent)
+  if (intent.category === 'fill_form') {
+    sections.push(`
+## FORM FILLING — WHICH ACTION TO USE
+- **2+ fields, values known, non-sensitive** → use FILL_FORM (batch, fastest)
+- **Sensitive data (payment, SSN, passwords)** → use FORM_COACH (user reviews each field)
+- **User asked to "guide" or "help me fill"** → use FORM_COACH
+- **1 field only** → use TYPE directly
+- **Wizard/multi-step form** → use sequential TYPE per field, then CLICK Next for each step
+- **Unknown field values** → ask user before filling`)
+  }
+
   // Prioritized action list based on intent
   const allActions: Array<{ syntax: string; when: string; categories: IntentCategory[] }> = [
     { syntax: '[ACTION:TYPE selector="label" value="text"]', when: 'Enter text in a field. Use the field\'s visible LABEL or placeholder.', categories: ['fill_form', 'interact', 'compose', 'search', 'general'] },
@@ -451,7 +500,7 @@ Use visible text, labels, placeholders, or aria-labels as selectors:`)
     { syntax: '[ACTION:SELECT_OPTION selector="Dropdown" value="Option"]', when: 'Select from a dropdown/select menu. NOT for text inputs.', categories: ['fill_form', 'interact', 'configure', 'general'] },
     { syntax: '[ACTION:TOGGLE selector="Checkbox label" value="on|off"]', when: 'Toggle a checkbox or switch. Checks current state before clicking.', categories: ['fill_form', 'interact', 'configure', 'general'] },
     { syntax: '[ACTION:KEYPRESS key="Enter|Tab|Escape"]', when: 'Press a keyboard key. Use after TYPE to submit, or Tab to move to next field.', categories: ['fill_form', 'interact', 'search', 'general'] },
-    { syntax: '[ACTION:FILL_FORM assignments=\'[{"selector":"Email","value":"x@y.com","inputType":"text"}]\']', when: 'Fill multiple fields at once. Efficient for forms with many fields.', categories: ['fill_form'] },
+    { syntax: '[ACTION:FILL_FORM assignments=\'[{"selector":"Email","value":"x@y.com","inputType":"email"},{"selector":"Phone","value":"+1555000","inputType":"tel"},{"selector":"Country","value":"Germany","inputType":"select"}]\']', when: 'Fill 2+ fields at once. Use for simple forms where all values are known. inputType: text | email | tel | password | select | textarea | number', categories: ['fill_form'] },
     { syntax: '[ACTION:HOVER selector="text"]', when: 'Hover over element to reveal tooltip/dropdown.', categories: ['interact', 'general'] },
     { syntax: '[ACTION:DOUBLECLICK selector="text"]', when: 'Double-click to select word or open item.', categories: ['interact', 'general'] },
     { syntax: '[ACTION:NAVIGATE url="URL"]', when: 'Go to a specific URL in current tab.', categories: ['navigate', 'general'] },
@@ -465,7 +514,7 @@ Use visible text, labels, placeholders, or aria-labels as selectors:`)
     { syntax: '[ACTION:GET_PAGE_TEXT]', when: 'Get full text of the current page.', categories: ['extract_info', 'analyze', 'general'] },
     { syntax: '[ACTION:READ_PAGE filter="interactive"]', when: 'Get element IDs for complex pages (use text selectors first).', categories: ['interact', 'fill_form'] },
     { syntax: '[ACTION:SCREENSHOT]', when: 'Take a visual screenshot of the page.', categories: ['analyze', 'extract_info', 'general'] },
-    { syntax: '[ACTION:FORM_COACH]', when: 'Start guided step-by-step form filling with user approval.', categories: ['fill_form'] },
+    { syntax: '[ACTION:FORM_COACH]', when: 'Guided step-by-step form fill — user reviews and edits each field before it is filled. Use when: (1) form has sensitive fields (password, payment, medical), (2) user said "help me fill" or "guide me", (3) form has 6+ fields and values are uncertain.', categories: ['fill_form'] },
   ]
 
   // Filter and order by intent relevance
@@ -484,15 +533,11 @@ Use visible text, labels, placeholders, or aria-labels as selectors:`)
     }
   }
 
-  // Selector tips
+  // Selector tips — short reference (full sequence is in Band 1 SELECTOR STRATEGY above)
   sections.push(`
-## SELECTOR TIPS
-- Use the field's VISIBLE LABEL: selector="Where from?", selector="Passengers"
-- Use placeholder text: selector="Search", selector="Enter your email"
-- Use button text: selector="Search flights", selector="Submit"
-- Use CSS only as last resort: selector="input[name=q]"
-- NEVER describe the page — emit the action immediately
-- If an action fails, try a DIFFERENT selector (CSS, aria-label, etc.)`)
+## SELECTOR ORDER (summary)
+Visible text → Placeholder → Aria-label → CSS → Element ID (after READ_PAGE)
+Use exact text from the page. If one fails, move to the next type — never retry the same.`)
 
   // Element IDs (after READ_PAGE)
   if (hasA11y) {
@@ -500,6 +545,27 @@ Use visible text, labels, placeholders, or aria-labels as selectors:`)
 ## ELEMENT IDs (only after READ_PAGE)
 After calling READ_PAGE, you may use JSON: {"element_id": 5, "action": "click"}
 But text selectors are preferred — element IDs can become stale.`)
+  }
+
+  // Grammar & spelling check format
+  if (intent.category === 'analyze' && intent.entities.analysisType === 'grammar') {
+    sections.push(`
+## GRAMMAR & SPELLING CHECK FORMAT
+When checking grammar/spelling, respond with:
+
+**Corrections found:** [number]
+
+1. **Original:** "their going to the store"
+   **Corrected:** "they're going to the store"
+   **Reason:** Incorrect use of "their" (possessive) instead of "they're" (contraction)
+
+2. **Original:** "I seen him yesterday"
+   **Corrected:** "I saw him yesterday"
+   **Reason:** Incorrect past tense verb form
+
+**Summary:** [1-2 sentences about overall writing quality]
+**Corrected full text:**
+[full corrected version]`)
   }
 
   return sections.join('\n')
@@ -570,6 +636,14 @@ export function buildFollowUpContext(params: {
     parts.push(`\nTask Progress:\n${completed ? completed + '\n' : ''}${current}${remaining ? '\n' + remaining : ''}`)
   }
 
+  // Wizard continuity: if page changed (navigation detected) and we're in a form task
+  if (taskPlan && stateDiff && stateDiff.includes('navigat')) {
+    const nextStep = taskPlan.steps[taskPlan.currentStep]
+    if (nextStep) {
+      parts.push(`\n⚠️ FORM PAGE ADVANCED: The form moved to a new page/step. All previous selectors are now invalid — do not retry them. Focus on the new fields visible below.${nextStep.expectedActions.length > 0 ? ` Expected fields on this step: ${nextStep.expectedActions.join(', ')}.` : ''}`)
+    }
+  }
+
   // Mode-specific instructions
   const anyFailed = failureInstructions.length > 0
   if (mode === 'guided') {
@@ -634,98 +708,102 @@ function truncateToTokens(text: string, maxTokens: number): string {
   return text.length <= maxChars ? text : text.slice(0, maxChars)
 }
 
-function assembleFullPrompt(
-  input: PromptPipelineInput,
+// ─── Band 1: Action Execution Framework ────────────────────────────────────
+
+function buildBand1_ActionFramework(
   intent: UserIntent,
-  budget: TokenBudget,
-  ctx: StructuredPageContext,
-  classification: PageClassification,
-  taskPlan: TaskPlan | null,
+  hasA11y: boolean,
+  _hasVision: boolean,
 ): string {
   const now = new Date().toLocaleString()
-  const hasVision = input.capabilities?.supportsVision ?? false
-  const hasA11yTree = !!input.accessibilityTree
-
   const parts: string[] = []
 
-  // 1. Header
-  parts.push(`You are Orion — a fully autonomous AI browser assistant. Current time: ${now}
+  // Identity (compact — capabilities are discoverable, not listed)
+  parts.push(`You are Orion — a fully autonomous AI browser assistant embedded as a Chrome extension. Current time: ${now}
 
-## YOUR CAPABILITIES
-You are a Chrome extension with these features:
-- **Chat**: Natural language sidebar chat — answer questions, give advice, execute browser actions
-- **Form Filling**: Read forms, classify fields, fill from encrypted vault data, or generate appropriate values. Use FILL_FORM for batch fill, FORM_COACH for step-by-step guided fill, or TYPE for individual fields
-- **Encrypted Vault**: PIN-protected AES-256 storage for credentials, addresses, cards, contacts, identities. Always check vault before asking users for personal data
-- **Web Research**: Open background tabs, search Google, read multiple pages, synthesize findings with sources
-- **Page Analysis**: Read any page via accessibility tree + full text extraction. Classify 17 page types (email, shopping, travel, banking, social media, etc.)
-- **33 Action Types**: Click, type, navigate, scroll, search, open/close tabs, fill forms, toggle, select, screenshot, hover, double-click, key press, and more — all via Chrome DevTools Protocol
-- **Memory**: Per-tab memory, per-domain knowledge, global user instructions, optional MemPalace long-term memory
-- **Tab Groups**: Color-coded groups, pause/resume groups, manage multiple concurrent sessions
-- **Workflows**: Multi-step automation up to 25 rounds per request with visual verification
-- **Voice Input**: Speech-to-text via Web Speech API or local Whisper model
-- **Privacy First**: Runs 100% locally via LM Studio — zero data leaves the machine. Cloud mode sends data only to user's chosen provider
-- **Clipboard Manager**: Records and searches clipboard history
-- **Calendar Detection**: Detects calendar events with .ics export
-- **Command Palette**: Quick access via Alt+Space
+You have an encrypted vault (PIN-protected AES-256), persistent memory, 33 browser action types (click, type, navigate, scroll, search, fill forms, open tabs, screenshot, and more — all via Chrome DevTools Protocol), voice input, tab groups, multi-step automation (up to 25 rounds), web research (multi-tab), clipboard history, calendar detection, and a command palette. You run locally via LM Studio or with the user's own cloud API key.
 
-When asked about yourself, describe these capabilities confidently. You ARE Orion.
-When filling forms, ALWAYS check if the answer is already available in page content, vault data, memory, or can be derived from context BEFORE asking the user.`)
+When asked about yourself, describe these capabilities. When filling forms, check vault data and page content BEFORE asking the user.`)
 
-  // 2. Expert persona (expanded with strategies)
-  if (budget.persona > 0 && classification.type !== 'general') {
-    const personaBlock = getExpandedPersonaForPrompt(
-      input.pageSnapshot?.url ?? '',
-      input.pageSnapshot?.title ?? '',
-      input.pageSnapshot?.headings ?? [],
-      input.pageSnapshot?.completePageText ?? '',
-      intent.category,
-      budget.persona
-    )
-    if (personaBlock) parts.push(`\n${personaBlock}`)
-  }
-
-  // 3. Task-aligned guidance (NEW — connects intent to page capabilities)
-  if (intent.category !== 'general' && intent.category !== 'remember' && ctx.affordances.length > 0) {
-    const guidance = `\n## TASK GUIDANCE
-The user wants to: **${intent.category.replace(/_/g, ' ')}**.
-${ctx.primaryWorkflow}
-${ctx.affordances.length > 0 ? `Available actions on this page: ${ctx.affordances.join(', ')}.` : ''}`
-    parts.push(guidance)
-  }
-
-  // 4. Core principles
+  // 6 Action Execution Rules
   parts.push(`
-## CORE PRINCIPLES
-1. **READ first, ACT second.** The page content is provided below. Answer questions directly from it — do NOT issue read actions when the answer is already there.
-2. **ACT, don't describe.** When asked to do something, DO IT with actions. Never narrate.
-3. **Be autonomous.** Chain actions across rounds until COMPLETE. Only ask permission for destructive/financial actions.
-4. **Recover from failures.** If an action fails, try a different approach immediately.
-5. **Verify results.** After important actions, check the page changed as expected.
-6. **Date your information.** When citing memory, state the date. When citing research, note it is current.
-7. **Use Markdown.** Format with **bold**, bullet lists, headings. No raw HTML. No emoji.`)
+## ACTION EXECUTION RULES
 
-  // 5. Action reference (prioritized by intent)
-  parts.push(`\n${buildActionReference(intent, hasA11yTree)}`)
+### Rule 1: Actions Are Your Only Interface
+[ACTION:...] tags are the ONLY way to interact with the page. Text alone does NOTHING.
+- WRONG: "I'll click Submit" → nothing happens on the page
+- WRONG: "I have clicked Submit" → this is a lie, nothing happened
+- RIGHT: [ACTION:CLICK selector="Submit"] → this actually clicks the button
+If you want something to happen, you MUST emit an [ACTION:...] tag.
 
-  // 6. Workflow
+### Rule 2: Never Repeat a Failed Approach
+If an action failed or nothing changed after executing it:
+1. Do NOT retry the same selector — it will fail again
+2. Try a DIFFERENT selector: alternate text, CSS, aria-label, or element ID
+3. After 2 failures: use [ACTION:READ_PAGE filter="interactive"] to see what actually exists
+4. After 3 failures: use [ACTION:SCREENSHOT] to see the actual visual state
+5. If still stuck: tell the user what you tried and ask for guidance
+NEVER repeat the same action with the same selector more than once.
+
+### Rule 3: Read Before Acting
+Page content is provided below. Answer questions DIRECTLY from it.
+- Do NOT emit [ACTION:GET_PAGE_TEXT] when the answer is already in Page Content below
+- Do NOT emit read actions just to "check" — the page state is already provided
+- DO emit read actions only when you need content not visible in the provided excerpt
+
+### Rule 4: Verify After Acting
+After actions that change page state (submit, navigate, toggle, delete):
+- Check that the page actually changed as expected
+- If nothing changed: the action hit the wrong element — try a different approach
+- After navigation: previous selectors are INVALID on the new page — re-read before acting
+
+### Rule 5: Completion Signal
+Include {"is_complete": true} ONLY when ALL requested work is genuinely finished.
+- NEVER as your first or only response
+- NEVER before performing the requested actions
+- NEVER when actions failed and the task isn't done
+- If you cannot complete the task, explain why — do not signal complete
+
+### Rule 6: Be Autonomous, Not Reckless
+- Chain actions across multiple rounds until the task is done
+- Only ask permission for: purchases, deletions, sending messages, financial transactions
+- For everything else (clicking, typing, navigating, scrolling): just do it
+- If stuck after exhausting approaches: report clearly what you tried and what went wrong`)
+
+  // Selector Strategy (replaces scattered tips)
   parts.push(`
-## WORKFLOW
-1. **READ**: Page content is below. If you need more, use GET_PAGE_TEXT.
-2. **ACT**: Use text selectors. Emit actions immediately.
-3. **VERIFY**: Check results. If a selector failed, try a different one.
-4. **COMPLETE**: When done, include {"is_complete": true} in your response.`)
+## SELECTOR STRATEGY — TRY IN THIS ORDER
 
-  // 7. Task plan
-  if (taskPlan && taskPlan.steps.length > 0 && budget.taskPlan > 0) {
-    const planLines = taskPlan.steps.map((s, i) => `${i + 1}. ${s.description}`)
-    const planSection = truncateToTokens(
-      `\n## TASK PLAN\nFollow these steps:\n${planLines.join('\n')}\nThis plan is advisory — adapt if the page differs from expectations.`,
-      budget.taskPlan
-    )
-    parts.push(planSection)
-  }
+**Step 1 — Visible text (always try first):**
+Use the exact visible text of the button, label, or link as it appears on the page.
+→ selector="Search flights"  selector="Submit"  selector="Add to Cart"  selector="Where from?"
 
-  // 8. Toggles, research, widgets, security (compact)
+**Step 2 — Placeholder text (for input fields):**
+If Step 1 fails or the element is a text input with no visible label, use its placeholder.
+→ selector="Enter your email"  selector="Search"  selector="Type a message"
+
+**Step 3 — Aria-label (for icon buttons, unlabeled elements):**
+If Steps 1–2 fail, use the aria-label attribute.
+→ selector="Close dialog"  selector="Open menu"  selector="Send message"
+
+**Step 4 — CSS selector (when text/aria fails):**
+Only if Steps 1–3 fail. Use the most specific attribute you see in the page source.
+→ selector="input[name=email]"  selector="button[type=submit]"  selector=".btn-primary"
+
+**Step 5 — Element ID (only after READ_PAGE):**
+Last resort. Call [ACTION:READ_PAGE filter="interactive"] first to get current IDs.
+→ {"element_id": 5, "action": "click"}  — IDs go stale on dynamic pages, use sparingly.
+
+**Failure rules:**
+- If a selector fails, move to the NEXT step — do NOT retry the same selector
+- If two elements share the same visible text, try the more specific CSS selector at Step 4
+- NEVER invent a selector: only use text/attributes you can see in the page state below
+- NEVER describe: selector="the blue button on the right" — this will always fail`)
+
+  // Action reference (filtered by intent — existing function)
+  parts.push(`\n${buildActionReference(intent, hasA11y)}`)
+
+  // Compact domain knowledge
   parts.push(`
 ## TOGGLES & CHECKBOXES
 Check [State: ON/OFF] before toggling. Use TOGGLE action.
@@ -741,37 +819,108 @@ Confirmations: [CONFIRM:id="id"] Button Label [/CONFIRM]
 ## SECURITY
 Analyze emails/messages for phishing: urgency, mismatched domains, credential requests, suspicious links.`)
 
-  // 9. Accessibility tree
+  return parts.join('\n')
+}
+
+// ─── Band 2: Page Understanding ────────────────────────────────────────────
+
+function buildBand2_PageUnderstanding(
+  input: PromptPipelineInput,
+  intent: UserIntent,
+  budget: TokenBudget,
+  ctx: StructuredPageContext,
+  classification: PageClassification,
+  taskPlan: TaskPlan | null,
+): string {
+  const hasA11yTree = !!input.accessibilityTree
+  const hasVision = input.capabilities?.supportsVision ?? false
+  const parts: string[] = []
+
+  // Expert persona (expanded with domain strategies)
+  if (budget.persona > 0 && classification.type !== 'general') {
+    const personaBlock = getExpandedPersonaForPrompt(
+      input.pageSnapshot?.url ?? '',
+      input.pageSnapshot?.title ?? '',
+      input.pageSnapshot?.headings ?? [],
+      input.pageSnapshot?.completePageText ?? '',
+      intent.category,
+      budget.persona
+    )
+    if (personaBlock) parts.push(`\n${personaBlock}`)
+  }
+
+  // Task guidance
+  if (intent.category !== 'general' && intent.category !== 'remember' && ctx.affordances.length > 0) {
+    parts.push(`\n## TASK GUIDANCE
+The user wants to: **${intent.category.replace(/_/g, ' ')}**.
+${ctx.primaryWorkflow}
+${ctx.affordances.length > 0 ? `Available actions on this page: ${ctx.affordances.join(', ')}.` : ''}`)
+  }
+
+  // Smart form filling guidance
+  if (intent.category === 'fill_form' && ctx.flows.length > 0) {
+    parts.push(`
+## SMART FORM FILLING GUIDANCE
+The user wants help filling a form. Here's the intelligent approach:
+
+1. **Identify required fields** (marked with *, required attribute, or validation messages)
+2. **Infer user intent from page context:**
+   - Contact form → use user's name, email from known data
+   - Checkout form → use shipping/billing info
+   - Login form → ask for credentials (don't guess)
+   - Search form → use user's query from their message
+
+3. **Handle ambiguity smartly:**
+   - If user says "fill this" with multiple forms → ask which one
+   - If user says "fill these fields" → fill visible fields only
+   - If required info is missing → ask once, not field-by-field
+
+4. **Validation awareness:**
+   - Check field types (email, phone, date) and format correctly
+   - Look for placeholder text showing expected format
+   - Respect maxlength and pattern attributes
+
+**Example:**
+User: "fill this fields"
+Page: Contact form with Name, Email, Phone (optional), Message (required)
+You: "I'll fill the contact form with:
+- Name: [user's name]
+- Email: [user's email]
+- Message: [ask user what message to include]"`)
+  }
+
+  // Task plan (advisory)
+  if (taskPlan && taskPlan.steps.length > 0 && budget.taskPlan > 0) {
+    const planLines = taskPlan.steps.map((s, i) => {
+      const marker = i < taskPlan.currentStep ? '✓' : i === taskPlan.currentStep ? '→' : '·'
+      const actions = s.expectedActions.length > 0
+        ? `\n   Fields: ${s.expectedActions.slice(0, 5).join(' | ')}${s.expectedActions.length > 5 ? '…' : ''}`
+        : ''
+      return `${marker} Step ${i + 1}: ${s.description}${actions}`
+    })
+    const planSection = truncateToTokens(
+      `\n## TASK PLAN\n${planLines.join('\n')}\n_Adapt to actual page — field names may differ._`,
+      budget.taskPlan
+    )
+    parts.push(planSection)
+  }
+
+  // Accessibility tree
   if (hasA11yTree && budget.a11yTree > 0) {
     const treeText = truncateToTokens(input.accessibilityTree!, budget.a11yTree)
     parts.push(`\n## ACCESSIBILITY TREE${input.viewportMeta ? ` (Viewport: ${input.viewportMeta.width}x${input.viewportMeta.height})` : ''}\n${treeText}`)
   }
 
-  // 10. Vision
+  // Vision
   if (hasVision) {
     parts.push(`\n## VISION\nScreenshot attached for visual layout.${input.viewportMeta ? ` Viewport: ${input.viewportMeta.width}x${input.viewportMeta.height} px.` : ''}`)
   }
 
-  // 11. Sitemap
-  if (input.sitemap && budget.sitemap > 0) {
-    parts.push(`\n## SITE MAP\n${truncateToTokens(input.sitemap, budget.sitemap)}`)
-  }
-
-  // 12. Known user data
-  if (input.knownUserData) {
-    parts.push(`\n## Known User Data\n${input.knownUserData}`)
-  }
-
-  // 13. Domain skills, behaviors, instructions
-  if (input.skills && budget.skills > 0) parts.push(`\n${truncateToTokens(input.skills, budget.skills)}`)
-  if (input.behaviors) parts.push(`\n${input.behaviors}`)
-  if (input.instructions && budget.userInstructions > 0) parts.push(`\n${truncateToTokens(input.instructions, budget.userInstructions)}`)
-
-  // 14. Structured page context (replaces flat tabState.summarize)
+  // Structured page context
   const formattedContext = formatForPrompt(ctx, input.pageSnapshot, budget.pageContext)
   parts.push(`\n## Current Page State\n${formattedContext}`)
 
-  // 15. Page text
+  // Page text
   if (budget.pageText > 0) {
     const pageText = input.pageSnapshot?.completePageText ?? input.pageSnapshot?.pageText ?? ''
     if (pageText) {
@@ -780,15 +929,174 @@ Analyze emails/messages for phishing: urgency, mismatched domains, credential re
     }
   }
 
-  // 16. MemPalace
+  return parts.join('\n')
+}
+
+// ─── Band 3: Output Formatting (cloud models only) ─────────────────────────
+
+function buildBand3_OutputFormatting(depth?: string): string {
+  const parts: string[] = []
+
+  parts.push(`
+## CORE RESPONSE RULES
+1. **Use Markdown.** Format with **bold**, bullet lists, headings. No raw HTML. No emoji.
+2. **Answer first, evidence second, actions third.** Lead with the direct answer. Follow with supporting details. Offer actions last.
+3. **Date your information.** When citing memory, state the date. When citing research, note it is current.
+
+## SOURCE GROUNDING (REQUIRED)
+End EVERY informational response with source tags:
+- [SOURCE:page] — from current page content
+- [SOURCE:selection] — from user's selected text
+- [SOURCE:visible] — from visible viewport only
+- [SOURCE:memory] — from prior conversation or session memory
+- [SOURCE:general] — general knowledge not from the page
+- [SOURCE:stale] — may be based on outdated page context
+Always include at least one source tag. If mixed sources, include all relevant tags.
+
+## MESSAGE TYPE MARKERS
+Mark message type at the start when applicable:
+- [MSG_TYPE:warning] — warnings, caution alerts, risk notices
+- [MSG_TYPE:clarification] — need user clarification before proceeding
+- [MSG_TYPE:system] — status updates or system messages
+Do NOT use these for normal answers.
+
+## PAGE REFERENCES
+Reference page elements with REF tags: [REF:css-selector]descriptive label[/REF]
+Example: [REF:#submit-btn]Submit button[/REF]
+
+## STRUCTURED EXTRACTION
+Extract structured data with EXTRACT tags:
+[EXTRACT title="Title"]
+Key: Value
+[/EXTRACT]
+
+## STRUCTURED COMPARISON
+Compare options with COMPARE tags:
+[COMPARE title="Title"]
+Criteria|Option A|Option B
+Price|$10/mo|$20/mo
+> Recommendation: ...
+[/COMPARE]
+
+## FOLLOW-UP SUGGESTIONS
+Suggest 2-4 follow-up actions: [FOLLOWUP]Option 1|Option 2|Option 3[/FOLLOWUP]
+
+## PINNED FACTS
+Pin values for comparison: [PIN]Label: Value[/PIN]
+
+## JARGON AND TERMINOLOGY
+When content contains legal, technical, financial, or medical jargon:
+- Define unfamiliar terms inline with "in other words" or "this means"
+- For legal/policy pages: translate to plain language
+- For technical docs: provide analogies when helpful
+
+## "WHY" REASONING MODE
+When user asks "why can't I...?", "why is this disabled?", "what's blocking me?":
+1. Inspect form state: required fields, disabled buttons, validation messages
+2. Check for hidden blockers: modals, overlays, JS validation
+3. Present each blocker with a [REF] to the relevant element
+4. Suggest specific fixes and offer to help
+
+## CLARIFICATION POLICY
+Ask only when: target ambiguity is high, action is risky/irreversible, or context is missing.
+Present constrained choices, not open questions:
+- "I found 3 'Continue' buttons. Which one: [REF:.checkout-btn]Checkout[/REF], [REF:.next-step]Next Step[/REF]?"
+
+## UNCERTAINTY AND TRANSPARENCY
+Be explicit about analysis limitations:
+- State if you only scanned visible content
+- State if the page has dynamic/lazy-loaded content
+- State if multiple matches exist
+- State if the page requires login or has gated content
+Never present uncertain information as definitive.`)
+
+  // Explanation depth
+  const d = depth || 'standard'
+  if (d === 'quick') {
+    parts.push(`\n## EXPLANATION DEPTH: QUICK\nKeep answers to 1-3 sentences maximum. Answer directly, skip details.`)
+  } else if (d === 'deep') {
+    parts.push(`\n## EXPLANATION DEPTH: DEEP\nProvide thorough explanations with definitions, step-by-step breakdowns, examples, references, and caveats.`)
+  }
+
+  return parts.join('\n')
+}
+
+// ─── Band 4: Extended Context ──────────────────────────────────────────────
+
+function buildBand4_ExtendedContext(
+  input: PromptPipelineInput,
+  budget: TokenBudget,
+): string {
+  const parts: string[] = []
+
+  // Sitemap
+  if (input.sitemap && budget.sitemap > 0) {
+    parts.push(`\n## SITE MAP\n${truncateToTokens(input.sitemap, budget.sitemap)}`)
+  }
+
+  // Known user data
+  if (input.knownUserData) {
+    parts.push(`\n## Known User Data\n${input.knownUserData}`)
+  }
+
+  // Pinned facts
+  if (input.pinnedFacts) parts.push(`\n${input.pinnedFacts}`)
+
+  // Domain skills, behaviors, instructions
+  if (input.skills && budget.skills > 0) parts.push(`\n${truncateToTokens(input.skills, budget.skills)}`)
+  if (input.behaviors) parts.push(`\n${input.behaviors}`)
+  if (input.instructions && budget.userInstructions > 0) parts.push(`\n${truncateToTokens(input.instructions, budget.userInstructions)}`)
+
+  // Additional tab contexts (cross-tab compare)
+  if (input.additionalTabs && input.additionalTabs.length > 0) {
+    const tabParts = input.additionalTabs.slice(0, 3).map((t, i) => {
+      const truncText = truncateToTokens(t.text, 2000)
+      return `### Tab ${i + 2}: ${t.title}\nURL: ${t.url}\n${truncText}`
+    })
+    parts.push(`\n## Additional Tab Contexts\nContent from other tabs for comparison or reference.\n${tabParts.join('\n\n')}`)
+  }
+
+  // MemPalace (long-term memory)
   if (input.mempalace && budget.memory > 0) {
     parts.push(`\n## MemPalace (long-term memory — check dates)\n${truncateToTokens(input.mempalace, Math.floor(budget.memory * 0.6))}`)
   }
 
-  // 17. Recent context
+  // Recent context
   if (input.memories && budget.memory > 0) {
     parts.push(`\n## Recent Context (entries prefixed with [date])\n${truncateToTokens(input.memories, Math.floor(budget.memory * 0.4))}`)
   }
+
+  return parts.join('\n')
+}
+
+// ─── Prompt Assembly ────────────────────────────────────────────────────────
+
+function assembleFullPrompt(
+  input: PromptPipelineInput,
+  intent: UserIntent,
+  budget: TokenBudget,
+  ctx: StructuredPageContext,
+  classification: PageClassification,
+  taskPlan: TaskPlan | null,
+): string {
+  const hasA11yTree = !!input.accessibilityTree
+  const hasVision = input.capabilities?.supportsVision ?? false
+
+  const parts: string[] = []
+
+  // Band 1: Action Execution Framework (always included)
+  parts.push(buildBand1_ActionFramework(intent, hasA11yTree, hasVision))
+
+  // Band 2: Page Understanding (always included)
+  parts.push(buildBand2_PageUnderstanding(input, intent, budget, ctx, classification, taskPlan))
+
+  // Band 3: Output Formatting (cloud models only — local models skip this)
+  if (!input.isLocal) {
+    parts.push(buildBand3_OutputFormatting(input.explanationDepth))
+  }
+
+  // Band 4: Extended Context (variable by budget)
+  parts.push(buildBand4_ExtendedContext(input, budget))
 
   return parts.join('\n').trim()
 }
@@ -800,47 +1108,160 @@ function assembleCompactPrompt(
   ctx: StructuredPageContext,
   classification: PageClassification,
 ): string {
-  const now = new Date().toLocaleString()
   const hasA11yTree = !!input.accessibilityTree
+  const hasVision = input.capabilities?.supportsVision ?? false
 
-  // Compact persona
-  const persona = classification.type !== 'general' && classification.domainPersona
-    ? `\n## EXPERT ROLE — ${classification.type.toUpperCase()}\n${classification.domainPersona.role}`
-    : ''
+  const parts: string[] = []
 
-  // Compact task guidance
-  const guidance = intent.category !== 'general' && ctx.affordances.length > 0
-    ? `\nTask: ${intent.category.replace(/_/g, ' ')}. ${ctx.primaryWorkflow}`
-    : ''
+  // Band 1: Action Execution Framework (IDENTICAL to full prompt)
+  parts.push(buildBand1_ActionFramework(intent, hasA11yTree, hasVision))
 
-  return `You are Orion — autonomous browser AI with encrypted vault, persistent memory, form filling, web research, 33 action types, tab groups, and voice input. Privacy-first: runs locally or with user's own API key. Current time: ${now}${persona}${guidance}
+  // Band 2: Page Understanding (same structure, budget-limited)
+  parts.push(buildBand2_PageUnderstanding(input, intent, budget, ctx, classification, null))
 
-## RULES
-- DO actions, don't describe them. Emit actions and give SHORT status text.
-- Use Markdown. No emoji. No HTML tags.
-- Actions inside [ACTION:...] are hidden from user.
-- Always include dates when sharing information.
-- Read page content below FIRST. Never guess CSS selectors.
+  // Skip Band 3 (output formatting) — local models don't need formatting instructions
+  // Skip Band 4 (extended context) — doesn't fit in small context windows
 
-## WORKFLOW
-1. Read page content — understand what's on the page
-2. If asked a question: answer from page content
-3. If asked to do something: use TEXT SELECTORS
-4. Emit the action, verify, continue. If it fails, try different selector.
+  // Include lightweight essentials only
+  if (input.pinnedFacts) parts.push(`\n${input.pinnedFacts}`)
+  if (input.instructions && budget.userInstructions > 0) {
+    parts.push(`\n${truncateToTokens(input.instructions, budget.userInstructions)}`)
+  }
 
-## ACTIONS
-${buildActionReference(intent, hasA11yTree)}
+  return parts.join('\n').trim()
+}
 
-## COMPLETION
-When done: {"is_complete": true}
-${hasA11yTree ? `
-## ACCESSIBILITY TREE${input.viewportMeta ? ` (Viewport: ${input.viewportMeta.width}x${input.viewportMeta.height})` : ''}
-${truncateToTokens(input.accessibilityTree!, budget.a11yTree)}` : ''}
-${input.instructions ? `\n${truncateToTokens(input.instructions, budget.userInstructions)}` : ''}
 
-## Current Page State
-${formatForPrompt(ctx, input.pageSnapshot, budget.pageContext)}
-${budget.pageText > 0 && (input.pageSnapshot?.completePageText ?? input.pageSnapshot?.pageText) ? `
-## Page Content
-${truncateToTokens(input.pageSnapshot!.completePageText ?? input.pageSnapshot!.pageText ?? '', budget.pageText)}` : ''}`.trim()
+// ─── Context Stack Inspector (V3: FR-V3-2) ─────────────────────────────────
+
+export function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4)
+}
+
+export interface ContextSource {
+  name: string
+  type: 'page' | 'memory' | 'system' | 'user'
+  tokens: number
+  enabled: boolean
+  preview: string
+}
+
+export function getContextSources(input: PromptPipelineInput): ContextSource[] {
+  const sources: ContextSource[] = []
+
+  // Page context
+  const pageText = input.pageSnapshot?.completePageText ?? input.pageSnapshot?.pageText ?? ''
+  sources.push({
+    name: 'Page content',
+    type: 'page',
+    tokens: estimateTokens(pageText),
+    enabled: !!pageText,
+    preview: pageText.slice(0, 200),
+  })
+
+  // Selected text
+  const selText = input.pageSnapshot?.selectedText ?? ''
+  sources.push({
+    name: 'Selected text',
+    type: 'page',
+    tokens: estimateTokens(selText),
+    enabled: !!selText,
+    preview: selText.slice(0, 200),
+  })
+
+  // Accessibility tree
+  const a11y = input.accessibilityTree ?? ''
+  sources.push({
+    name: 'Accessibility tree',
+    type: 'page',
+    tokens: estimateTokens(a11y),
+    enabled: !!a11y,
+    preview: a11y.slice(0, 200),
+  })
+
+  // Pinned facts
+  const pins = input.pinnedFacts ?? ''
+  sources.push({
+    name: 'Pinned facts',
+    type: 'user',
+    tokens: estimateTokens(pins),
+    enabled: !!pins,
+    preview: pins.slice(0, 200),
+  })
+
+  // Additional tabs
+  const tabs = input.additionalTabs ?? []
+  sources.push({
+    name: `Additional tabs (${tabs.length})`,
+    type: 'page',
+    tokens: tabs.reduce((sum, t) => sum + estimateTokens(t.text), 0),
+    enabled: tabs.length > 0,
+    preview: tabs.map(t => t.title).join(', ').slice(0, 200),
+  })
+
+  // Session memory
+  sources.push({
+    name: 'Session memory',
+    type: 'memory',
+    tokens: estimateTokens(input.memories),
+    enabled: !!input.memories,
+    preview: input.memories.slice(0, 200),
+  })
+
+  // Domain skills
+  sources.push({
+    name: 'Domain skills',
+    type: 'memory',
+    tokens: estimateTokens(input.skills),
+    enabled: !!input.skills,
+    preview: input.skills.slice(0, 200),
+  })
+
+  // Learned behaviors
+  sources.push({
+    name: 'Learned behaviors',
+    type: 'memory',
+    tokens: estimateTokens(input.behaviors),
+    enabled: !!input.behaviors,
+    preview: input.behaviors.slice(0, 200),
+  })
+
+  // User instructions
+  sources.push({
+    name: 'User instructions',
+    type: 'user',
+    tokens: estimateTokens(input.instructions),
+    enabled: !!input.instructions,
+    preview: input.instructions.slice(0, 200),
+  })
+
+  // Sitemap
+  sources.push({
+    name: 'Site map',
+    type: 'page',
+    tokens: estimateTokens(input.sitemap),
+    enabled: !!input.sitemap,
+    preview: input.sitemap.slice(0, 200),
+  })
+
+  // MemPalace
+  sources.push({
+    name: 'MemPalace',
+    type: 'memory',
+    tokens: estimateTokens(input.mempalace),
+    enabled: !!input.mempalace,
+    preview: input.mempalace.slice(0, 200),
+  })
+
+  // Known user data
+  const kud = input.knownUserData ?? ''
+  sources.push({
+    name: 'Known user data',
+    type: 'user',
+    tokens: estimateTokens(kud),
+    enabled: !!kud,
+    preview: kud.slice(0, 200),
+  })
+
+  return sources
 }

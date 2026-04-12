@@ -1,4 +1,8 @@
 import { registerExtensionTab, unregisterExtensionTab, findExistingExtensionTab } from './web-researcher'
+import { executeActionsFromText } from './action-executor'
+import type { SavedWorkflow } from '../shared/types'
+import { STORE, MSG } from '../shared/constants'
+import { dbPut, dbGetAll, dbDelete, dbGetByIndexRange } from '../shared/idb'
 
 // ─── Multi-Tab Workflow Engine ───────────────────────────────────────────────
 
@@ -167,10 +171,8 @@ async function executeStep(step: WorkflowStep): Promise<void> {
   // Navigate or create tab if url is specified
   if (step.url) {
     if (step.tabId) {
-      // Navigate existing tab
       await chrome.tabs.update(step.tabId, { url: step.url })
     } else {
-      // Dedup: check if URL already open in any extension tab (cross-system)
       const existingGlobal = await findExistingExtensionTab(step.url).catch(() => undefined)
       const existingTabId = existingGlobal ?? await findExistingWorkflowTab(step.url)
       if (existingTabId != null) {
@@ -184,14 +186,30 @@ async function executeStep(step: WorkflowStep): Promise<void> {
         }
       }
     }
-    // Wait for the tab to finish loading
     if (step.tabId != null) {
       await waitForTabLoad(step.tabId)
     }
   }
 
-  // Store the action text for external processing
-  step.result = step.action
+  // Execute actions if the step action text contains ACTION tags or is a recognizable action
+  if (step.action && step.tabId != null) {
+    try {
+      const results = await executeActionsFromText(step.action, step.tabId)
+      const allSucceeded = results.every(r => r.success)
+      step.result = allSucceeded
+        ? `Completed: ${results.map(r => r.action).join(', ')}`
+        : `Partial: ${results.filter(r => !r.success).map(r => `${r.action}: ${r.error}`).join('; ')}`
+      if (!allSucceeded) {
+        throw new Error(step.result)
+      }
+    } catch (err) {
+      // If executeActionsFromText found no actions to run, that's OK — it was informational
+      if (err instanceof Error && err.message.startsWith('Partial:')) throw err
+      step.result = step.action  // Store as informational
+    }
+  } else {
+    step.result = step.action
+  }
 }
 
 /** Check if a URL is already open in a tracked workflow tab. */
@@ -214,6 +232,66 @@ function closeWorkflowTabs(wf: Workflow): void {
       unregisterExtensionTab(step.tabId)
       chrome.tabs.remove(step.tabId).catch(() => {}) // already closed
     }
+  }
+}
+
+// ─── Saved Workflows — IDB persistence (V3: FR-V3-1) ─────────────────────
+
+export async function saveWorkflow(workflow: SavedWorkflow): Promise<void> {
+  workflow.updatedAt = Date.now()
+  await dbPut<SavedWorkflow>(STORE.WORKFLOWS, workflow)
+}
+
+export async function loadWorkflows(limit = 50): Promise<SavedWorkflow[]> {
+  try {
+    const all = await dbGetByIndexRange<SavedWorkflow>(STORE.WORKFLOWS, 'by_updated', IDBKeyRange.lowerBound(0), limit)
+    return all
+  } catch {
+    // Store may not exist yet (first upgrade)
+    return []
+  }
+}
+
+export async function deleteWorkflowById(id: string): Promise<void> {
+  await dbDelete(STORE.WORKFLOWS, id)
+}
+
+export async function getWorkflowById(id: string): Promise<SavedWorkflow | undefined> {
+  const all = await loadWorkflows()
+  return all.find(w => w.id === id)
+}
+
+/**
+ * Parse a [WORKFLOW] tag from AI output into a SavedWorkflow.
+ * Format: [WORKFLOW]name: ...\ndescription: ...\nsteps:\n- type: extract, ...\n[/WORKFLOW]
+ */
+export function parseWorkflowTag(raw: string): Partial<SavedWorkflow> | null {
+  const nameMatch = raw.match(/name:\s*(.+)/i)
+  const descMatch = raw.match(/description:\s*(.+)/i)
+  if (!nameMatch) return null
+
+  const steps: SavedWorkflow['steps'] = []
+  const stepLines = raw.match(/^-\s+type:\s*(\w+).*$/gim) || []
+  for (const line of stepLines) {
+    const typeMatch = line.match(/type:\s*(\w+)/i)
+    if (!typeMatch) continue
+    const type = typeMatch[1] as SavedWorkflow['steps'][0]['type']
+    // Extract remaining key:value params
+    const params: Record<string, unknown> = {}
+    const paramPairs = line.replace(/^-\s+/, '').split(',').slice(1)
+    for (const pair of paramPairs) {
+      const [k, ...vParts] = pair.split(':')
+      if (k && vParts.length > 0) {
+        params[k.trim()] = vParts.join(':').trim()
+      }
+    }
+    steps.push({ type, params })
+  }
+
+  return {
+    name: nameMatch[1].trim(),
+    description: descMatch?.[1]?.trim(),
+    steps: steps.length > 0 ? steps : undefined,
   }
 }
 

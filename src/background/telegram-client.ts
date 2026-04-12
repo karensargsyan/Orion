@@ -58,6 +58,24 @@ interface TelegramMessage {
 interface TelegramUpdate {
   update_id: number
   message?: TelegramMessage
+  callback_query?: TelegramCallbackQuery
+}
+
+interface TelegramCallbackQuery {
+  id: string
+  from: TelegramUser
+  message?: TelegramMessage
+  chat_instance: string
+  data?: string
+}
+
+interface InlineKeyboardButton {
+  text: string
+  callback_data: string
+}
+
+interface InlineKeyboardMarkup {
+  inline_keyboard: InlineKeyboardButton[][]
 }
 
 interface TelegramResponse<T> {
@@ -144,11 +162,10 @@ class TelegramStreamPort implements StreamPort {
       const errText = `Error: ${m.error ?? 'Unknown error'}`
       sendMessage(this.token, this.chatId, errText).catch(() => {})
     } else if (m.type === 'CONFIRM_ACTION' || m.type === MSG.CONFIRM_ACTION) {
-      // Auto-accept confirmations — Telegram user implicitly trusts the bot
-      // to execute actions they requested. This mirrors globalAutoAccept.
-      const confirmId = m.id as string
-      const actions = (m.actions as string[]) ?? []
-      handleConfirmResponse(confirmId, 'once', actions, '').catch(() => {})
+      // Submit Guard: Don't auto-accept. The dual-channel orchestrator
+      // in confirmation-manager sends an inline keyboard to Telegram.
+      // The user must explicitly approve via the inline buttons, or
+      // the 120s timeout will decline automatically.
     }
   }
 
@@ -225,6 +242,74 @@ async function sendPhoto(
   } catch (err) {
     console.warn('[Telegram] sendPhoto failed:', err)
     return false
+  }
+}
+
+/**
+ * Send a Submit Guard confirmation to all allowed Telegram chats with inline keyboard.
+ * Shows page context + form data summary so user can approve/decline from Telegram.
+ */
+export async function sendConfirmationToTelegram(
+  token: string,
+  allowedChatIds: string[],
+  confirmId: string,
+  description: string,
+  risk: string,
+  snapshot?: { title?: string; url?: string; forms: Array<{ fields: Array<{ label?: string; name?: string; value?: string; type?: string; required?: boolean }> }> },
+): Promise<void> {
+  if (!allowedChatIds.length) return
+
+  const riskLabel = risk === 'destructive' ? 'HIGH RISK' : 'SUBMIT GUARD'
+
+  const lines: string[] = [
+    `*${riskLabel}*`,
+    '',
+    `Orion wants to: *${description.replace(/[*_`[\]]/g, '')}*`,
+  ]
+
+  if (snapshot) {
+    lines.push('')
+    lines.push(`Page: ${snapshot.title || 'Untitled'}`)
+    if (snapshot.url) lines.push(snapshot.url)
+
+    // Show form data being submitted (exclude passwords)
+    const filledFields = snapshot.forms.flatMap(f =>
+      f.fields.filter(field => field.value && field.type !== 'password' && field.value.trim())
+        .map(field => `  ${field.label || field.name || '?'}: ${field.value!.slice(0, 50)}`)
+    )
+    if (filledFields.length > 0) {
+      lines.push('')
+      lines.push('Form data:')
+      lines.push(...filledFields.slice(0, 8))
+      if (filledFields.length > 8) {
+        lines.push(`  ...and ${filledFields.length - 8} more fields`)
+      }
+    }
+  }
+
+  const text = lines.join('\n')
+
+  const replyMarkup: InlineKeyboardMarkup = {
+    inline_keyboard: [[
+      { text: 'Approve', callback_data: `confirm:${confirmId}:once` },
+      { text: 'Decline', callback_data: `confirm:${confirmId}:decline` },
+    ]],
+  }
+
+  for (const chatId of allowedChatIds) {
+    await telegramAPI(token, 'sendMessage', {
+      chat_id: chatId,
+      text,
+      parse_mode: 'Markdown',
+      reply_markup: replyMarkup,
+    }).catch(async () => {
+      // Retry without Markdown if parsing fails
+      await telegramAPI(token, 'sendMessage', {
+        chat_id: chatId,
+        text: text.replace(/[*_`]/g, ''),
+        reply_markup: replyMarkup,
+      }).catch(() => {})
+    })
   }
 }
 
@@ -310,7 +395,7 @@ export async function pollTelegramUpdates(settings: Settings): Promise<void> {
     offset: lastUpdateOffset + 1,
     limit: 10,
     timeout: 0,
-    allowed_updates: ['message'],
+    allowed_updates: ['message', 'callback_query'],
   })
 
   if (!res.ok || !res.result || res.result.length === 0) return
@@ -319,6 +404,12 @@ export async function pollTelegramUpdates(settings: Settings): Promise<void> {
 
   for (const update of res.result) {
     lastUpdateOffset = Math.max(lastUpdateOffset, update.update_id)
+
+    // Handle inline keyboard button presses (Submit Guard responses)
+    if (update.callback_query) {
+      await handleCallbackQuery(token, update.callback_query)
+      continue
+    }
 
     if (!update.message?.text) continue
 
@@ -784,6 +875,49 @@ async function handleScreenshot(
     await sendMessage(token, chatId, 'Could not capture screenshot. The tab may be on a restricted page (chrome://, devtools, etc.).')
   } else if (failed > 0) {
     await sendMessage(token, chatId, `Sent ${sent} screenshot${sent > 1 ? 's' : ''}. ${failed} failed (restricted pages).`)
+  }
+}
+
+// ─── Inline Keyboard Callback Handling ────────────────────────────────────
+
+/**
+ * Handle callback_query from Telegram inline keyboard buttons.
+ * Parses "confirm:<id>:<preference>" and resolves the pending confirmation.
+ */
+async function handleCallbackQuery(
+  token: string,
+  query: TelegramCallbackQuery,
+): Promise<void> {
+  const data = query.data ?? ''
+
+  // Always answer the callback to remove the loading spinner
+  await telegramAPI(token, 'answerCallbackQuery', {
+    callback_query_id: query.id,
+  })
+
+  // Parse: "confirm:<confirmId>:<once|decline>"
+  const match = data.match(/^confirm:(.+):(once|decline)$/)
+  if (!match) return
+
+  const [, confirmId, preference] = match
+
+  // Resolve via the same handler sidepanel uses
+  await handleConfirmResponse(
+    confirmId,
+    preference as 'once' | 'decline',
+    [],
+    '',
+  )
+
+  // Edit the original message to show the result
+  const resultLabel = preference === 'decline' ? 'Declined' : 'Approved'
+  if (query.message) {
+    const originalText = query.message.text ?? ''
+    await telegramAPI(token, 'editMessageText', {
+      chat_id: query.message.chat.id,
+      message_id: query.message.message_id,
+      text: `${originalText}\n\n— ${resultLabel}`,
+    }).catch(() => {})
   }
 }
 

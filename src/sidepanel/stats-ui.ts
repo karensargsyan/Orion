@@ -15,6 +15,7 @@ export async function initStats(container: HTMLElement): Promise<void> {
       </div>
       <div class="stats-tabs">
         <button class="stat-tab active" data-tab="overview">Overview</button>
+        <button class="stat-tab" data-tab="activity">Activity</button>
         <button class="stat-tab" data-tab="calendar">Calendar</button>
         <button class="stat-tab" data-tab="habits">Habits</button>
       </div>
@@ -38,6 +39,7 @@ export async function initStats(container: HTMLElement): Promise<void> {
   async function renderTab(tab: string): Promise<void> {
     const content = container.querySelector('#stats-content')!
     if (tab === 'overview') await renderOverview(content)
+    else if (tab === 'activity') await renderActivity(content)
     else if (tab === 'calendar') await renderCalendar(content)
     else if (tab === 'habits') await renderHabits(content)
   }
@@ -161,6 +163,38 @@ async function renderHabits(container: Element): Promise<void> {
           </div>
         </div>
       `).join('')}
+    </div>
+  `
+}
+
+async function renderActivity(container: Element): Promise<void> {
+  const res = await chrome.runtime.sendMessage({ type: MSG.GET_ACTION_LOG }) as {
+    ok: boolean; actions?: Array<{ type: string; selector?: string; text?: string; value?: string; url?: string; timestamp: number; success?: boolean }>
+  }
+  const actions = res.actions ?? []
+
+  if (actions.length === 0) {
+    container.innerHTML = '<p class="hint-text" style="padding:20px;text-align:center">No actions recorded yet. Actions will appear here as the assistant interacts with pages.</p>'
+    return
+  }
+
+  const sorted = [...actions].sort((a, b) => b.timestamp - a.timestamp).slice(0, 50)
+
+  container.innerHTML = `
+    <div style="padding:8px;">
+      <div style="font-size:11px;color:var(--text-dim);padding:4px 12px 8px;">Last ${sorted.length} actions</div>
+      ${sorted.map(a => {
+        const time = new Date(a.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+        const target = a.text?.slice(0, 40) || a.selector?.slice(0, 40) || a.url?.slice(0, 40) || ''
+        const statusClass = a.success === false ? 'error' : 'success'
+        const statusText = a.success === false ? 'failed' : 'ok'
+        return `<div class="action-log-entry">
+          <span class="action-log-time">${time}</span>
+          <span class="action-log-type">${esc(a.type)}</span>
+          <span class="action-log-target">${esc(target)}</span>
+          <span class="action-log-status ${statusClass}">${statusText}</span>
+        </div>`
+      }).join('')}
     </div>
   `
 }

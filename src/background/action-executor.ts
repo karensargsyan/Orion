@@ -424,6 +424,50 @@ async function executeParsedActions(
   return executeAIActions(allActions, tabId)
 }
 
+/**
+ * Validate parsed actions — reject obviously hallucinated or malformed selectors.
+ * Keeps actions that have no selector (like navigate, search, scroll, etc.).
+ */
+function validateParsedActions(actions: ParsedAction[]): ParsedAction[] {
+  return actions.filter(a => {
+    const sel = a.params.selector ?? ''
+    const markerId = a.params.markerId ?? ''
+
+    // Actions that don't need selectors are always valid
+    const NO_SELECTOR_ACTIONS = new Set([
+      'navigate', 'search', 'scroll', 'scroll_down', 'scroll_up', 'scroll_to',
+      'back', 'forward', 'wait', 'screenshot', 'read', 'read_page',
+      'get_page_text', 'get_page_state', 'read_options', 'batch_read',
+      'analyze_file', 'open_tab', 'read_tab', 'close_tab', 'keypress',
+      'research_done', 'sitemap_screenshot', 'form_coach', 'fill_form',
+    ])
+    if (NO_SELECTOR_ACTIONS.has(a.action)) return true
+
+    // If action has a markerId, trust it (integer reference to a marked element)
+    if (markerId && /^\d+$/.test(markerId)) return true
+
+    // If no selector at all for an action that needs one, reject
+    if (!sel && !markerId) {
+      console.warn(`[LocalAI] Rejecting action ${a.action}: no selector or markerId`)
+      return false
+    }
+
+    // Reject selectors that look like prose/hallucination rather than CSS
+    if (sel.length > 200) {
+      console.warn(`[LocalAI] Rejecting action ${a.action}: selector too long (${sel.length} chars) — likely hallucinated`)
+      return false
+    }
+
+    // Reject selectors that contain sentence-like patterns
+    if (/\b(the|button|that|which|click|please|and|with|for|this|from)\b/i.test(sel) && sel.includes(' ') && sel.split(' ').length > 4) {
+      console.warn(`[LocalAI] Rejecting action ${a.action}: selector looks like prose: "${sel.slice(0, 60)}"`)
+      return false
+    }
+
+    return true
+  })
+}
+
 export async function executeActionsFromText(
   text: string,
   tabId: number
@@ -1351,6 +1395,10 @@ export async function executeWithFollowUp(
   const visitedUrls = new Set<string>()
   /** Track consecutive tab-opening rounds (no click/type/interaction actions) */
   let consecutiveTabOpenRounds = 0
+  /** Track failed selectors per URL to prevent AI from retrying the same broken selectors */
+  const failedSelectors = new Map<string, Array<{ selector: string; action: string; error: string }>>()
+  /** Track action+result per round for attempt history in follow-up prompts */
+  const roundHistory: Array<{ round: number; actions: string; outcome: string }> = []
 
   // Clear any stale cancellation for this tab, then show stop overlay
   clearCancellation(tabId)
@@ -1409,17 +1457,18 @@ export async function executeWithFollowUp(
       break
     }
 
-    // Check for is_complete signal from AI
-    if (checkIsComplete(response)) {
-      port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '' })
-      break
-    }
+    // Check for is_complete signal — but still parse & execute any actions in this response first
+    const isComplete = checkIsComplete(response)
 
     let actions = parseActionsFromText(response)
     console.warn(`[LocalAI] Round ${round + 1}: parsed ${actions.length} actions from AI response (${response.length} chars)`)
     if (actions.length > 0) {
       console.warn(`[LocalAI] Actions: ${actions.map(a => `${a.action}(${JSON.stringify(a.params)})`).join(', ')}`)
     }
+
+    // Validate parsed actions — reject obviously hallucinated selectors
+    actions = validateParsedActions(actions)
+
     // Log raw response for debugging empty selectors
     if (actions.some(a => !a.params.selector && !a.params.url && !a.params.query && !a.params.markerId && !a.params.key && !a.params.direction)) {
       console.warn(`[LocalAI] Raw AI response: ${response.slice(0, 300)}`)
@@ -1428,7 +1477,14 @@ export async function executeWithFollowUp(
     // If no actions found on first round, try auto-kickstart based on user intent
     if (actions.length === 0 && round === 0) {
       const userGoal = sessionMessages.filter(m => m.role === 'user').pop()?.content ?? ''
-      console.warn(`[LocalAI] No actions parsed. Trying auto-kickstart from user intent...`)
+      console.warn(`[LocalAI] No actions parsed (isComplete=${isComplete}). Trying auto-kickstart from user intent...`)
+
+      // Detect AI hallucination: claims it clicked/typed but emitted no action tags
+      const claimsAction = /\b(I have clicked|I clicked|I have pressed|I pressed|habe.*geklickt|habe.*gedrückt|button.*clicked|navigated to)/i.test(response)
+      if (claimsAction) {
+        console.warn(`[LocalAI] AI claimed to perform action but emitted no [ACTION] tags — hallucination detected`)
+      }
+
       const kickstart = detectIntentAndKickstart(userGoal)
       if (kickstart.length > 0) {
         console.warn(`[LocalAI] Auto-kickstart: ${kickstart.map(a => `${a.action}(${JSON.stringify(a.params)})`).join(', ')}`)
@@ -1437,8 +1493,9 @@ export async function executeWithFollowUp(
       }
     }
 
-    // If still no actions, retry once with a clearer prompt
-    if (actions.length === 0 && round <= 1) {
+    // If still no actions, retry once with a clearer prompt — only after a real execution round,
+    // not on the initial AI response (round 0) which may intentionally contain no actions (e.g. answering a question)
+    if (actions.length === 0 && round === 1) {
       const hasWrongFormat = containsMalformedActions(response)
       const retryPrompt = hasWrongFormat
         ? `Your response used an unsupported format. You MUST use either:\n1. [ACTION:SEARCH query="..."] bracket syntax\n2. {"action": "click", "element_id": 5} JSON format\n\nTry again. What action should you take?`
@@ -1469,10 +1526,11 @@ export async function executeWithFollowUp(
     }
 
     if (actions.length === 0) {
-      console.warn(`[LocalAI] No actions after all attempts on round ${round + 1}. Breaking.`)
-      if (round === 0) {
-        port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '\n\n> Could not determine actions to take. Try rephrasing your request.\n\n' })
+      if (isComplete && round > 0) {
+        // AI said it's done and has no more actions — clean exit (only trust after round 0)
+        break
       }
+      console.warn(`[LocalAI] No actions after all attempts on round ${round + 1}. Breaking.`)
       break
     }
 
@@ -1490,9 +1548,9 @@ export async function executeWithFollowUp(
       consecutiveTabOpenRounds = 0
     }
 
-    // If AI has spent 3+ consecutive rounds only opening tabs without interacting,
+    // If AI has spent 2+ consecutive rounds only opening tabs without interacting,
     // force it to stop opening and interact with the current page
-    if (consecutiveTabOpenRounds >= 3 && !restricted) {
+    if (consecutiveTabOpenRounds >= 2 && !restricted) {
       port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '\n\n> Redirecting: you have the page open — now interact with it.\n' })
       // Replace tab-open actions with a hint and let the AI try again
       const currentTab = await chrome.tabs.get(tabId).catch(() => null)
@@ -1512,25 +1570,42 @@ export async function executeWithFollowUp(
       consecutiveTabOpenRounds = 0
     }
 
-    // Deduplicate: block OPEN_TAB for URLs already visited in this automation
+    // Deduplicate: block OPEN_TAB/NAVIGATE for URLs already visited in this automation
+    // Uses origin+pathname (ignoring query params) to catch login redirects with different tokens
+    let tabOpenCount = 0
+    const MAX_TABS_PER_ROUND = 3
     actions = actions.filter(a => {
       if (a.action === 'open_tab' || a.action === 'read_tab') {
         const url = a.params.url ?? ''
         if (!url) return true
+        // Per-round cap: max 3 tab-opens per round
+        tabOpenCount++
+        if (tabOpenCount > MAX_TABS_PER_ROUND) {
+          logTabEvent('duplicate_blocked', tabId, url, 'research')
+          return false
+        }
         try {
-          const href = new URL(/^https?:\/\//i.test(url) ? url : `https://${url}`).href
-          if (visitedUrls.has(href)) {
+          const parsed = new URL(/^https?:\/\//i.test(url) ? url : `https://${url}`)
+          const key = `${parsed.origin}${parsed.pathname}` // ignore query params
+          if (visitedUrls.has(key)) {
             logTabEvent('duplicate_blocked', tabId, url, 'research')
             return false
           }
-          visitedUrls.add(href)
+          visitedUrls.add(key)
         } catch { /* invalid URL, let it through */ }
       }
       if (a.action === 'navigate') {
         const url = a.params.url ?? a.params.value ?? ''
         if (url) {
-          try { visitedUrls.add(new URL(/^https?:\/\//i.test(url) ? url : `https://${url}`).href) }
-          catch { /* ok */ }
+          try {
+            const parsed = new URL(/^https?:\/\//i.test(url) ? url : `https://${url}`)
+            const key = `${parsed.origin}${parsed.pathname}`
+            if (visitedUrls.has(key)) {
+              logTabEvent('duplicate_blocked', tabId, url, 'navigate')
+              return false  // Block duplicate navigate too
+            }
+            visitedUrls.add(key)
+          } catch { /* ok */ }
         }
       }
       return true
@@ -1542,9 +1617,9 @@ export async function executeWithFollowUp(
       break
     }
 
-    // Loop detection: only trigger after 4 identical action+selector+value signatures
-    // AND only if none of those rounds had any success
-    const actionSig = actions.map(a => `${a.action}:${a.params.selector ?? ''}:${a.params.value ?? ''}`).join('|')
+    // Loop detection: URL-aware signature prevents repeating the same action on the same page
+    const currentUrl = (await chrome.tabs.get(tabId).catch(() => null))?.url ?? ''
+    const actionSig = `${currentUrl}|${actions.map(a => `${a.action}:${a.params.selector ?? ''}:${a.params.value ?? ''}`).join('|')}`
     if (actionSig === lastActionSignature) {
       stuckCount++
     } else {
@@ -1634,9 +1709,29 @@ export async function executeWithFollowUp(
       stuckCount = 0  // also reset stuck detection on any success
     }
 
-    // Check stuck AFTER execution: only break if 4+ identical rounds AND all failed
-    if (stuckCount >= 4 && results.every(r => !r.success)) {
-      port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '\n\n> Same action failed 4 times. Try rephrasing or a different approach.\n\n' })
+    // Track failed selectors per URL for anti-loop context in follow-up prompts
+    for (let ri = 0; ri < results.length; ri++) {
+      if (!results[ri].success && actions[ri]) {
+        const sel = actions[ri].params.selector ?? actions[ri].params.markerId ?? ''
+        if (sel) {
+          const urlKey = currentUrl || 'unknown'
+          if (!failedSelectors.has(urlKey)) failedSelectors.set(urlKey, [])
+          const existing = failedSelectors.get(urlKey)!
+          if (!existing.some(f => f.selector === sel && f.action === actions[ri].action)) {
+            existing.push({ selector: sel, action: actions[ri].action, error: (results[ri].error ?? '').slice(0, 80) })
+          }
+        }
+      }
+    }
+
+    // Record round history for attempt tracking in follow-up prompts
+    const actionDesc = actions.map(a => `${a.action.toUpperCase()}${a.params.selector ? ` "${a.params.selector}"` : ''}${a.params.value ? ` = "${a.params.value}"` : ''}`).join(', ')
+    const outcomeDesc = results.map(r => r.success ? 'ok' : `failed: ${(r.error ?? 'unknown').slice(0, 40)}`).join('; ')
+    roundHistory.push({ round: round + 1, actions: actionDesc, outcome: outcomeDesc })
+
+    // Check stuck AFTER execution: break if 2+ identical action signatures (loop detected)
+    if (stuckCount >= 2) {
+      port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '\n\n> Stuck in a loop — same action repeated. Try rephrasing or a different approach.\n\n' })
       break
     }
 
@@ -1680,6 +1775,9 @@ export async function executeWithFollowUp(
 
     if (round >= maxRounds - 1) break
 
+    // If AI signalled is_complete, exit now (after executing its final actions above)
+    if (isComplete) break
+
     // --- DOM-dependent ops: SKIP on restricted/blank tabs to avoid wasted time ---
     let postScreenshot: string | undefined
     let followUpA11y: string | undefined
@@ -1710,42 +1808,48 @@ export async function executeWithFollowUp(
       } else {
         // Full context capture for auto mode
         if (isCancelled(tabId)) break
-        const postState = await captureVerificationState(tabId)
-        if (preState) verification = buildVerificationContext(preState, postState)
-
-        if (isCancelled(tabId)) break
-        const postShot = await captureAutomationScreenshot(tabId).catch(() => null)
-        if (postShot) {
-          postScreenshot = postShot.dataUrl
-          tabState.setScreenshot(tabId, postShot.dataUrl)
-          const snap = tabState.get(tabId)
-          if (snap?.url) {
-            recordPageVisit(extractDomainFromUrl(snap.url), snap.url, snap, postShot.dataUrl).catch(() => {})
-          }
-        }
 
         const hasNav = results.some(r => r.success && (NAV_ACTIONS.has(r.action) || r.result?.includes('navigated')))
-        if (hasNav) {
-          await sleep(1500)
-          await ensureContentScript(tabId).catch(() => false)
-          await sleep(500)
-          await requestFreshSnapshot(tabId)
-          restricted = await isTabRestricted()
-        }
 
-        if (!restricted && !isCancelled(tabId)) {
-          // Get fresh page state via CDP accessibility tree (no markers needed —
-          // text selectors are more reliable than element IDs on dynamic sites)
-          const postTree2 = await getCDPAccessibilityTree(tabId).catch(() => null)
-          if (postTree2) {
-            followUpA11y = postTree2.treeText
-            if (preTree) stateDiff = buildStateDiff(preTree.elements, postTree2.elements)
+        if (hasNav) {
+          // After navigation: lightweight context only — skip screenshot/CDP to keep follow-up fast
+          // (tab just loaded; screenshot/CDP would block for 2-5s before the page is ready)
+          await sleep(200)
+          await ensureContentScript(tabId).catch(() => false)
+          restricted = await isTabRestricted()
+          if (!restricted) {
+            try { const tab = await chrome.tabs.get(tabId); freshContext = `URL: ${tab.url ?? ''}\nTitle: ${tab.title ?? ''}` } catch { freshContext = '' }
+          }
+        } else {
+          // No navigation: full capture (screenshot + CDP + verification)
+          const postState = await captureVerificationState(tabId)
+          if (preState) verification = buildVerificationContext(preState, postState)
+
+          if (isCancelled(tabId)) break
+          const postShot = await captureAutomationScreenshot(tabId).catch(() => null)
+          if (postShot) {
+            postScreenshot = postShot.dataUrl
+            tabState.setScreenshot(tabId, postShot.dataUrl)
+            const snap = tabState.get(tabId)
+            if (snap?.url) {
+              recordPageVisit(extractDomainFromUrl(snap.url), snap.url, snap, postShot.dataUrl).catch(() => {})
+            }
           }
 
-          await requestFreshSnapshot(tabId)
-          freshContext = tabState.summarize(tabId)
-          const freshSnap = tabState.get(tabId)
-          freshPageText = (freshSnap?.completePageText ?? '').slice(0, 6000)
+          if (!restricted && !isCancelled(tabId)) {
+            // Get fresh page state via CDP accessibility tree (no markers needed —
+            // text selectors are more reliable than element IDs on dynamic sites)
+            const postTree2 = await getCDPAccessibilityTree(tabId).catch(() => null)
+            if (postTree2) {
+              followUpA11y = postTree2.treeText
+              if (preTree) stateDiff = buildStateDiff(preTree.elements, postTree2.elements)
+            }
+
+            await requestFreshSnapshot(tabId)
+            freshContext = tabState.summarize(tabId)
+            const freshSnap = tabState.get(tabId)
+            freshPageText = (freshSnap?.completePageText ?? '').slice(0, 6000)
+          }
         }
       }
     } else if (restricted) {
@@ -1795,12 +1899,19 @@ export async function executeWithFollowUp(
       }
     }
 
+    // Build attempt history and failed selector context for follow-up prompts
+    const attemptHistoryBlock = buildAttemptHistory(roundHistory)
+    const failedSelectorBlock = buildFailedSelectorContext(failedSelectors, currentUrl)
+    const stuckWarning = stuckCount >= 1
+      ? '\n\nWARNING: You just repeated the same action as the previous round. This WILL fail again. You MUST try a COMPLETELY DIFFERENT approach — different selector, different action type, or use [ACTION:READ_PAGE] / [ACTION:SCREENSHOT] to see what is actually on the page.\n'
+      : ''
+
     // Build follow-up content based on tab state
     let followUpContent: string
 
     if (guidedSkipExpensive) {
       // Guided mode: lightweight follow-up — user sees the page, AI just needs action results
-      followUpContent = `Action results:\n${resultSummary}\n\nPage: ${freshContext}${palaceHints ? palaceHints.slice(0, 500) : ''}\n\nRound ${round + 2}/${maxRounds}. The user is clicking elements you highlight. What should they do next? Give clear instructions.`
+      followUpContent = `Action results:\n${resultSummary}\n\nPage: ${freshContext}${palaceHints ? palaceHints.slice(0, 500) : ''}${attemptHistoryBlock}${stuckWarning}\n\nRound ${round + 2}/${maxRounds}. The user is clicking elements you highlight. What should they do next? Give clear instructions.`
     } else if (restricted) {
       // LIGHTWEIGHT follow-up for blank/restricted tabs — no DOM context, just results + clear guidance
       const hasSearchResults = results.some(r => r.action === 'search' && r.success && r.result)
@@ -1808,7 +1919,7 @@ export async function executeWithFollowUp(
         ? `\nYou searched successfully. Now you MUST use the URLs from the results above:\n- [ACTION:OPEN_TAB url="<url>"] — read a search result page (can open multiple in parallel)\n- [ACTION:NAVIGATE url="<url>"] — go to a specific website in this tab\nDo NOT search again. Read the pages, then answer the user.\n`
         : `\nYou are on a blank tab. Use [ACTION:SEARCH query="..."] or [ACTION:NAVIGATE url="..."].\n`
 
-      followUpContent = `Action results:\n${resultSummary}\n${guidance}${palaceHints}\nRound ${round + 2}/${maxRounds}. Act on the results above — do NOT repeat the same action.`
+      followUpContent = `Action results:\n${resultSummary}\n${guidance}${palaceHints}${attemptHistoryBlock}${failedSelectorBlock}${stuckWarning}\nRound ${round + 2}/${maxRounds}. Act on the results above — do NOT repeat the same action.`
     } else {
       let failureInstructions = ''
       if (anyFailed) {
@@ -1833,7 +1944,7 @@ export async function executeWithFollowUp(
       const tabOpenWarning = consecutiveTabOpenRounds >= 1
         ? '\nIMPORTANT: You already opened tabs. Do NOT open more tabs or search again. Use CLICK, TYPE, SCROLL, or other interaction actions on the CURRENT page.\n'
         : ''
-      followUpContent = `Action results:\n${resultSummary}\n\n${verification}${stateDiff ? `\nELEMENT STATE CHANGES:\n${stateDiff}\n` : ''}${visualVerification}\n${failureInstructions}${tabOpenWarning}${palaceHints.slice(0, 1000)}${userIsActive ? '\nUser is also interacting.\n' : ''}Updated page state:\n${freshContext}${a11ySection}${extraPageText ? `\n\nPage Content (excerpt):\n${extraPageText}\n` : ''}\n\nRound ${round + 2}/${maxRounds}. ${anyFailed ? 'RETRY with a DIFFERENT approach.' : 'Continue if more steps needed, or give a SHORT summary.'}`
+      followUpContent = `Action results:\n${resultSummary}\n\n${verification}${stateDiff ? `\nELEMENT STATE CHANGES:\n${stateDiff}\n` : ''}${visualVerification}\n${failureInstructions}${tabOpenWarning}${palaceHints.slice(0, 1000)}${userIsActive ? '\nUser is also interacting.\n' : ''}${attemptHistoryBlock}${failedSelectorBlock}${stuckWarning}Updated page state:\n${freshContext}${a11ySection}${extraPageText ? `\n\nPage Content (excerpt):\n${extraPageText}\n` : ''}\n\nRound ${round + 2}/${maxRounds}. ${anyFailed ? 'RETRY with a DIFFERENT approach.' : 'Continue if more steps needed, or give a SHORT summary.'}`
     }
 
     const followUpMessages: Pick<ChatMessage, 'role' | 'content' | 'imageData'>[] = [
@@ -1973,9 +2084,7 @@ function containsMalformedActions(text: string): boolean {
 // When the AI doesn't produce actions, detect what the user wants and inject actions
 
 const SEARCH_INTENT_RE = /\b(suche?n?|find|search|flug|fl[üu]ge?|tickets?|book|buchen|finde|zeig mir|compare|vergleich|price|preis|hotel|rental|miete|kaufen?|shop|cheapest|günstigste|billigste|angebot|reise|travel|flight)\b/i
-const NAVIGATE_INTENT_RE = /\b(go to|open|navigate|visit|gehe? zu|öffne|besuche?)\b/i
-const ANALYZE_INTENT_RE = /\b(analy[sz]e?|report|bericht|check|prüfe?|investigate|untersuche?|research|recherche)\b/i
-
+const CLICK_INTENT_RE = /\b(click|klick|press|drück|tap|mach|starte?|beginn|anfangen|los|durchführ|absend|submit|send|go|continue|weiter|bestätig|confirm|akzeptier|accept|annehm|test|öffne|open|ausführ|execut|run|play|start)\b/i
 function detectIntentAndKickstart(userText: string): ParsedAction[] {
   const lower = userText.toLowerCase()
 
@@ -1998,10 +2107,21 @@ function detectIntentAndKickstart(userText: string): ParsedAction[] {
     }
   }
 
-  // Analyze intent — read the current page first
-  if (ANALYZE_INTENT_RE.test(lower)) {
+  // Click/interaction intent — try to extract a button/link target from the user's message
+  if (CLICK_INTENT_RE.test(lower)) {
+    // Try to extract what the user wants to click: "mache das test durch" → look for CTA-like buttons
+    // Extract quoted text as selector: 'click "Submit"' → selector="Submit"
+    const quotedMatch = userText.match(/["„"'']([^"„"'']+)["„"'']/)
+    if (quotedMatch) {
+      return [{ action: 'click', params: { selector: quotedMatch[1] } }]
+    }
+    // For "mache das test" / "start the test" / "do the quiz" — use get_page_text first
+    // so the AI can see the page and pick the right button
     return [{ action: 'get_page_text', params: {} }]
   }
+
+  // NOTE: Removed analyze/research kickstart — if the AI already saw the page
+  // and chose not to act, forcing get_page_text creates a pointless loop.
 
   return []
 }
@@ -2197,6 +2317,37 @@ function buildErrorSpecificHints(errorTypes: Set<ErrorCategory>, repeatCount: nu
   }
 
   return hints.join('\n\n')
+}
+
+// ─── Attempt History & Failed Selector Tracking ────────────────────────────
+
+/**
+ * Build a compact history of previous action attempts for follow-up prompts.
+ * Helps the AI learn from its own failures within the current session.
+ */
+function buildAttemptHistory(
+  roundHistory: Array<{ round: number; actions: string; outcome: string }>,
+  maxEntries = 6
+): string {
+  if (roundHistory.length === 0) return ''
+  const entries = roundHistory.slice(-maxEntries)
+  const lines = entries.map(e => `  Round ${e.round}: ${e.actions} → ${e.outcome}`)
+  return `\n\n## PREVIOUS ATTEMPTS (do NOT repeat failed approaches)\n${lines.join('\n')}\n`
+}
+
+/**
+ * Build a list of failed selectors for the current URL.
+ * Tells the AI exactly which selectors have already been tried and failed.
+ */
+function buildFailedSelectorContext(
+  failedSelectors: Map<string, Array<{ selector: string; action: string; error: string }>>,
+  currentUrl: string
+): string {
+  const urlKey = currentUrl || 'unknown'
+  const failed = failedSelectors.get(urlKey)
+  if (!failed || failed.length === 0) return ''
+  const lines = failed.slice(-8).map(f => `  - "${f.selector}" (${f.action.toUpperCase()}) → ${f.error}`)
+  return `\nFAILED SELECTORS on this page (do NOT reuse):\n${lines.join('\n')}\nTry completely different selectors or approaches.\n`
 }
 
 /**

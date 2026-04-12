@@ -127,6 +127,9 @@ export const MSG = {
   STOP_GROUP: 'STOP_GROUP',
   ACTIVE_GROUPS_CHANGED: 'ACTIVE_GROUPS_CHANGED',
 
+  // Action log (PRD 8.1.11)
+  GET_ACTION_LOG: 'GET_ACTION_LOG',
+
   // Debug / error log
   GET_DEBUG_INFO: 'GET_DEBUG_INFO',
   CLEAR_ERRORS: 'CLEAR_ERRORS',
@@ -203,12 +206,43 @@ export const MSG = {
   STT_START_VIA_OFFSCREEN: 'STT_START_VIA_OFFSCREEN',
   STT_STOP_VIA_OFFSCREEN: 'STT_STOP_VIA_OFFSCREEN',
   MIC_PERMISSION_RESULT: 'MIC_PERMISSION_RESULT',
+
+  // Pinned Facts
+  PIN_FACT: 'PIN_FACT',
+  UNPIN_FACT: 'UNPIN_FACT',
+  GET_PINS: 'GET_PINS',
+
+  // Watch Mode
+  WATCH_START: 'WATCH_START',
+  WATCH_STOP: 'WATCH_STOP',
+  WATCH_CHECK: 'WATCH_CHECK',
+  WATCH_SNAPSHOT: 'WATCH_SNAPSHOT',
+  WATCH_EVENT: 'WATCH_EVENT',
+
+  // Cross-Tab
+  GET_TAB_LIST: 'GET_TAB_LIST',
+
+  // Multi-Step Actions
+  ACTION_PLAN: 'ACTION_PLAN',
+  STEP_UPDATE: 'STEP_UPDATE',
+
+  // Context Stack (V3)
+  GET_CONTEXT_STACK: 'GET_CONTEXT_STACK',
+
+  // Execution Modes (V3)
+  SET_EXECUTION_MODE: 'SET_EXECUTION_MODE',
+
+  // Workflow Mode (V3)
+  SAVE_WORKFLOW: 'SAVE_WORKFLOW',
+  LOAD_WORKFLOWS: 'LOAD_WORKFLOWS',
+  RUN_WORKFLOW: 'RUN_WORKFLOW',
+  DELETE_WORKFLOW: 'DELETE_WORKFLOW',
 } as const
 
 export type MsgType = (typeof MSG)[keyof typeof MSG]
 
 export const DB_NAME = 'pwa_memory'
-export const DB_VERSION = 9
+export const DB_VERSION = 11
 
 export const STORE = {
   CHAT_HISTORY: 'chat_history',
@@ -226,6 +260,8 @@ export const STORE = {
   VISUAL_SITEMAP: 'visual_sitemap',
   LOCAL_MEMORY: 'local_memory',
   INPUT_JOURNAL: 'input_journal',
+  PINNED_FACTS: 'pinned_facts',
+  WORKFLOWS: 'workflows',
 } as const
 
 export const PORT_AI_STREAM = 'ai-stream'

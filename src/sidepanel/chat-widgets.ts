@@ -16,9 +16,19 @@ export interface ActionConfirmWidget {
   description: string
   risk: 'read' | 'write' | 'destructive'
   actions: string[]
+  reasoning?: string
+  confidence?: number
+  targetSelector?: string
 }
 
-export type Widget = ChoiceWidget | ConfirmWidget | ActionConfirmWidget
+export interface ActionPlanWidget {
+  kind: 'action_plan'
+  id: string
+  title: string
+  steps: Array<{ description: string; status: 'pending' | 'active' | 'completed' | 'failed'; error?: string }>
+}
+
+export type Widget = ChoiceWidget | ConfirmWidget | ActionConfirmWidget | ActionPlanWidget
 
 const CHOICE_RE = /\[CHOICE:id=&quot;([^&]*)&quot;\]\s*(.*?)\s*\[\/CHOICE\]/g
 const CONFIRM_RE = /\[CONFIRM:id=&quot;([^&]*)&quot;\]\s*(.*?)\s*\[\/CONFIRM\]/g
@@ -76,7 +86,7 @@ export function renderWidgetsInContainer(container: HTMLElement, widgets: Widget
       renderChoiceCard(slot, w)
     } else if (w.kind === 'action_confirm') {
       renderActionConfirmCard(slot, w)
-    } else {
+    } else if (w.kind === 'confirm') {
       renderConfirmCard(slot, w)
     }
   }
@@ -107,31 +117,53 @@ function renderConfirmCard(slot: HTMLElement, widget: ConfirmWidget): void {
 export function renderActionConfirmCard(slot: HTMLElement, widget: ActionConfirmWidget): void {
   const riskClass = `risk-${widget.risk}`
   const riskLabel = widget.risk === 'destructive' ? 'High Risk' : widget.risk === 'write' ? 'Write Action' : 'Action'
+
+  const confidenceHtml = widget.confidence != null
+    ? `<span class="confirm-action-confidence" title="AI confidence">${widget.confidence}%</span>`
+    : ''
+
+  const showTargetHtml = widget.targetSelector
+    ? `<button class="confirm-action-btn confirm-show-target" data-target-selector="${escapeAttr(widget.targetSelector)}" title="Highlight the target element on the page">Show target</button>`
+    : ''
+
   slot.className = `confirm-action-card ${riskClass}`
   slot.innerHTML = `
     <div class="confirm-action-header">
       <span class="confirm-action-risk">${riskLabel}</span>
+      ${confidenceHtml}
       <span class="confirm-action-title">The assistant wants to:</span>
     </div>
-    <div class="confirm-action-desc">${widget.description}</div>
+    <div class="confirm-action-desc"></div>
+    ${widget.reasoning ? '<div class="confirm-action-reasoning"></div>' : ''}
     <div class="confirm-action-options">
-      <button class="confirm-action-btn confirm-accept" data-confirm-id="${widget.id}" data-preference="once">Accept</button>
-      <button class="confirm-action-btn confirm-always" data-confirm-id="${widget.id}" data-preference="always_this">Accept &amp; Don't Ask Again</button>
-      <button class="confirm-action-btn confirm-all" data-confirm-id="${widget.id}" data-preference="always_all">Accept All (never ask)</button>
-      <button class="confirm-action-btn confirm-decline" data-confirm-id="${widget.id}" data-preference="decline">Decline</button>
+      ${showTargetHtml}
+      <button class="confirm-action-btn confirm-accept" data-confirm-id="${escapeAttr(widget.id)}" data-preference="once">Accept</button>
+      <button class="confirm-action-btn confirm-always" data-confirm-id="${escapeAttr(widget.id)}" data-preference="always_this">Accept &amp; Don't Ask Again</button>
+      <button class="confirm-action-btn confirm-all" data-confirm-id="${escapeAttr(widget.id)}" data-preference="always_all">Accept All (never ask)</button>
+      <button class="confirm-action-btn confirm-decline" data-confirm-id="${escapeAttr(widget.id)}" data-preference="decline">Decline</button>
     </div>
   `
+  // Use textContent to safely set description (prevents XSS from AI-generated content)
+  const descEl = slot.querySelector('.confirm-action-desc')
+  if (descEl) descEl.textContent = widget.description
+  if (widget.reasoning) {
+    const reasonEl = slot.querySelector('.confirm-action-reasoning')
+    if (reasonEl) reasonEl.textContent = widget.reasoning
+  }
 }
 
 export function createActionConfirmElement(
   id: string,
   description: string,
   risk: string,
-  actions: string[]
+  actions: string[],
+  reasoning?: string,
+  confidence?: number,
+  targetSelector?: string
 ): HTMLElement {
   const div = document.createElement('div')
   div.dataset.widgetId = id
-  const widget: ActionConfirmWidget = { kind: 'action_confirm', id, description, risk: risk as ActionConfirmWidget['risk'], actions }
+  const widget: ActionConfirmWidget = { kind: 'action_confirm', id, description, risk: risk as ActionConfirmWidget['risk'], actions, reasoning, confidence, targetSelector }
   renderActionConfirmCard(div, widget)
   return div
 }
@@ -145,7 +177,7 @@ export function createModeChoiceElement(
   div.dataset.modeChoiceId = id
   div.innerHTML = `
     <div class="mode-choice-header">How should I handle this?</div>
-    <div class="mode-choice-desc">${description}</div>
+    <div class="mode-choice-desc"></div>
     <div class="mode-choice-buttons">
       <button class="mode-choice-btn mode-choice-guide" data-mode-id="${id}" data-mode="guided">
         <span class="mode-choice-icon">🎯</span>
@@ -159,10 +191,13 @@ export function createModeChoiceElement(
       </button>
     </div>
     <label class="mode-choice-remember">
-      <input type="checkbox" class="mode-choice-remember-check" data-mode-id="${id}">
+      <input type="checkbox" class="mode-choice-remember-check" data-mode-id="${escapeAttr(id)}">
       <span>Remember my choice</span>
     </label>
   `
+  // Use textContent to safely set description (prevents XSS from AI-generated content)
+  const descEl = div.querySelector('.mode-choice-desc')
+  if (descEl) descEl.textContent = description
   return div
 }
 
@@ -188,6 +223,18 @@ export function attachWidgetHandlers(
       target.textContent = 'Confirmed'
       ;(target as HTMLButtonElement).disabled = true
       onChoice(target.dataset.widgetId!, target.dataset.value!)
+      return
+    }
+
+    if (target.classList.contains('confirm-show-target')) {
+      const selector = target.dataset.targetSelector
+      if (selector) {
+        chrome.tabs.query({ active: true, currentWindow: true }).then(tabs => {
+          if (tabs[0]?.id) {
+            chrome.tabs.sendMessage(tabs[0].id, { type: 'HIGHLIGHT_FIELD', selector }).catch(() => {})
+          }
+        })
+      }
       return
     }
 
@@ -442,4 +489,179 @@ export function attachFormAssistHandlers(
       flashButton(copyAll, 'copied', '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg> Copied all!')
     }
   })
+}
+
+// ─── Action Plan Card (V2 — Multi-Step Progress) ──────────────────────────────
+
+const STEP_ICONS: Record<string, string> = {
+  pending: '&#x25CB;',   // ○
+  active: '&#x2192;',    // →
+  completed: '&#x2713;', // ✓
+  failed: '&#x2717;',    // ✗
+}
+
+export function createActionPlanElement(
+  id: string,
+  title: string,
+  steps: Array<{ description: string; status?: string }>,
+  startInReview = true,
+): HTMLElement {
+  const div = document.createElement('div')
+  div.className = 'action-plan-card'
+  div.dataset.planId = id
+  div.dataset.planState = startInReview ? 'review' : 'executing'
+  renderActionPlanContent(div, id, title, steps.map(s => ({
+    description: s.description,
+    status: (s.status as 'pending' | 'active' | 'completed' | 'failed') || 'pending',
+  })))
+  return div
+}
+
+function renderActionPlanContent(
+  el: HTMLElement,
+  id: string,
+  title: string,
+  steps: Array<{ description: string; status: 'pending' | 'active' | 'completed' | 'failed'; error?: string }>,
+): void {
+  const isReview = el.dataset.planState === 'review'
+  const isExecuting = el.dataset.planState === 'executing'
+  const completedCount = steps.filter(s => s.status === 'completed').length
+
+  const stepsHtml = steps.map((s, i) => {
+    const editControls = isReview
+      ? `<span class="plan-step-edit-controls">` +
+        `<button class="btn-plan-step-up" data-idx="${i}" title="Move up">&uarr;</button>` +
+        `<button class="btn-plan-step-down" data-idx="${i}" title="Move down">&darr;</button>` +
+        `<button class="btn-plan-step-remove" data-idx="${i}" title="Remove">&times;</button>` +
+        `</span>`
+      : ''
+    return `<div class="plan-step plan-step-${s.status}" data-step-idx="${i}">` +
+      `<span class="plan-step-icon">${STEP_ICONS[s.status]}</span> ` +
+      `<span class="plan-step-num">${i + 1}.</span> ` +
+      `<span class="plan-step-desc" ${isReview ? 'contenteditable="true"' : ''}>${escapeHtml(s.description)}</span>` +
+      editControls +
+      `${s.error ? `<div class="plan-step-error">${escapeHtml(s.error)}</div>` : ''}` +
+      `</div>`
+  }).join('')
+
+  const controlsHtml = isReview
+    ? `<div class="plan-controls">
+        <button class="btn-small btn-primary btn-plan-start" data-plan-id="${escapeAttr(id)}">Start execution</button>
+        <button class="btn-small btn-plan-add-step" data-plan-id="${escapeAttr(id)}">+ Add step</button>
+        <button class="btn-small btn-danger btn-plan-cancel" data-plan-id="${escapeAttr(id)}">Cancel</button>
+      </div>`
+    : `<div class="plan-controls">
+        <button class="btn-small btn-primary btn-plan-approve-next" data-plan-id="${escapeAttr(id)}" ${!isExecuting ? 'disabled' : ''}>Approve next</button>
+        <button class="btn-small btn-plan-approve-all" data-plan-id="${escapeAttr(id)}" ${!isExecuting ? 'disabled' : ''}>Approve all</button>
+        <button class="btn-small btn-danger btn-plan-cancel" data-plan-id="${escapeAttr(id)}">Cancel</button>
+      </div>`
+
+  el.innerHTML = `
+    <div class="plan-header">
+      <span class="plan-title">${escapeHtml(title)}</span>
+      <span class="plan-progress">${isReview ? 'Review' : `${completedCount}/${steps.length}`}</span>
+    </div>
+    <div class="plan-steps">${stepsHtml}</div>
+    ${controlsHtml}`
+
+  // Wire review-mode controls
+  if (isReview) {
+    wireReviewControls(el, id, title, steps)
+  }
+}
+
+function wireReviewControls(
+  el: HTMLElement,
+  id: string,
+  title: string,
+  steps: Array<{ description: string; status: 'pending' | 'active' | 'completed' | 'failed'; error?: string }>,
+): void {
+  // Move up/down
+  el.querySelectorAll<HTMLButtonElement>('.btn-plan-step-up').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      const idx = parseInt(btn.dataset.idx!, 10)
+      if (idx <= 0) return
+      const temp = steps[idx]
+      steps[idx] = steps[idx - 1]
+      steps[idx - 1] = temp
+      renderActionPlanContent(el, id, title, steps)
+    })
+  })
+  el.querySelectorAll<HTMLButtonElement>('.btn-plan-step-down').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      const idx = parseInt(btn.dataset.idx!, 10)
+      if (idx >= steps.length - 1) return
+      const temp = steps[idx]
+      steps[idx] = steps[idx + 1]
+      steps[idx + 1] = temp
+      renderActionPlanContent(el, id, title, steps)
+    })
+  })
+  // Remove step
+  el.querySelectorAll<HTMLButtonElement>('.btn-plan-step-remove').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      const idx = parseInt(btn.dataset.idx!, 10)
+      steps.splice(idx, 1)
+      renderActionPlanContent(el, id, title, steps)
+    })
+  })
+  // Add step
+  el.querySelector('.btn-plan-add-step')?.addEventListener('click', () => {
+    steps.push({ description: 'New step', status: 'pending' })
+    renderActionPlanContent(el, id, title, steps)
+  })
+  // Start execution
+  el.querySelector('.btn-plan-start')?.addEventListener('click', () => {
+    // Gather edited descriptions
+    el.querySelectorAll<HTMLElement>('.plan-step-desc').forEach((desc, i) => {
+      if (steps[i]) steps[i].description = desc.textContent?.trim() || steps[i].description
+    })
+    el.dataset.planState = 'executing'
+    renderActionPlanContent(el, id, title, steps)
+    // Notify parent to re-wire approve/cancel handlers (innerHTML was replaced)
+    el.dispatchEvent(new CustomEvent('plan-state-changed', { bubbles: true }))
+  })
+}
+
+export function updateActionPlanStep(
+  planId: string,
+  stepIndex: number,
+  status: 'pending' | 'active' | 'completed' | 'failed',
+  error?: string,
+): void {
+  const card = document.querySelector<HTMLElement>(`.action-plan-card[data-plan-id="${planId}"]`)
+  if (!card) return
+  const steps = card.querySelectorAll('.plan-step')
+  const step = steps[stepIndex]
+  if (!step) return
+
+  // Update step class and icon
+  step.className = `plan-step plan-step-${status}`
+  const icon = step.querySelector('.plan-step-icon')
+  if (icon) icon.innerHTML = STEP_ICONS[status]
+
+  // Add/remove error
+  const existingError = step.querySelector('.plan-step-error')
+  if (existingError) existingError.remove()
+  if (error) {
+    const errEl = document.createElement('div')
+    errEl.className = 'plan-step-error'
+    errEl.textContent = error
+    step.appendChild(errEl)
+  }
+
+  // Update progress count
+  const completedCount = card.querySelectorAll('.plan-step-completed').length
+  const totalCount = steps.length
+  const progress = card.querySelector('.plan-progress')
+  if (progress) progress.textContent = `${completedCount}/${totalCount}`
+
+  // If all complete, disable controls
+  if (completedCount === totalCount) {
+    card.querySelectorAll<HTMLButtonElement>('.plan-controls button').forEach(b => { b.disabled = true })
+    card.classList.add('plan-complete')
+  }
 }

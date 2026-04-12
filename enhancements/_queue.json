@@ -1,0 +1,79 @@
+{
+  "queue": [
+    {
+      "id": 1,
+      "slug": "selector-strategy-unified",
+      "title": "Unified Selector Strategy with Explicit Fallback Sequence",
+      "type": "prompt-engineering",
+      "priority": "P1",
+      "status": "IMPLEMENTED",
+      "created": "2026-04-12T00:00:00Z",
+      "implemented": "2026-04-12T14:00:00Z",
+      "spec": "enhancements/specs/selector-strategy-unified.md"
+    },
+    {
+      "id": 2,
+      "slug": "multistep-form-wizard-awareness",
+      "title": "Multi-Step Form Wizard Awareness",
+      "type": "prompt-engineering",
+      "priority": "P1",
+      "status": "IMPLEMENTED",
+      "created": "2026-04-12T00:00:00Z",
+      "implemented": "2026-04-12T17:00:00Z",
+      "spec": "enhancements/specs/multistep-form-wizard-awareness.md"
+    },
+    {
+      "id": 3,
+      "slug": "context-menu-smart-actions",
+      "title": "Context Menu Smart Actions Submenu",
+      "type": "feature",
+      "priority": "P2",
+      "status": "SPECCED",
+      "created": "2026-04-12T00:00:00Z",
+      "spec": "enhancements/specs/context-menu-smart-actions.md"
+    },
+    {
+      "id": 4,
+      "slug": "history-rich-preview",
+      "title": "Rich History Item Previews",
+      "type": "improvement",
+      "priority": "P2",
+      "status": "SPECCED",
+      "created": "2026-04-12T00:00:00Z",
+      "spec": "enhancements/specs/history-rich-preview.md"
+    },
+    {
+      "id": 5,
+      "slug": "optional-panel-tabs",
+      "title": "Optional Panel Tabs — History, Insights, Vault, Learn",
+      "type": "feature",
+      "priority": "P1",
+      "status": "SPECCED",
+      "created": "2026-04-12T00:00:00Z",
+      "spec": "enhancements/specs/optional-panel-tabs.md"
+    },
+    {
+      "id": 6,
+      "slug": "auto-version-bump-notify",
+      "title": "Auto Version Bump + Build Notification",
+      "type": "improvement",
+      "priority": "P1",
+      "status": "SPECCED",
+      "created": "2026-04-12T00:00:00Z",
+      "spec": "enhancements/specs/auto-version-bump-notify.md"
+    },
+    {
+      "id": 7,
+      "slug": "smart-interaction-improvements",
+      "title": "Smart Interaction Improvements — Natural Language Understanding",
+      "type": "prompt-engineering-feature",
+      "priority": "P0",
+      "status": "IMPLEMENTED",
+      "created": "2026-04-12T14:30:00Z",
+      "implemented": "2026-04-12T16:00:00Z",
+      "spec": "enhancements/specs/smart-interaction-improvements.md"
+    }
+  ],
+  "statuses": ["NEW", "SPECCED", "IN_REVIEW", "IMPLEMENTING", "IMPLEMENTED", "QA_TESTING", "NEEDS_FIX", "DONE", "REJECTED"],
+  "next_id": 8
+}
