@@ -427,6 +427,10 @@
       <li><a href="#storage">Storage &amp; Encryption</a></li>
       <li><a href="#third-party">Third-Party Services</a></li>
       <li><a href="#tab-isolation">Tab Isolation</a></li>
+      <li><a href="#data-retention">Data Retention &amp; Deletion</a></li>
+      <li><a href="#user-rights">Your Rights</a></li>
+      <li><a href="#security">Security Measures</a></li>
+      <li><a href="#compliance">Compliance</a></li>
       <li><a href="#updates">Updates to This Policy</a></li>
       <li><a href="#contact">Contact</a></li>
     </ol>
@@ -552,7 +556,7 @@
         </tr>
         <tr>
           <td>debugger</td>
-          <td>Use the Chrome DevTools Protocol (CDP) to perform reliable, trusted browser interactions (clicks, typing) on pages within the Orion tab group.</td>
+          <td>Use the Chrome DevTools Protocol (CDP) to perform reliable, trusted browser interactions (clicks, typing) on pages within the Orion tab group. <strong>Limited Use Disclosure:</strong> This sensitive permission is used exclusively for browser automation within user-designated tabs—never for monitoring, data collection, or surveillance.</td>
         </tr>
         <tr>
           <td>contextMenus</td>
@@ -576,7 +580,7 @@
         </tr>
         <tr>
           <td>&lt;all_urls&gt;</td>
-          <td>Read and interact with page content on any website within the Orion tab group. Required because tab group pages can be on any domain. Access is limited to tabs you explicitly place in the group.</td>
+          <td>Read and interact with page content on any website within the Orion tab group. Required because tab group pages can be on any domain. <strong>Limited Use Disclosure:</strong> Despite the broad permission, access is strictly limited to tabs you explicitly place in the Orion tab group. Your other browser tabs, history, and bookmarks are never accessed. Data from accessed pages is processed locally or sent only to your chosen AI provider—never to Orion's developers.</td>
         </tr>
       </tbody>
     </table>
@@ -638,9 +642,82 @@
     </div>
   </section>
 
-  <!-- 8. Updates to This Policy -->
+  <!-- 8. Data Retention & Deletion -->
+  <section id="data-retention">
+    <h2><span class="section-num">8</span> Data Retention &amp; Deletion</h2>
+    <p>
+      All data stored by Orion is local to your browser and remains under your direct control. There are no external servers collecting or retaining your data.
+    </p>
+    <ul class="bullet-list">
+      <li><strong>Automatic retention:</strong> Data persists in your browser storage until you explicitly delete it or uninstall the extension.</li>
+      <li><strong>Manual deletion:</strong> You can clear conversation history, vault entries, and settings at any time through the extension's interface.</li>
+      <li><strong>Uninstall:</strong> Removing the extension from Chrome completely deletes all locally stored data associated with Orion.</li>
+      <li><strong>No remote backup:</strong> We do not maintain backups of your data. Once deleted locally, it is permanently gone.</li>
+    </ul>
+    <div class="highlight-box">
+      <strong>Your control:</strong> Because all data is stored locally, you have complete control over retention and deletion. No requests to external parties are required to remove your data.
+    </div>
+  </section>
+
+  <!-- 9. Your Rights -->
+  <section id="user-rights">
+    <h2><span class="section-num">9</span> Your Rights</h2>
+    <p>
+      Since Orion operates entirely locally and collects no data on external servers, you have complete control over your information:
+    </p>
+    <ul class="bullet-list">
+      <li><strong>Access:</strong> All your data is stored in Chrome's local storage and IndexedDB, accessible through browser developer tools or the extension interface.</li>
+      <li><strong>Deletion:</strong> Clear individual items (conversations, vault entries) through the UI, or uninstall the extension to remove all data.</li>
+      <li><strong>Portability:</strong> Export your vault data or conversation history through the extension's export features.</li>
+      <li><strong>Control:</strong> Choose between local-only mode (zero external connections) or cloud mode with providers of your choice.</li>
+      <li><strong>Transparency:</strong> Full source code available on GitHub for audit and verification of privacy claims.</li>
+      <li><strong>No tracking opt-out needed:</strong> There is no tracking, analytics, or telemetry to opt out of—none exists in the codebase.</li>
+    </ul>
+  </section>
+
+  <!-- 10. Security Measures -->
+  <section id="security">
+    <h2><span class="section-num">10</span> Security Measures</h2>
+    <p>
+      Orion implements multiple security layers to protect your data:
+    </p>
+    <ul class="bullet-list">
+      <li><strong>Manifest V3 compliance:</strong> Built using Chrome's latest security architecture with enhanced permission controls.</li>
+      <li><strong>AES-GCM encryption:</strong> Vault data encrypted with 256-bit keys derived from your PIN using PBKDF2 key derivation.</li>
+      <li><strong>Content Security Policy:</strong> Strict CSP prevents injection attacks and unauthorized script execution.</li>
+      <li><strong>Tab group isolation:</strong> Extension only accesses tabs you explicitly assign to the Orion group, not your entire browser.</li>
+      <li><strong>API key security:</strong> Your API keys are stored locally in Chrome storage, never transmitted to our servers (we don't have any).</li>
+      <li><strong>No remote code execution:</strong> All code is bundled with the extension—no external scripts loaded at runtime.</li>
+      <li><strong>HTTPS-only APIs:</strong> All cloud AI provider connections use encrypted HTTPS endpoints.</li>
+      <li><strong>Local mode option:</strong> Use local AI models for zero-trust, air-gapped operation with no internet requirement.</li>
+    </ul>
+    <div class="highlight-box privacy">
+      <strong>Security philosophy:</strong> The most secure data is data that never leaves your device. Orion's architecture prioritizes local-first operation and gives you full control over when and what data is shared with cloud services.
+    </div>
+  </section>
+
+  <!-- 11. Compliance -->
+  <section id="compliance">
+    <h2><span class="section-num">11</span> Compliance</h2>
+    <p>
+      Orion's privacy-first design aligns with major data protection regulations:
+    </p>
+    <ul class="bullet-list">
+      <li><strong>Chrome Web Store policies:</strong> Complies with Google's Developer Program Policies, including Limited Use requirements for sensitive permissions.</li>
+      <li><strong>No personal data collection:</strong> We do not collect, process, or store personal data on external servers, eliminating most regulatory obligations.</li>
+      <li><strong>Sensitive permissions justification:</strong> The <code style="color: var(--accent-light); background: rgba(108,92,231,0.12); padding: 0.15em 0.4em; border-radius: 4px;">debugger</code> permission is used solely for reliable browser automation within your explicitly assigned tab group—never for monitoring or data extraction.</li>
+      <li><strong>Transparency:</strong> Open-source codebase allows independent verification of privacy claims.</li>
+      <li><strong>User consent:</strong> Cloud AI features require explicit configuration with your own API keys—no data is sent without your action.</li>
+      <li><strong>Data minimization:</strong> Only essential data (page context for AI prompts) is processed, and only when you invoke the assistant.</li>
+    </ul>
+    <div class="highlight-box warning">
+      <strong>Important note:</strong> If you use cloud AI providers (Gemini, OpenAI, Anthropic), their respective privacy policies and compliance obligations apply to the data you send through their APIs. Review each provider's GDPR, CCPA, and other compliance statements if you operate under specific regulatory requirements.
+    </div>
+  </section>
+
+  <!-- 12. Updates to This Policy -->
   <section id="updates">
-    <h2><span class="section-num">8</span> Updates to This Policy</h2>
+    <h2><span class="section-num">12</span> Updates to This Policy</h2>
     <p>
       If this privacy policy is updated, changes will be published on this page with a revised effective date. For material changes that affect how your data is handled, a notice will be included in the extension's changelog.
     </p>
@@ -649,9 +726,9 @@
     </p>
   </section>
 
-  <!-- 9. Contact -->
+  <!-- 13. Contact -->
   <section id="contact">
-    <h2><span class="section-num">9</span> Contact</h2>
+    <h2><span class="section-num">13</span> Contact</h2>
     <p>
       If you have questions about this privacy policy, the extension's data practices, or anything else, reach out to us:
     </p>
