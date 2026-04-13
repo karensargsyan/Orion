@@ -1,0 +1,65 @@
+# ============================================================================
+# Orion -- Deploy Documentation to GitHub Pages
+# ============================================================================
+#
+# This workflow deploys the docs/ folder to GitHub Pages, making the privacy
+# policy and other documentation accessible at:
+# https://karensargsyan.github.io/Orion/privacy-policy.html
+#
+# SETUP REQUIRED (one-time):
+# 1. Go to GitHub repo > Settings > Pages
+# 2. Under "Source", select "GitHub Actions"
+# 3. Save the settings
+#
+# After setup, this workflow runs automatically on every push to master.
+# ============================================================================
+
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'docs/**'  # only run when docs/ changes
+  workflow_dispatch:  # allow manual runs
+
+# Allow one concurrent deployment
+concurrency:
+  group: pages-deploy
+  cancel-in-progress: true
+
+# Required for GitHub Pages deployment
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  deploy:
+    name: Deploy Documentation
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload docs/ folder
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: './docs'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Verify deployment
+        run: |
+          echo "Documentation deployed to: ${{ steps.deployment.outputs.page_url }}"
+          echo "Privacy Policy: ${{ steps.deployment.outputs.page_url }}privacy-policy.html"
