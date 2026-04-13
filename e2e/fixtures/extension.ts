@@ -6,6 +6,7 @@ import { test as base, chromium, type BrowserContext, type Page, type Worker } f
 import path from 'path'
 import fs from 'fs'
 import { AIMockServer } from './ai-mock-server'
+import { RealAIProvider, type AIProvider } from './real-ai-provider'
 import { TestServer } from './test-server'
 
 const PROJECT_ROOT = path.resolve(__dirname, '../..')
@@ -80,10 +81,31 @@ export const test = base.extend<ExtensionFixtures>({
   },
 
   mockAI: async ({}, use) => {
-    const server = new AIMockServer()
-    await server.start()
-    await use(server)
-    await server.stop()
+    // Check if real AI testing is enabled
+    const useRealAI = process.env.USE_REAL_AI === 'true'
+    const provider = (process.env.PROVIDER || 'gemini') as AIProvider
+
+    if (useRealAI) {
+      console.log(`[Test] Using REAL AI: ${provider}`)
+      const realAI = new RealAIProvider({
+        provider,
+        geminiApiKey: process.env.GEMINI_API_KEY,
+        lmStudioUrl: process.env.LM_STUDIO_URL || 'http://127.0.0.1:1234',
+        lmStudioModel: process.env.LM_STUDIO_MODEL || 'test-model',
+        openaiApiKey: process.env.OPENAI_API_KEY,
+        openaiModel: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+      })
+      await realAI.start()
+      // Cast to AIMockServer interface for compatibility (RealAIProvider implements same interface)
+      await use(realAI as any)
+      await realAI.stop()
+    } else {
+      console.log('[Test] Using MOCK AI')
+      const server = new AIMockServer()
+      await server.start()
+      await use(server)
+      await server.stop()
+    }
   },
 
   testServer: async ({}, use) => {

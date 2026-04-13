@@ -478,6 +478,79 @@ export async function initSettings(container: HTMLElement): Promise<void> {
       </section>
 
       <section class="settings-section" data-settings-tab="advanced">
+        <h3>Panel Tabs</h3>
+        <p class="hint-text" style="margin-bottom:10px">
+          Control which features are active and visible in the sidepanel. Disabling a feature stops all data collection.
+        </p>
+
+        <div class="tab-control-group">
+          <div class="tab-control-row">
+            <span class="feature-name">History</span>
+            <label class="toggle-label">
+              <input type="checkbox" id="history-enabled" ${s.historyEnabled ? 'checked' : ''}>
+              <span>Enable</span>
+            </label>
+            <label class="toggle-label" data-depends="history">
+              <input type="checkbox" id="history-show-in-panel" ${s.historyShowInPanel ? 'checked' : ''} ${!s.historyEnabled ? 'disabled' : ''}>
+              <span>Show in panel</span>
+            </label>
+          </div>
+
+          <div class="tab-control-row">
+            <span class="feature-name">Insights</span>
+            <label class="toggle-label">
+              <input type="checkbox" id="insights-enabled" ${s.insightsEnabled ? 'checked' : ''}>
+              <span>Enable</span>
+            </label>
+            <label class="toggle-label" data-depends="insights">
+              <input type="checkbox" id="insights-show-in-panel" ${s.insightsShowInPanel ? 'checked' : ''} ${!s.insightsEnabled ? 'disabled' : ''}>
+              <span>Show in panel</span>
+            </label>
+          </div>
+
+          <div class="tab-control-row">
+            <span class="feature-name">Vault</span>
+            <label class="toggle-label">
+              <input type="checkbox" id="vault-enabled" ${s.vaultEnabled ? 'checked' : ''}>
+              <span>Enable</span>
+            </label>
+            <label class="toggle-label" data-depends="vault">
+              <input type="checkbox" id="vault-show-in-panel" ${s.vaultShowInPanel ? 'checked' : ''} ${!s.vaultEnabled ? 'disabled' : ''}>
+              <span>Show in panel</span>
+            </label>
+          </div>
+
+          <div class="tab-control-row">
+            <span class="feature-name">Learn</span>
+            <label class="toggle-label">
+              <input type="checkbox" id="learn-enabled" ${s.learnEnabled ? 'checked' : ''}>
+              <span>Enable</span>
+            </label>
+            <label class="toggle-label" data-depends="learn">
+              <input type="checkbox" id="learn-show-in-panel" ${s.learnShowInPanel ? 'checked' : ''} ${!s.learnEnabled ? 'disabled' : ''}>
+              <span>Show in panel</span>
+            </label>
+          </div>
+
+          <div class="tab-control-row">
+            <span class="feature-name">Tab Groups</span>
+            <label class="toggle-label">
+              <input type="checkbox" id="tab-groups-enabled" ${s.tabGroupsEnabled !== false ? 'checked' : ''}>
+              <span>Enable</span>
+            </label>
+            <label class="toggle-label" data-depends="tab-groups">
+              <input type="checkbox" id="tab-groups-show-in-panel" ${s.tabGroupsShowInPanel !== false ? 'checked' : ''} ${s.tabGroupsEnabled === false ? 'disabled' : ''}>
+              <span>Show in panel</span>
+            </label>
+          </div>
+        </div>
+
+        <small style="color:var(--text-dim);font-size:11px;display:block;margin-top:8px">
+          Chat, Memory, and Settings tabs are always visible. Disabling "Enable" stops all background data collection for that feature.
+        </small>
+      </section>
+
+      <section class="settings-section" data-settings-tab="advanced">
         <h3>Appearance</h3>
         <div class="form-group">
           <label>Theme</label>
@@ -918,6 +991,16 @@ function wireSettingsEvents(container: HTMLElement, s: Settings): void {
         .split(',').map(s => s.trim()).filter(Boolean),
       vaultLockTimeoutMin: Number((container.querySelector('#vault-lock-timeout') as HTMLInputElement).value),
       theme: (container.querySelector('#theme-select') as HTMLSelectElement).value as 'system' | 'dark' | 'light',
+      historyEnabled: (container.querySelector('#history-enabled') as HTMLInputElement).checked,
+      historyShowInPanel: (container.querySelector('#history-show-in-panel') as HTMLInputElement).checked,
+      insightsEnabled: (container.querySelector('#insights-enabled') as HTMLInputElement).checked,
+      insightsShowInPanel: (container.querySelector('#insights-show-in-panel') as HTMLInputElement).checked,
+      vaultEnabled: (container.querySelector('#vault-enabled') as HTMLInputElement).checked,
+      vaultShowInPanel: (container.querySelector('#vault-show-in-panel') as HTMLInputElement).checked,
+      learnEnabled: (container.querySelector('#learn-enabled') as HTMLInputElement).checked,
+      learnShowInPanel: (container.querySelector('#learn-show-in-panel') as HTMLInputElement).checked,
+      tabGroupsEnabled: (container.querySelector('#tab-groups-enabled') as HTMLInputElement).checked,
+      tabGroupsShowInPanel: (container.querySelector('#tab-groups-show-in-panel') as HTMLInputElement).checked,
     }
     await chrome.runtime.sendMessage({ type: MSG.SETTINGS_SET, partial })
     // Apply theme immediately
@@ -1163,6 +1246,23 @@ function wireSettingsEvents(container: HTMLElement, s: Settings): void {
   container.querySelector('#btn-privacy-policy')?.addEventListener('click', (e) => {
     e.preventDefault()
     void chrome.tabs.create({ url: chrome.runtime.getURL('privacy-policy.html'), active: true })
+  })
+
+  // ── Panel Tabs enable/show dependency ──────────────────────────────────
+  const features = ['history', 'insights', 'vault', 'learn', 'tab-groups']
+  features.forEach(feature => {
+    const enableInput = container.querySelector(`#${feature}-enabled`) as HTMLInputElement
+    const showInput = container.querySelector(`#${feature}-show-in-panel`) as HTMLInputElement
+    if (!enableInput || !showInput) return
+
+    enableInput.addEventListener('change', () => {
+      if (!enableInput.checked) {
+        showInput.checked = false
+        showInput.disabled = true
+      } else {
+        showInput.disabled = false
+      }
+    })
   })
 }
 

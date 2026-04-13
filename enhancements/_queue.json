@@ -6,10 +6,12 @@
       "title": "Unified Selector Strategy with Explicit Fallback Sequence",
       "type": "prompt-engineering",
       "priority": "P1",
-      "status": "IMPLEMENTED",
+      "status": "QA_TESTING",
       "created": "2026-04-12T00:00:00Z",
       "implemented": "2026-04-12T14:00:00Z",
-      "spec": "enhancements/specs/selector-strategy-unified.md"
+      "qa_tested": "2026-04-13T08:30:00Z",
+      "spec": "enhancements/specs/selector-strategy-unified.md",
+      "qa_report": "enhancements/qa-reports/selector-strategy-unified-qa.md"
     },
     {
       "id": 2,
@@ -17,10 +19,12 @@
       "title": "Multi-Step Form Wizard Awareness",
       "type": "prompt-engineering",
       "priority": "P1",
-      "status": "IMPLEMENTED",
+      "status": "QA_TESTING",
       "created": "2026-04-12T00:00:00Z",
       "implemented": "2026-04-12T17:00:00Z",
-      "spec": "enhancements/specs/multistep-form-wizard-awareness.md"
+      "qa_tested": "2026-04-13T08:30:00Z",
+      "spec": "enhancements/specs/multistep-form-wizard-awareness.md",
+      "qa_report": "enhancements/qa-reports/multistep-form-wizard-awareness-qa.md"
     },
     {
       "id": 3,
@@ -48,9 +52,11 @@
       "title": "Optional Panel Tabs — History, Insights, Vault, Learn",
       "type": "feature",
       "priority": "P1",
-      "status": "SPECCED",
+      "status": "IMPLEMENTED",
       "created": "2026-04-12T00:00:00Z",
-      "spec": "enhancements/specs/optional-panel-tabs.md"
+      "implemented": "2026-04-13T09:00:00Z",
+      "spec": "enhancements/specs/optional-panel-tabs.md",
+      "impl_report": "enhancements/done/optional-panel-tabs-impl.md"
     },
     {
       "id": 6,
@@ -58,9 +64,11 @@
       "title": "Auto Version Bump + Build Notification",
       "type": "improvement",
       "priority": "P1",
-      "status": "SPECCED",
+      "status": "IMPLEMENTED",
       "created": "2026-04-12T00:00:00Z",
-      "spec": "enhancements/specs/auto-version-bump-notify.md"
+      "implemented": "2026-04-13T09:00:00Z",
+      "spec": "enhancements/specs/auto-version-bump-notify.md",
+      "impl_report": "enhancements/done/auto-version-bump-notify-impl.md"
     },
     {
       "id": 7,
@@ -68,10 +76,12 @@
       "title": "Smart Interaction Improvements — Natural Language Understanding",
       "type": "prompt-engineering-feature",
       "priority": "P0",
-      "status": "IMPLEMENTED",
+      "status": "QA_TESTING",
       "created": "2026-04-12T14:30:00Z",
       "implemented": "2026-04-12T16:00:00Z",
-      "spec": "enhancements/specs/smart-interaction-improvements.md"
+      "qa_tested": "2026-04-13T08:30:00Z",
+      "spec": "enhancements/specs/smart-interaction-improvements.md",
+      "qa_report": "enhancements/qa-reports/smart-interaction-improvements-qa.md"
     }
   ],
   "statuses": ["NEW", "SPECCED", "IN_REVIEW", "IMPLEMENTING", "IMPLEMENTED", "QA_TESTING", "NEEDS_FIX", "DONE", "REJECTED"],

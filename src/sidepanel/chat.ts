@@ -6,6 +6,14 @@ import type { Widget } from './chat-widgets'
 import * as speech from './speech-service'
 import { createContextStackPanel, refreshContextStack } from './context-stack-ui'
 import { createWorkflowPanel, refreshWorkflowList } from './workflow-ui'
+import {
+  ATTACHMENT_FILE_INPUT_ACCEPT,
+  buildAttachmentPlaceholder,
+  buildOutgoingChatText,
+  extractPdfText,
+  inferAttachmentKind,
+  type AttachmentKind,
+} from './chat-attachments'
 
 // ─── Per-session chat state (keyed by sessionId, shared across tabs in same group) ──
 
@@ -24,6 +32,8 @@ interface TabChatState {
   pendingImageData: string | null
   pendingFileContext: string | null
   pendingFileName: string | null
+  pendingAttachmentKind: AttachmentKind | null
+  pendingAttachmentSize: number | null
   /** Callback to stop mic recording, set by initMic */
   _stopMic?: (() => void) | null
   /** Callback to clear file attachment, set by initAttachButton */
@@ -71,6 +81,15 @@ function getPort(state: TabChatState): chrome.runtime.Port {
   })
   return p
 }
+
+// ─── Debug Message Display ────────────────────────────────────────────────────
+
+function showDebugMessage(state: TabChatState, message: string, type: 'info' | 'warning' | 'error' = 'info'): void {
+  if (window.localStorage.getItem('orion:debug-upload-ui') !== '1') return
+  showChatToast(state, `[Upload debug] ${message}`, type === 'error' ? 'error' : 'info')
+}
+
+// ─── Port Message Handling ─────────────────────────────────────────────────────
 
 function handlePortMessage(state: TabChatState, msg: { type: string; chunk?: string; fullText?: string; error?: string; id?: string; description?: string; risk?: string; actions?: string[]; mode?: string; remember?: boolean; formTitle?: string; fields?: unknown[]; autoFilledCount?: number; reasoning?: string; confidence?: number; targetSelector?: string; event?: unknown }): void {
   switch (msg.type) {
@@ -194,41 +213,50 @@ export async function initChat(parentContainer: HTMLElement, tabId: number): Pro
     <div class="proactive-bar proactive-bar-tab" style="display:none" aria-label="Page insights"></div>
     <div class="messages chat-messages-tab" role="log" aria-live="polite" aria-label="Chat messages">
     </div>
-    <div class="typing-indicator typing-indicator-tab" style="display:none">
-      <span></span><span></span><span></span>
-    </div>
-    <div class="attachment-preview-tab" style="display:none">
-      <img class="attachment-thumb">
-      <span class="attachment-name"></span>
-      <button class="attachment-remove" title="Remove">&times;</button>
-    </div>
-    <div class="input-toolbar">
-      <button class="btn-icon btn-mic-tab" title="Hold to speak, double-click to lock">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>
-      </button>
-      <button class="btn-icon btn-attach-tab" title="Attach image">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>
-      </button>
-      <input type="file" class="file-input-tab" accept="image/*,.pdf,.txt,.csv" style="display:none">
-      <button class="btn-mode-toggle btn-mode-tab" title="Switch mode">
-        <span class="mode-label">Auto</span>
-      </button>
-      <div class="depth-toggle depth-toggle-tab">
-        <button class="depth-btn active" data-depth="standard" title="Standard depth">Std</button>
-        <button class="depth-btn" data-depth="quick" title="Quick: 1-2 sentences">Quick</button>
-        <button class="depth-btn" data-depth="deep" title="Deep: thorough with examples">Deep</button>
-      </div>
-    </div>
-    <div class="input-row">
-      <div style="position:relative;flex:1;display:flex;flex-direction:column;">
-        <textarea class="chat-input-tab" placeholder="Ask anything... (/ for commands)" rows="1" aria-label="Chat message input"></textarea>
-      </div>
-      <button class="btn-primary btn-send btn-send-tab" aria-label="Send message">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
-      </button>
-      <button class="btn-danger btn-send btn-stop-tab" style="display:none" aria-label="Stop AI response">Stop</button>
-    </div>
-  `
+	    <div class="typing-indicator typing-indicator-tab" style="display:none">
+	      <span></span><span></span><span></span>
+	    </div>
+	    <div class="chat-composer">
+	      <div class="attachment-preview-tab" style="display:none">
+	        <img class="attachment-thumb">
+	        <div class="attachment-preview-body">
+	          <span class="attachment-name"></span>
+	          <span class="attachment-meta"></span>
+	        </div>
+	        <button class="attachment-remove" title="Remove attachment">&times;</button>
+	      </div>
+	      <div class="input-toolbar">
+	        <button class="btn-icon btn-mic-tab" title="Hold to speak, double-click to lock">
+	          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>
+	        </button>
+	        <button class="btn-icon btn-attach-tab" title="Attach file or image">
+	          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>
+	        </button>
+	        <input type="file" class="file-input-tab" accept="${ATTACHMENT_FILE_INPUT_ACCEPT}" style="display:none">
+	        <button class="btn-mode-toggle btn-mode-tab" title="Switch mode">
+	          <span class="mode-label">Auto</span>
+	        </button>
+	        <div class="depth-toggle depth-toggle-tab">
+	          <button class="depth-btn active" data-depth="standard" title="Standard depth">Std</button>
+	          <button class="depth-btn" data-depth="quick" title="Quick: 1-2 sentences">Quick</button>
+	          <button class="depth-btn" data-depth="deep" title="Deep: thorough with examples">Deep</button>
+	        </div>
+	      </div>
+	      <div class="input-row">
+	        <div class="input-column" style="position:relative;flex:1;display:flex;flex-direction:column;">
+	          <textarea class="chat-input-tab" placeholder="Ask anything... (/ for commands)" rows="1" aria-label="Chat message input"></textarea>
+	        </div>
+	        <button class="btn-primary btn-send btn-send-tab" aria-label="Send message" title="Send message">
+	          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+	        </button>
+	        <button class="btn-danger btn-send btn-stop-tab" style="display:none" aria-label="Stop AI response">Stop</button>
+	      </div>
+	      <div class="composer-footer">
+	        <span class="composer-hint">Enter to send. Shift+Enter for a new line.</span>
+	        <span class="composer-hint composer-hint-attachment">Drop a file or image here to attach it.</span>
+	      </div>
+	    </div>
+	  `
 
   const state: TabChatState = {
     sessionId,
@@ -245,6 +273,8 @@ export async function initChat(parentContainer: HTMLElement, tabId: number): Pro
     pendingImageData: null,
     pendingFileContext: null,
     pendingFileName: null,
+    pendingAttachmentKind: null,
+    pendingAttachmentSize: null,
     pendingLargeText: null,
   }
   sessionStates.set(sessionId, state)
@@ -511,6 +541,25 @@ function wireEvents(state: TabChatState): void {
     if (slashDropdown) { slashDropdown.remove(); slashDropdown = null }
   }
 
+  function updateComposerState(): void {
+    const hasAttachment = !!state.pendingFileContext || !!state.pendingImageData
+    const draftText = (state.pendingLargeText ?? newInput.value).trim()
+    const hint = c.querySelector<HTMLElement>('.composer-hint-attachment')
+
+    newSend.disabled = (!draftText && !hasAttachment) || state.isStreaming
+    newSend.title = hasAttachment && !draftText ? 'Send attachment for analysis' : 'Send message'
+    newSend.setAttribute('aria-label', hasAttachment && !draftText ? 'Send attachment for analysis' : 'Send message')
+    newInput.placeholder = hasAttachment
+      ? 'Add a question about the attachment, or press Send to analyze it...'
+      : 'Ask anything... (/ for commands)'
+
+    if (hint) {
+      hint.textContent = hasAttachment
+        ? 'Press Send with no text to analyze the attachment.'
+        : 'Drop a file or image here to attach it.'
+    }
+  }
+
   newInput.addEventListener('input', () => {
     newInput.style.height = 'auto'
     newInput.style.height = Math.min(newInput.scrollHeight, 120) + 'px'
@@ -521,6 +570,7 @@ function wireEvents(state: TabChatState): void {
     } else {
       removeSlashDropdown()
     }
+    updateComposerState()
   })
 
   // Override keydown to handle slash dropdown navigation
@@ -599,6 +649,7 @@ function wireEvents(state: TabChatState): void {
         input.value = (input.value ? input.value + ' ' : '') + text
         input.style.height = 'auto'
         input.style.height = Math.min(input.scrollHeight, 120) + 'px'
+        updateComposerState()
       }
     })
 
@@ -729,41 +780,142 @@ function wireEvents(state: TabChatState): void {
   const previewBar = c.querySelector<HTMLElement>('.attachment-preview-tab')
   const previewThumb = c.querySelector<HTMLImageElement>('.attachment-thumb')
   const previewName = c.querySelector<HTMLElement>('.attachment-name')
+  const previewMeta = c.querySelector<HTMLElement>('.attachment-meta')
   const previewRemove = c.querySelector<HTMLButtonElement>('.attachment-remove')
   const inputRow = c.querySelector<HTMLElement>('.input-row')
 
-  function attachFile(file: File): void {
-    if (file.size > 10 * 1024 * 1024) { alert('File too large (max 10MB)'); return }
-    const isImage = file.type.startsWith('image/')
-    const isText = file.type.startsWith('text/') || /\.(txt|csv|md|json|xml|html|log|tsv)$/i.test(file.name)
+  function showAttachmentPreview(name: string, meta: string, thumbSrc?: string): void {
+    if (previewThumb) {
+      previewThumb.src = thumbSrc ?? ''
+      previewThumb.style.display = thumbSrc ? '' : 'none'
+    }
+    if (previewName) previewName.textContent = name
+    if (previewMeta) previewMeta.textContent = meta
+    if (previewBar) previewBar.style.display = 'flex'
+    updateComposerState()
+  }
 
-    if (isText) {
+  function attachFile(file: File): void {
+    console.log('[FILE UPLOAD] attachFile called:', { name: file.name, size: file.size, type: file.type })
+    showDebugMessage(state, `File selected: ${file.name} (${formatFileSize(file.size)})`, 'info')
+
+    if (file.size > 10 * 1024 * 1024) {
+      alert('File too large (max 10MB)')
+      showDebugMessage(state, `ERROR: File too large (${formatFileSize(file.size)})`, 'error')
+      return
+    }
+    const kind = inferAttachmentKind(file.name, file.type)
+    console.log('[FILE UPLOAD] File classification:', { kind })
+
+    if (kind === 'text') {
       // Read as text for inline context
       const reader = new FileReader()
       reader.onload = () => {
-        state.pendingFileContext = (reader.result as string).slice(0, 50_000)
+        const content = (reader.result as string).slice(0, 50_000)
+        state.pendingFileContext = content
         state.pendingFileName = file.name
         state.pendingImageData = null
-        if (previewThumb) { previewThumb.src = ''; previewThumb.style.display = 'none' }
-        if (previewName) previewName.textContent = `\u{1F4C4} ${file.name} (${formatFileSize(file.size)})`
-        if (previewBar) previewBar.style.display = 'flex'
+        state.pendingAttachmentKind = kind
+        state.pendingAttachmentSize = file.size
+        console.log('[FILE UPLOAD] ✅ Text file loaded successfully:', {
+          fileName: file.name,
+          contentLength: content.length,
+          contentPreview: content.slice(0, 100),
+          stateUpdated: !!state.pendingFileContext
+        })
+        showDebugMessage(state, `File loaded: ${file.name} (${content.length} chars)`, 'info')
+        showAttachmentPreview(
+          file.name,
+          `Text file · ${formatFileSize(file.size)} · first ${Math.min(content.length, 20_000).toLocaleString()} chars sent to AI`
+        )
+        showDebugMessage(state, 'Preview bar shown', 'info')
+      }
+      reader.onerror = (e) => {
+        console.error('[FILE UPLOAD] ❌ Failed to read text file:', e)
+        alert('Failed to read file')
+        showDebugMessage(state, `ERROR: Failed to read file: ${e}`, 'error')
       }
       reader.readAsText(file)
-    } else {
-      // Images and other files → data URL
+    } else if (kind === 'pdf') {
+      void (async () => {
+        try {
+          showChatToast(state, 'Extracting text from PDF before sending it to the model…', 'info')
+          const extracted = await extractPdfText(file)
+          state.pendingImageData = null
+          state.pendingFileContext = extracted.text
+          state.pendingFileName = file.name
+          state.pendingAttachmentKind = kind
+          state.pendingAttachmentSize = file.size
+          showAttachmentPreview(
+            file.name,
+            `PDF · ${formatFileSize(file.size)} · ${extracted.pageCount} page${extracted.pageCount === 1 ? '' : 's'}${extracted.truncated ? ' · truncated' : ''}`
+          )
+          showChatToast(
+            state,
+            extracted.truncated
+              ? 'PDF text extracted. Orion will send the readable text, truncated to fit the model context.'
+              : 'PDF text extracted. Orion will send the readable text to the model.',
+            'info'
+          )
+        } catch (err) {
+          console.error('[FILE UPLOAD] ❌ Failed to extract PDF text:', err)
+          state.pendingImageData = null
+          state.pendingFileContext = buildAttachmentPlaceholder(file.name, file.type, file.size, kind)
+          state.pendingFileName = file.name
+          state.pendingAttachmentKind = kind
+          state.pendingAttachmentSize = file.size
+          showAttachmentPreview(
+            file.name,
+            `PDF · ${formatFileSize(file.size)} · metadata only`
+          )
+          showChatToast(
+            state,
+            'PDF text extraction failed, so Orion will fall back to file metadata only for this upload.',
+            'error'
+          )
+        }
+      })()
+    } else if (kind === 'image') {
+      // Images → data URL
       const reader = new FileReader()
       reader.onload = () => {
         state.pendingImageData = reader.result as string
         state.pendingFileContext = null
         state.pendingFileName = file.name
-        if (previewThumb) {
-          previewThumb.src = isImage ? reader.result as string : ''
-          previewThumb.style.display = isImage ? '' : 'none'
-        }
-        if (previewName) previewName.textContent = `${isImage ? '\u{1F5BC}' : '\u{1F4CE}'} ${file.name} (${formatFileSize(file.size)})`
-        if (previewBar) previewBar.style.display = 'flex'
+        state.pendingAttachmentKind = kind
+        state.pendingAttachmentSize = file.size
+        console.log('[FILE UPLOAD] ✅ Image/binary file loaded:', {
+          fileName: file.name,
+          kind,
+          dataLength: (reader.result as string).length,
+          stateUpdated: !!state.pendingImageData
+        })
+        showAttachmentPreview(
+          file.name,
+          `Image · ${formatFileSize(file.size)} · sent to the vision model when available`,
+          reader.result as string
+        )
+      }
+      reader.onerror = (e) => {
+        console.error('[FILE UPLOAD] ❌ Failed to read file:', e)
+        alert('Failed to read file')
       }
       reader.readAsDataURL(file)
+    } else {
+      state.pendingImageData = null
+      state.pendingFileContext = buildAttachmentPlaceholder(file.name, file.type, file.size, kind)
+      state.pendingFileName = file.name
+      state.pendingAttachmentKind = kind
+      state.pendingAttachmentSize = file.size
+      showAttachmentPreview(
+        file.name,
+        `Binary file · ${formatFileSize(file.size)} · metadata only`
+      )
+      showChatToast(
+        state,
+        'This file type is attached as metadata only. Upload text/code or an image for deeper analysis.',
+        'info'
+      )
     }
   }
 
@@ -771,9 +923,16 @@ function wireEvents(state: TabChatState): void {
     state.pendingImageData = null
     state.pendingFileContext = null
     state.pendingFileName = null
+    state.pendingAttachmentKind = null
+    state.pendingAttachmentSize = null
     if (previewBar) previewBar.style.display = 'none'
-    if (previewThumb) previewThumb.src = ''
+    if (previewThumb) {
+      previewThumb.src = ''
+      previewThumb.style.display = 'none'
+    }
     if (previewName) previewName.textContent = ''
+    if (previewMeta) previewMeta.textContent = ''
+    updateComposerState()
   }
 
   if (attachBtn && fileInput) {
@@ -813,6 +972,7 @@ function wireEvents(state: TabChatState): void {
         newInput.value = val.slice(0, 100) + '…'
         newInput.style.height = 'auto'
         showLargeTextChip(state, val.length)
+        updateComposerState()
       }
     }, 0)
   })
@@ -831,12 +991,13 @@ function wireEvents(state: TabChatState): void {
 
   // Store clearAttachment on state for sendMessage to call
   ;state._clearAttachment = clearAttachment
+  updateComposerState()
 }
 
 // ─── Large paste chip ─────────────────────────────────────────────────────────
 
 function showLargeTextChip(state: TabChatState, charCount: number): void {
-  const inputRow = state.container.querySelector<HTMLElement>('.chat-input-row')
+  const inputRow = state.container.querySelector<HTMLElement>('.chat-composer')
   if (!inputRow) return
   // Remove any existing chip
   inputRow.querySelector('.large-text-chip')?.remove()
@@ -856,6 +1017,8 @@ function showLargeTextChip(state: TabChatState, charCount: number): void {
     input.style.height = Math.min(input.scrollHeight, 300) + 'px'
     chip.remove()
     state.pendingLargeText = null
+    const sendBtn = state.container.querySelector<HTMLButtonElement>('.btn-send-tab')
+    if (sendBtn) sendBtn.disabled = input.value.trim().length === 0
     input.focus()
   })
 
@@ -872,6 +1035,8 @@ function clearLargeText(state: TabChatState): void {
   const input = state.container.querySelector<HTMLTextAreaElement>('.chat-input-tab')!
   input.value = ''
   input.style.height = 'auto'
+  const sendBtn = state.container.querySelector<HTMLButtonElement>('.btn-send-tab')
+  if (sendBtn) sendBtn.disabled = !state.pendingFileContext && !state.pendingImageData
 }
 
 // ─── DOM accessors ────────────────────────────────────────────────────────────
@@ -2813,7 +2978,19 @@ function showError(state: TabChatState, error: string): void {
 async function sendMessage(state: TabChatState): Promise<void> {
   const inputEl = getInput(state)
   // Use full pasted text if a large-text chip is active; otherwise use the visible input
-  let text = (state.pendingLargeText ?? inputEl.value).trim()
+  const draftText = (state.pendingLargeText ?? inputEl.value).trim()
+  const imageData = state.pendingImageData
+  const fileContext = state.pendingFileContext
+  const fileName = state.pendingFileName
+  const attachmentKind = state.pendingAttachmentKind
+  const attachmentSize = state.pendingAttachmentSize
+  const prepared = buildOutgoingChatText({
+    text: draftText,
+    fileName,
+    fileContext,
+    hasImage: !!imageData,
+  })
+  let text = prepared.requestText
   // Clear the chip before sending
   if (state.pendingLargeText) {
     state.container.querySelector('.large-text-chip')?.remove()
@@ -2830,27 +3007,46 @@ async function sendMessage(state: TabChatState): Promise<void> {
   }
 
   // ── Ambiguity detection for very short inputs ──
+  // Skip ambiguity detection if file is attached (intent is clear)
   if (ambiguityBypass) {
     ambiguityBypass = false
-  } else {
-    const words = text.split(/\s+/).filter(w => w.length > 0)
-    if (words.length <= 1 && !text.startsWith('/')) {
-      const hasIntent = AMBIGUITY_INTENT_PATTERNS.some(p => p.test(text))
+  } else if (!state.pendingFileContext && !state.pendingImageData) {
+    const words = draftText.split(/\s+/).filter(w => w.length > 0)
+    if (words.length <= 1 && !draftText.startsWith('/')) {
+      const hasIntent = AMBIGUITY_INTENT_PATTERNS.some(p => p.test(draftText))
       if (!hasIntent) {
         const pageType = detectPageType(state.domain, '')
-        showAmbiguityCard(state, text, pageType)
+        showAmbiguityCard(state, draftText, pageType)
         return
       }
     }
   }
 
-  const imageData = state.pendingImageData
-  const fileContext = state.pendingFileContext
-  const fileName = state.pendingFileName
+  console.log('[SEND MESSAGE] 📊 Attachment state:', {
+    hasImageData: !!imageData,
+    hasFileContext: !!fileContext,
+    fileName,
+    fileContextLength: fileContext?.length ?? 0,
+    originalTextLength: draftText.length,
+    usedAutoPrompt: prepared.usedAutoPrompt,
+  })
 
-  // Prepend file content as context if attached
   if (fileContext) {
-    text = `[Attached file: ${fileName}]\n\`\`\`\n${fileContext.slice(0, 20_000)}\n\`\`\`\n\n${text}`
+    showDebugMessage(state, `Preparing to send file: ${fileName} (${fileContext.length} chars)`, 'info')
+  } else if (fileName && !imageData) {
+    showDebugMessage(state, `WARNING: fileName exists but no fileContext!`, 'warning')
+  }
+
+  if (fileContext) {
+    console.log('[SEND MESSAGE] ✅ File content prepended to text:', {
+      totalTextLength: text.length,
+      textPreview: text.slice(0, 300),
+      hasFileMarker: text.includes('[Attached file:'),
+      hasCodeBlock: text.includes('```')
+    })
+    showDebugMessage(state, `File content prepended. Total text: ${text.length} chars`, 'info')
+  } else if (fileContext === null && fileName && !imageData) {
+    console.warn('[SEND MESSAGE] ⚠️ fileName exists but fileContext is null - possible timing issue!')
   }
 
   // Start watch session when /watch command is used
@@ -2867,11 +3063,29 @@ async function sendMessage(state: TabChatState): Promise<void> {
   inputEl.style.height = 'auto'
 
   // Show user message with optional image thumbnail
-  // Extract the user's original text after the file context block (separated by \n\n)
-  const displayText = fileContext
-    ? (() => { const sep = text.indexOf('\n\n'); return `[${fileName}] ${sep >= 0 ? text.slice(sep + 2) : text}` })()
-    : text
+  const displayText = prepared.displayText
+  console.log('[SEND MESSAGE] 📝 Final display text:', displayText.slice(0, 200))
   const bubble = addBubble(state, 'user', displayText)
+  console.log('[SEND MESSAGE] 📦 User bubble created:', { bubbleExists: !!bubble, bubbleClassName: bubble.className })
+
+  // Add file attachment card if file was uploaded
+  if (fileContext && fileName) {
+    console.log('[SEND MESSAGE] 📎 Creating file attachment card:', { fileName, contentLength: fileContext.length })
+    const metaLabel = attachmentKind === 'pdf'
+      ? `${formatFileSize(attachmentSize ?? 0)} · metadata only`
+      : attachmentKind === 'binary'
+        ? `${formatFileSize(attachmentSize ?? 0)} · metadata only`
+        : formatFileSize(attachmentSize ?? new Blob([fileContext]).size)
+    const fileCard = createFileAttachmentCard(fileName, fileContext, metaLabel)
+    console.log('[SEND MESSAGE] 📎 File card created:', { cardExists: !!fileCard, cardClassName: fileCard.className })
+    bubble.appendChild(fileCard)
+    console.log('[SEND MESSAGE] ✅ File card appended to bubble')
+    showDebugMessage(state, `File card added to chat bubble`, 'info')
+  } else if (!fileContext && fileName && !imageData) {
+    console.error('[SEND MESSAGE] ❌ CRITICAL: fileName exists but no fileContext!', { fileName })
+    showDebugMessage(state, `ERROR: Cannot create file card - no content!`, 'error')
+  }
+
   if (imageData && imageData.startsWith('data:image/')) {
     const img = document.createElement('img')
     img.src = imageData
@@ -2880,6 +3094,7 @@ async function sendMessage(state: TabChatState): Promise<void> {
   }
 
   // Clear attachment after capturing
+  console.log('[SEND MESSAGE] 🧹 Clearing attachment state...')
   if (state._clearAttachment) state._clearAttachment()
 
   setStreaming(state, true)
@@ -2891,7 +3106,7 @@ async function sendMessage(state: TabChatState): Promise<void> {
   state.pendingAbort = new AbortController()
 
   try {
-    getPort(state).postMessage({
+    const message = {
       type: MSG.AI_CHAT,
       text,
       sessionId: state.sessionId,
@@ -2899,7 +3114,19 @@ async function sendMessage(state: TabChatState): Promise<void> {
       imageData: imageData || undefined,
       explanationDepth: currentExplanationDepth,
       additionalTabIds: selectedCrossTabIds.length > 0 ? [...selectedCrossTabIds] : undefined,
+    }
+    console.log('[SEND MESSAGE] 📤 FINAL MESSAGE TO AI:', {
+      textLength: text.length,
+      textPreview: text.slice(0, 300),
+      hasImageData: !!imageData,
+      hasFileMarker: text.includes('[Attached file:'),
+      hasCodeBlock: text.includes('```'),
+      sessionId: state.sessionId,
+      tabId: state.tabId
     })
+    showDebugMessage(state, `Message sent to AI (${text.length} chars)`, 'info')
+    getPort(state).postMessage(message)
+    console.log('[SEND MESSAGE] ✅ Message posted to port successfully')
   } catch (err) {
     showError(state, `Failed to connect to AI: ${err}`)
   }
@@ -2921,6 +3148,11 @@ function setStreaming(state: TabChatState, streaming: boolean): void {
   if (sendBtn) sendBtn.style.display = streaming ? 'none' : ''
   if (stopBtn) stopBtn.style.display = streaming ? '' : 'none'
   if (!streaming) {
+    if (sendBtn) {
+      const draftText = (state.pendingLargeText ?? inputEl.value).trim()
+      const hasAttachment = !!state.pendingFileContext || !!state.pendingImageData
+      sendBtn.disabled = !draftText && !hasAttachment
+    }
     inputEl.focus()
     showTypingIndicator(state, false)
   }
@@ -3057,6 +3289,84 @@ function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+/**
+ * Creates a file attachment card UI element for display in chat bubbles.
+ * Shows file icon, name, size, and download button.
+ */
+function createFileAttachmentCard(fileName: string, fileContent: string, metaLabel?: string): HTMLElement {
+  console.log('[FILE CARD] 📎 Creating file attachment card:', { fileName, contentLength: fileContent.length })
+  const card = document.createElement('div')
+  card.className = 'file-attachment-card'
+
+  // Determine file icon based on extension
+  const ext = fileName.split('.').pop()?.toLowerCase() ?? ''
+  let icon = '📄' // default document icon
+  if (['txt', 'md', 'log'].includes(ext)) icon = '📝'
+  else if (['json', 'xml', 'yaml', 'yml'].includes(ext)) icon = '📋'
+  else if (['js', 'ts', 'py', 'java', 'c', 'cpp', 'h', 'cs', 'rb', 'go', 'rs'].includes(ext)) icon = '💻'
+  else if (['html', 'css', 'scss', 'sass'].includes(ext)) icon = '🌐'
+  else if (['pdf'].includes(ext)) icon = '📕'
+  else if (['zip', 'tar', 'gz', 'rar', '7z'].includes(ext)) icon = '📦'
+
+  // Calculate file size from content (approximate, in bytes)
+  const fileSizeBytes = new Blob([fileContent]).size
+  const fileSizeStr = metaLabel || formatFileSize(fileSizeBytes)
+  console.log('[FILE CARD] 📊 File details:', { ext, icon, fileSizeBytes, fileSizeStr })
+
+  card.innerHTML = `
+    <div class="file-icon">${icon}</div>
+    <div class="file-info">
+      <div class="file-name" title="${fileName}">${fileName}</div>
+      <div class="file-size">${fileSizeStr}</div>
+    </div>
+    <button class="btn-download-file" title="Download file" aria-label="Download ${fileName}">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+        <polyline points="7 10 12 15 17 10"></polyline>
+        <line x1="12" y1="15" x2="12" y2="3"></line>
+      </svg>
+    </button>
+  `
+
+  // Store file content as data attribute for download
+  card.dataset.fileContent = fileContent
+  card.dataset.fileName = fileName
+  console.log('[FILE CARD] ✅ File card HTML created, stored data attributes')
+
+  // Add download handler
+  const downloadBtn = card.querySelector('.btn-download-file')
+  console.log('[FILE CARD] 🔽 Download button found:', !!downloadBtn)
+  downloadBtn?.addEventListener('click', () => {
+    console.log('[FILE CARD] 💾 Download button clicked')
+    const content = card.dataset.fileContent ?? ''
+    const name = card.dataset.fileName ?? 'download.txt'
+
+    // Create blob and download
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = name
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+
+    // Visual feedback
+    const btn = downloadBtn as HTMLElement
+    const originalTitle = btn.title
+    btn.title = 'Downloaded!'
+    btn.style.color = 'var(--color-success)'
+    setTimeout(() => {
+      btn.title = originalTitle
+      btn.style.color = ''
+    }, 1500)
+  })
+
+  console.log('[FILE CARD] ✅ File attachment card fully created and configured')
+  return card
 }
 
 export function sendChatMessage(text: string): void {

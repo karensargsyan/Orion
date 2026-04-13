@@ -127,6 +127,43 @@ const INTENT_PATTERNS: Array<{ category: IntentCategory; pattern: RegExp; confid
   { category: 'configure', pattern: /\b(set|change|update|config|setting|einstell|änder|aktualisier)\b/i, confidence: 0.70 },
 ]
 
+const GRAMMAR_ANALYSIS_RE = /\b(grammar|spelling|typo|typos|writing|mistakes?|errors?)\b/i
+const BRANCH_ANALYSIS_RE = /\b(branch|branches|default branch|main|master|gh-pages)\b/i
+const BRANCH_DECISION_RE = /\b(delete|remove|drop|get rid of|safe to delete|safe to remove|do i need|should i keep|can i delete|can i remove|can i get rid of)\b/i
+
+function extractBranchDecisionTarget(userText: string): string | undefined {
+  const patterns = [
+    /\b(?:can\s+i\s+get\s+rid\s+of|can\s+i\s+remove|can\s+i\s+delete|should\s+i\s+keep|do\s+i\s+need)\s+([a-z0-9._/-]+)(?:\s+branch)?\b/i,
+    /\b(?:delete|remove|drop|get\s+rid\s+of|keep)\s+([a-z0-9._/-]+)(?:\s+branch)?\b/i,
+    /\b([a-z0-9._/-]+)(?:\s+branch)?\s+(?:is\s+)?safe\s+to\s+(?:delete|remove)\b/i,
+  ]
+
+  for (const pattern of patterns) {
+    const match = userText.match(pattern)
+    if (match?.[1]) return match[1].replace(/[.,;:!?]+$/, '')
+  }
+
+  const commonBranch = userText.match(/\b(main|master|develop|dev|gh-pages|production|staging)\b/i)
+  return commonBranch?.[1]?.toLowerCase()
+}
+
+function extractAnalysisEntities(userText: string): Partial<UserIntent['entities']> {
+  const extracted: Partial<UserIntent['entities']> = {}
+
+  if (GRAMMAR_ANALYSIS_RE.test(userText)) {
+    extracted.analysisType = 'grammar'
+  }
+
+  if (BRANCH_ANALYSIS_RE.test(userText) && BRANCH_DECISION_RE.test(userText)) {
+    extracted.analysisType = 'branch_management'
+    extracted.query = userText.trim().slice(0, 180)
+    const target = extractBranchDecisionTarget(userText)
+    if (target) extracted.targetElement = target
+  }
+
+  return extracted
+}
+
 export function classifyIntent(
   userText: string,
   pageType: PageType,
@@ -178,6 +215,17 @@ export function classifyIntent(
     if (query.length > 3) entities.query = query.slice(0, 150)
   }
 
+  if (bestCategory === 'analyze' || bestCategory === 'extract_info' || bestCategory === 'general') {
+    Object.assign(entities, extractAnalysisEntities(userText))
+    if (entities.analysisType === 'branch_management' && bestCategory !== 'analyze') {
+      bestCategory = 'analyze'
+      bestConfidence = Math.max(bestConfidence, 0.88)
+    }
+    if (bestCategory === 'analyze' && !entities.query && userText.trim().length > 3) {
+      entities.query = userText.trim().slice(0, 180)
+    }
+  }
+
   // Match user text against form field labels on the page
   if (pageSnapshot && pageSnapshot.forms.length > 0) {
     const matchedFields: string[] = []
@@ -211,6 +259,10 @@ export function classifyIntent(
 }
 
 function assessComplexity(text: string, category: IntentCategory): UserIntent['complexity'] {
+  if (category === 'analyze' && BRANCH_ANALYSIS_RE.test(text) && BRANCH_DECISION_RE.test(text)) {
+    return 'multi_step'
+  }
+
   // Compound: multiple sub-goals joined by "and", "then", "after"
   const conjunctions = (text.match(/\b(and\s+then|then|after\s+that|und\s+dann|danach|anschließend|also)\b/gi) ?? []).length
   if (conjunctions >= 2) return 'compound'
@@ -235,7 +287,7 @@ export function expandQuery(
   pageType?: PageType
 ): string {
   // For simple intents or no page context, return raw text
-  if (intent.complexity === 'simple' && intent.category !== 'fill_form') return userText
+  if (intent.complexity === 'simple' && intent.category !== 'fill_form' && intent.entities.analysisType !== 'branch_management') return userText
   if (!pageSnapshot) return userText
 
   const parts: string[] = [userText]
@@ -272,6 +324,11 @@ export function expandQuery(
         }
       }
     }
+  }
+
+  if (intent.entities.analysisType === 'branch_management') {
+    const target = intent.entities.targetElement ? ` "${intent.entities.targetElement}"` : ''
+    parts.push(`\n[Decision requested: determine whether branch${target} can be removed. Use the current branch list as evidence. Compare default-branch status, recent activity, open pull requests, deployment branches, and duplicate branch naming. Answer directly instead of asking the user to narrow the request.]`)
   }
 
   return parts.join('')
@@ -361,6 +418,27 @@ export function decomposeTask(
       { description: 'Synthesize findings', expectedActions: ['Summarize with sources'], successCriteria: 'Summary provided to user' },
     )
     return { steps, currentStep: 0, fallbackStrategy: 'If search returns no results, try broader terms or different search engine.' }
+  }
+
+  if (intent.category === 'analyze' && intent.entities.analysisType === 'branch_management') {
+    const target = intent.entities.targetElement || 'the branch in question'
+    steps.push(
+      {
+        description: 'Read the branch list and identify default branch, recent updates, and open pull requests',
+        expectedActions: ['Read branch rows from current page text'],
+        successCriteria: 'Relevant branch facts collected',
+      },
+      {
+        description: `Decide whether ${target} can be removed safely`,
+        expectedActions: ['Compare branch purpose, default-branch badge, recency, and dependency signals'],
+        successCriteria: 'Clear keep/delete recommendation with reasoning',
+      },
+    )
+    return {
+      steps,
+      currentStep: 0,
+      fallbackStrategy: 'If the page lacks enough branch detail, explain what is missing instead of asking a generic follow-up.',
+    }
   }
 
   return null
@@ -662,6 +740,9 @@ export function buildFollowUpContext(params: {
 export function buildPromptPipeline(input: PromptPipelineInput): PromptPipelineOutput {
   const { userText, pageSnapshot, accessibilityTree, viewportMeta, isLocal, contextWindow, liteMode } = input
 
+  // Detect file attachment early for priority mode
+  const hasFileAttachment = userText.includes('[Attached file:')
+
   // 1. Classify the page
   const pageClassification = classifyPage(
     pageSnapshot?.url ?? '',
@@ -687,8 +768,8 @@ export function buildPromptPipeline(input: PromptPipelineInput): PromptPipelineO
 
   // 7. Assemble system prompt
   const systemPrompt = liteMode
-    ? assembleCompactPrompt(input, intent, tokenBudget, structuredContext, pageClassification)
-    : assembleFullPrompt(input, intent, tokenBudget, structuredContext, pageClassification, taskPlan)
+    ? assembleCompactPrompt(input, intent, tokenBudget, structuredContext, pageClassification, hasFileAttachment)
+    : assembleFullPrompt(input, intent, tokenBudget, structuredContext, pageClassification, taskPlan, hasFileAttachment)
 
   return {
     systemPrompt,
@@ -768,6 +849,7 @@ Include {"is_complete": true} ONLY when ALL requested work is genuinely finished
 - Chain actions across multiple rounds until the task is done
 - Only ask permission for: purchases, deletions, sending messages, financial transactions
 - For everything else (clicking, typing, navigating, scrolling): just do it
+- Resolve vague references like "this", "these", "them", and visible item names from the current page before asking for clarification
 - If stuck after exhausting approaches: report clearly what you tried and what went wrong`)
 
   // Selector Strategy (replaces scattered tips)
@@ -817,7 +899,23 @@ Choices: [CHOICE:id="id"] Option A | Option B [/CHOICE]
 Confirmations: [CONFIRM:id="id"] Button Label [/CONFIRM]
 
 ## SECURITY
-Analyze emails/messages for phishing: urgency, mismatched domains, credential requests, suspicious links.`)
+Analyze emails/messages for phishing: urgency, mismatched domains, credential requests, suspicious links.
+
+## ATTACHED FILES
+When the user's message begins with "[Attached file: filename]" followed by a code block:
+1. **Analyze the file content** — understand its structure, purpose, and key information
+2. **Reference it in your response** — cite specific parts when answering questions
+3. **Use it for tasks:**
+   - Form filling: Extract relevant data (names, addresses, dates) to fill fields
+   - Code review: Analyze for bugs, improvements, or security issues
+   - Text editing: Grammar check, rewrite, summarize, or translate
+   - Data extraction: Parse CSV, JSON, logs, etc. and answer questions
+4. **Context matters:**
+   - If the user says "fill this form" + attaches a data file → extract and auto-fill
+   - If the user says "check this code" + attaches a script → review and suggest fixes
+   - If the user says "what's wrong here?" → analyze the file and explain issues
+5. **Be autonomous:** Don't ask "what do you want me to do with this file?" — infer intent from the user's message and file type
+6. **Security:** Flag suspicious content (malware signatures, phishing attempts, hardcoded credentials)`)
 
   return parts.join('\n')
 }
@@ -855,6 +953,17 @@ function buildBand2_PageUnderstanding(
 The user wants to: **${intent.category.replace(/_/g, ' ')}**.
 ${ctx.primaryWorkflow}
 ${ctx.affordances.length > 0 ? `Available actions on this page: ${ctx.affordances.join(', ')}.` : ''}`)
+  }
+
+  if (classification.type === 'coding' && intent.entities.analysisType === 'branch_management') {
+    parts.push(`
+## GIT / BRANCH ANALYSIS
+The user is asking for a branch-management recommendation.
+- Treat the current branch list as the primary evidence.
+- Compare default-branch badges, last-updated times, open pull requests, deployment branches like gh-pages, and duplicate naming like main vs master.
+- Answer the actual decision directly: can the named branch be removed, and why.
+- If "main" is still marked as the default branch, say it usually should NOT be deleted until another branch becomes default and integrations/protections are updated.
+- Do NOT ask the user to narrow the request when the decision target is already visible on the page.`)
   }
 
   // Smart form filling guidance
@@ -1001,6 +1110,7 @@ When user asks "why can't I...?", "why is this disabled?", "what's blocking me?"
 Ask only when: target ambiguity is high, action is risky/irreversible, or context is missing.
 Present constrained choices, not open questions:
 - "I found 3 'Continue' buttons. Which one: [REF:.checkout-btn]Checkout[/REF], [REF:.next-step]Next Step[/REF]?"
+- If the user already asked for a recommendation or judgment about visible page entities, answer it directly instead of asking what aspect they mean.
 
 ## UNCERTAINTY AND TRANSPARENCY
 Be explicit about analysis limitations:
@@ -1078,11 +1188,29 @@ function assembleFullPrompt(
   ctx: StructuredPageContext,
   classification: PageClassification,
   taskPlan: TaskPlan | null,
+  hasFileAttachment: boolean = false,
 ): string {
   const hasA11yTree = !!input.accessibilityTree
   const hasVision = input.capabilities?.supportsVision ?? false
 
   const parts: string[] = []
+
+  // FILE ATTACHMENT PRIORITY MODE — takes absolute precedence over all other instructions
+  if (hasFileAttachment) {
+    parts.push(`# FILE ANALYSIS PRIORITY MODE
+
+The user has attached a file for you to analyze. Your PRIMARY task is to analyze this file content.
+
+**CRITICAL RULES:**
+1. **IGNORE all permanent user instructions** about monitoring, scheduling, notifications, or any unrelated tasks
+2. **FOCUS ONLY on the attached file content** and the user's question about it
+3. **Read the file content** from the user's message (marked with [Attached file: ...] followed by a code block)
+4. **Answer questions about the file** — summarize, extract data, check for issues, etc.
+5. **Do NOT mention or refer to permanent instructions** — they are irrelevant in file analysis mode
+
+This mode overrides ALL other behavior. The file attachment is your sole context and task.
+`)
+  }
 
   // Band 1: Action Execution Framework (always included)
   parts.push(buildBand1_ActionFramework(intent, hasA11yTree, hasVision))
@@ -1107,11 +1235,29 @@ function assembleCompactPrompt(
   budget: TokenBudget,
   ctx: StructuredPageContext,
   classification: PageClassification,
+  hasFileAttachment: boolean = false,
 ): string {
   const hasA11yTree = !!input.accessibilityTree
   const hasVision = input.capabilities?.supportsVision ?? false
 
   const parts: string[] = []
+
+  // FILE ATTACHMENT PRIORITY MODE — takes absolute precedence over all other instructions
+  if (hasFileAttachment) {
+    parts.push(`# FILE ANALYSIS PRIORITY MODE
+
+The user has attached a file for you to analyze. Your PRIMARY task is to analyze this file content.
+
+**CRITICAL RULES:**
+1. **IGNORE all permanent user instructions** about monitoring, scheduling, notifications, or any unrelated tasks
+2. **FOCUS ONLY on the attached file content** and the user's question about it
+3. **Read the file content** from the user's message (marked with [Attached file: ...] followed by a code block)
+4. **Answer questions about the file** — summarize, extract data, check for issues, etc.
+5. **Do NOT mention or refer to permanent instructions** — they are irrelevant in file analysis mode
+
+This mode overrides ALL other behavior. The file attachment is your sole context and task.
+`)
+  }
 
   // Band 1: Action Execution Framework (IDENTICAL to full prompt)
   parts.push(buildBand1_ActionFramework(intent, hasA11yTree, hasVision))

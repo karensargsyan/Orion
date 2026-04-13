@@ -46,12 +46,22 @@ interface TelegramChat {
   first_name?: string
 }
 
+interface TelegramDocument {
+  file_id: string
+  file_unique_id: string
+  file_name?: string
+  mime_type?: string
+  file_size: number
+}
+
 interface TelegramMessage {
   message_id: number
   from?: TelegramUser
   chat: TelegramChat
   date: number
   text?: string
+  caption?: string
+  document?: TelegramDocument
   reply_to_message?: TelegramMessage
 }
 
@@ -365,12 +375,39 @@ export function telegramEnabled(settings: Settings): boolean {
   return settings.telegramBotEnabled === true && !!settings.telegramBotToken?.trim()
 }
 
+/**
+ * Register bot commands menu with Telegram API.
+ * This makes commands appear in the left-side menu (slash commands menu).
+ * Silent failure — doesn't block bot functionality if registration fails.
+ */
+async function registerBotCommands(token: string): Promise<void> {
+  try {
+    await telegramAPI(token, 'setMyCommands', {
+      commands: [
+        { command: 'start', description: 'Show welcome message' },
+        { command: 'newgrouptab', description: 'Create new browser tab' },
+        { command: 'tabs', description: 'List all open tabs' },
+        { command: 'tab', description: 'Switch to specific tab (requires number)' },
+        { command: 'close', description: 'Close a tab (requires number)' },
+        { command: 'screenshot', description: 'Screenshot active tab' },
+        { command: 'status', description: 'Check bot connection status' },
+        { command: 'memory', description: 'Search local memory' },
+        { command: 'clear', description: 'Clear chat context' },
+      ],
+    })
+  } catch (err) {
+    console.warn('[Telegram] Failed to register bot commands menu:', err)
+  }
+}
+
 /** Validate bot token by calling getMe */
 export async function testTelegramBot(
   token: string,
 ): Promise<{ ok: boolean; botName?: string; error?: string }> {
   const res = await telegramAPI<TelegramUser>(token, 'getMe')
   if (res.ok && res.result) {
+    // Register commands menu when token is validated
+    void registerBotCommands(token)
     return { ok: true, botName: `@${res.result.username ?? res.result.first_name}` }
   }
   return { ok: false, error: res.description ?? 'Invalid token' }
@@ -411,7 +448,8 @@ export async function pollTelegramUpdates(settings: Settings): Promise<void> {
       continue
     }
 
-    if (!update.message?.text) continue
+    // Allow messages with text OR files
+    if (!update.message?.text && !update.message?.document) continue
 
     const chatId = update.message.chat.id
     if (allowed.length > 0 && !allowed.includes(String(chatId))) {
@@ -582,6 +620,9 @@ export async function notifyTabUrlChange(tabId: number, url: string): Promise<vo
 // ─── Command Handlers ──────────────────────────────────────────────────────
 
 async function handleStart(token: string, chatId: number): Promise<void> {
+  // Register commands menu with Telegram API (makes commands appear in slash menu)
+  void registerBotCommands(token)
+
   await sendMessage(
     token,
     chatId,
@@ -621,32 +662,84 @@ async function handleListTabs(
   token: string,
   chatId: number,
 ): Promise<void> {
-  const tabs = chatTabs.get(chatId)
-  if (!tabs || tabs.length === 0) {
-    await sendMessage(
-      token,
-      chatId,
-      'No open tabs. Use /newgrouptab to create one.',
-    )
+  // Query all Chrome tabs
+  const allChromeTabs = await chrome.tabs.query({})
+
+  if (allChromeTabs.length === 0) {
+    await sendMessage(token, chatId, 'No tabs open in Chrome.')
     return
   }
 
+  // Group tabs by tab group ID
+  const tabsByGroup = new Map<number, chrome.tabs.Tab[]>()
+  const ungroupedTabs: chrome.tabs.Tab[] = []
+
+  for (const tab of allChromeTabs) {
+    if (tab.groupId && tab.groupId !== -1) {
+      if (!tabsByGroup.has(tab.groupId)) {
+        tabsByGroup.set(tab.groupId, [])
+      }
+      tabsByGroup.get(tab.groupId)!.push(tab)
+    } else {
+      ungroupedTabs.push(tab)
+    }
+  }
+
+  const lines: string[] = []
+  const telegramTabs = chatTabs.get(chatId) ?? []
   const currentIdx = activeTabIndex.get(chatId) ?? 0
 
-  // Check which tabs are still alive
-  const lines: string[] = []
-  for (let i = 0; i < tabs.length; i++) {
-    const t = tabs[i]
-    const alive = await isTabAlive(t.tabId)
-    const marker = i === currentIdx ? ' ✓' : ''
-    const status = alive ? '' : ' (closed)'
-    lines.push(`${i + 1}. *${t.name}*${marker}${status}`)
+  // List tab groups first
+  if (tabsByGroup.size > 0) {
+    lines.push('*📁 Tab Groups:*')
+    for (const [groupId, groupTabs] of tabsByGroup) {
+      try {
+        const group = await chrome.tabGroups.get(groupId)
+        const groupName = group.title || `Group ${groupId}`
+        const groupColor = group.color || 'grey'
+        lines.push(`\n🔷 *${groupName}* (${groupColor})`)
+
+        for (const tab of groupTabs) {
+          const title = tab.title ? tab.title.slice(0, 50) : 'Untitled'
+          const active = tab.active ? ' ✓' : ''
+          const url = tab.url ? ` - ${new URL(tab.url).hostname}` : ''
+          lines.push(`   • ${title}${active}${url}`)
+        }
+      } catch {
+        lines.push(`\n🔷 *Group ${groupId}*`)
+        lines.push(`   • ${groupTabs.length} tab(s)`)
+      }
+    }
+  }
+
+  // List ungrouped tabs
+  if (ungroupedTabs.length > 0) {
+    lines.push('\n*📄 Ungrouped Tabs:*')
+    for (const tab of ungroupedTabs) {
+      const title = tab.title ? tab.title.slice(0, 50) : 'Untitled'
+      const active = tab.active ? ' ✓' : ''
+      const url = tab.url ? ` - ${new URL(tab.url).hostname}` : ''
+      lines.push(`• ${title}${active}${url}`)
+    }
+  }
+
+  // Add Telegram tab info if exists
+  if (telegramTabs.length > 0) {
+    lines.push('\n*🤖 Your Telegram tabs:*')
+    for (let i = 0; i < telegramTabs.length; i++) {
+      const t = telegramTabs[i]
+      const alive = await isTabAlive(t.tabId)
+      const marker = i === currentIdx ? ' ✓' : ''
+      const status = alive ? '' : ' (closed)'
+      lines.push(`${i + 1}. *${t.name}*${marker}${status}`)
+    }
+    lines.push('\n_Use /tab N to switch between your Telegram tabs._')
   }
 
   await sendMessage(
     token,
     chatId,
-    `*Open tabs:*\n${lines.join('\n')}\n\nUse /tab N to switch.`,
+    lines.join('\n'),
   )
 }
 
@@ -921,6 +1014,51 @@ async function handleCallbackQuery(
   }
 }
 
+// ─── File Download ─────────────────────────────────────────────────────────
+
+/**
+ * Download and read a Telegram file if it's a text-based format
+ */
+async function downloadTelegramFile(token: string, fileId: string, fileName: string): Promise<string | null> {
+  try {
+    // Check if file is text-based
+    const isText = /\.(txt|md|json|csv|log|xml|html|js|ts|py|java|cpp|c|go|rs|kt|swift|yml|yaml|toml|ini|conf|cfg|sh|bash|sql|r|m|h|hpp|cs|php|rb|pl|lua|dart|scala|clj|ex|exs|erl|hrl|vim|asm|s|d|nim|v|sv|vhd|vhdl|tex|bib|sty|cls)$/i.test(fileName)
+    if (!isText) {
+      console.log('[Telegram] Skipping non-text file:', fileName)
+      return null
+    }
+
+    // Get file path from Telegram
+    const fileRes = await telegramAPI<{ file_path?: string }>(token, 'getFile', { file_id: fileId })
+    if (!fileRes.ok || !fileRes.result?.file_path) {
+      console.error('[Telegram] Failed to get file path:', fileRes)
+      return null
+    }
+
+    const filePath = fileRes.result.file_path
+    const downloadUrl = `https://api.telegram.org/file/bot${token}/${filePath}`
+
+    console.log('[Telegram] Downloading file:', { fileName, filePath, downloadUrl: downloadUrl.replace(token, 'TOKEN') })
+
+    // Download file content
+    const response = await fetch(downloadUrl)
+    if (!response.ok) {
+      console.error('[Telegram] Download failed:', response.status, response.statusText)
+      return null
+    }
+
+    // Read as text (limit to 50KB like sidepanel)
+    const content = await response.text()
+    const truncated = content.slice(0, 50_000)
+
+    console.log('[Telegram] ✅ File downloaded:', { fileName, contentLength: truncated.length, truncated: content.length > 50_000 })
+    return truncated
+  } catch (err) {
+    console.error('[Telegram] Error downloading file:', err)
+    return null
+  }
+}
+
 // ─── Message Routing ───────────────────────────────────────────────────────
 
 async function handleIncomingMessage(
@@ -929,9 +1067,37 @@ async function handleIncomingMessage(
   settings: Settings,
 ): Promise<void> {
   const chatId = msg.chat.id
-  const userText = msg.text ?? ''
+  let userText = msg.text ?? msg.caption ?? ''
 
-  if (!userText.trim()) return
+  // Handle file attachments
+  let fileContext: string | null = null
+  let fileName: string | null = null
+
+  if (msg.document) {
+    fileName = msg.document.file_name ?? 'unknown'
+    console.log('[Telegram] 📎 File attachment detected:', { fileName, fileId: msg.document.file_id, size: msg.document.file_size, mimeType: msg.document.mime_type })
+
+    fileContext = await downloadTelegramFile(token, msg.document.file_id, fileName)
+
+    if (fileContext) {
+      // Prepend file content like sidepanel does
+      const filePrefix = `[Attached file: ${fileName}]\n\`\`\`\n${fileContext.slice(0, 20_000)}\n\`\`\`\n\n`
+      userText = filePrefix + userText
+      console.log('[Telegram] ✅ File content prepended, total length:', userText.length)
+
+      // Notify user that file was received
+      await sendMessage(token, chatId, `📎 Received file: *${fileName}* (${msg.document.file_size} bytes)\nAnalyzing...`)
+    } else {
+      await sendMessage(token, chatId, `⚠️ Could not process file: *${fileName}*\nSupported formats: .txt, .md, .json, .csv, .log, .xml, .html, code files`)
+      return
+    }
+  }
+
+  // If no text and no file, skip
+  if (!userText.trim()) {
+    console.log('[Telegram] Empty message, skipping')
+    return
+  }
 
   // ── Command routing ──
   const cmd = userText.toLowerCase().trim()

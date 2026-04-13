@@ -180,6 +180,16 @@ async function getSettings(): Promise<Settings> {
         sttProvider: 'web-speech', whisperEndpoint: '',
         confirmationPreferences: [], globalAutoAccept: false,
         contextWindowTokens: 0, liteMode: false,
+        historyEnabled: DEFAULTS.HISTORY_ENABLED,
+        historyShowInPanel: DEFAULTS.HISTORY_SHOW_IN_PANEL,
+        insightsEnabled: DEFAULTS.INSIGHTS_ENABLED,
+        insightsShowInPanel: DEFAULTS.INSIGHTS_SHOW_IN_PANEL,
+        vaultEnabled: DEFAULTS.VAULT_ENABLED,
+        vaultShowInPanel: DEFAULTS.VAULT_SHOW_IN_PANEL,
+        learnEnabled: DEFAULTS.LEARN_ENABLED,
+        learnShowInPanel: DEFAULTS.LEARN_SHOW_IN_PANEL,
+        tabGroupsEnabled: DEFAULTS.TAB_GROUPS_ENABLED,
+        tabGroupsShowInPanel: DEFAULTS.TAB_GROUPS_SHOW_IN_PANEL,
       } as Settings
     }
   }
@@ -210,6 +220,16 @@ async function initSW(): Promise<void> {
       sttProvider: 'web-speech', whisperEndpoint: '',
       confirmationPreferences: [], globalAutoAccept: false,
       contextWindowTokens: 0, liteMode: false,
+      historyEnabled: DEFAULTS.HISTORY_ENABLED,
+      historyShowInPanel: DEFAULTS.HISTORY_SHOW_IN_PANEL,
+      insightsEnabled: DEFAULTS.INSIGHTS_ENABLED,
+      insightsShowInPanel: DEFAULTS.INSIGHTS_SHOW_IN_PANEL,
+      vaultEnabled: DEFAULTS.VAULT_ENABLED,
+      vaultShowInPanel: DEFAULTS.VAULT_SHOW_IN_PANEL,
+      learnEnabled: DEFAULTS.LEARN_ENABLED,
+      learnShowInPanel: DEFAULTS.LEARN_SHOW_IN_PANEL,
+      tabGroupsEnabled: DEFAULTS.TAB_GROUPS_ENABLED,
+      tabGroupsShowInPanel: DEFAULTS.TAB_GROUPS_SHOW_IN_PANEL,
     } as Settings
   }
   await rateLimiter.load(settings!.rateLimitRpm)
@@ -228,7 +248,7 @@ async function initSW(): Promise<void> {
   // Inject handleAIChat into telegram-client (avoids circular import)
   registerChatHandler(handleAIChat)
 
-  if (settings!.onboardingComplete) {
+  if (settings!.onboardingComplete && settings!.monitoringEnabled) {
     startScreenshotLoop(settings!.screenshotIntervalSec)
   }
 
@@ -900,12 +920,36 @@ async function handleAIChat(
   const tabId = msg.tabId as number ?? 0
   const userImageData = msg.imageData as string | undefined
 
+  console.log('[AI CHAT] 📨 RECEIVED MESSAGE FROM SIDEPANEL:', {
+    textLength: userText.length,
+    textPreview: userText.slice(0, 300),
+    hasImageData: !!userImageData,
+    hasFileMarker: userText.includes('[Attached file:'),
+    hasCodeBlock: userText.includes('```'),
+    sessionId: chatSessionId,
+    tabId
+  })
+
+  // Extra validation for file attachments
+  if (userText.includes('[Attached file:')) {
+    const fileNameMatch = userText.match(/\[Attached file: (.+?)\]/)
+    const codeBlockMatch = userText.match(/```\n([\s\S]+?)\n```/)
+    console.log('[AI CHAT] 📎 FILE ATTACHMENT DETECTED:', {
+      fileName: fileNameMatch?.[1] ?? 'NOT FOUND',
+      hasCodeBlock: !!codeBlockMatch,
+      codeBlockLength: codeBlockMatch?.[1]?.length ?? 0,
+      codeBlockPreview: codeBlockMatch?.[1]?.slice(0, 200) ?? 'NO CONTENT'
+    })
+  }
+
   // Pause guard — block AI calls for paused groups
   if (tabId > 0 && isTabInPausedGroup(tabId)) {
     port.postMessage({ type: MSG.STREAM_ERROR, error: 'Group is paused. Resume from the Groups panel.' })
     return
   }
 
+  // Only append to history if historyEnabled
+  if (s.historyEnabled) {
       await appendChatMessage({
         sessionId: chatSessionId,
         role: 'user',
@@ -913,6 +957,7 @@ async function handleAIChat(
         timestamp: Date.now(),
         tabId,
       })
+  }
 
   const extractedInstruction = tryExtractInstructionToSave(userText)
   if (extractedInstruction) {
@@ -1163,11 +1208,12 @@ async function handleAIChat(
     })),
   ]
 
-  // Replace last user message with enhanced version (if expanded)
-  if (pipelineResult.enhancedUserMessage !== userText) {
-    const lastUserIdx = messages.reduce((acc, m, i) => m.role === 'user' ? i : acc, -1)
-    if (lastUserIdx >= 0) messages[lastUserIdx].content = pipelineResult.enhancedUserMessage
-  }
+  // Add the current user message with enhanced content (including file content if present)
+  messages.push({
+    role: 'user',
+    content: pipelineResult.enhancedUserMessage,
+    imageData: userImageData,
+  })
 
   // Token-aware history truncation
   const systemTokens = estimateTokens(systemPrompt)
@@ -1182,25 +1228,27 @@ async function handleAIChat(
     ),
   ]
 
-  // Attach image: user-uploaded image takes priority over auto-screenshot
+  // Attach screenshot if no user image was uploaded (user-uploaded image takes priority)
   const isExternalMultimodal = isExternalProvider
   const visionCapable = s.visionEnabled || isExternalMultimodal || (effectiveCapabilities?.supportsVision ?? false)
-  const imageToAttach = userImageData || screenshotData
-  if (imageToAttach && visionCapable) {
+  if (screenshotData && !userImageData && visionCapable) {
     const lastIdx = messages.reduce((acc, m, i) => m.role === 'user' ? i : acc, -1)
-    if (lastIdx >= 0) messages[lastIdx].imageData = imageToAttach
+    if (lastIdx >= 0) messages[lastIdx].imageData = screenshotData
   }
 
   const fullText = await streamChat(messages, s, port, tabId)
   signalActivityBorder(tabId, false)
   if (fullText) {
-    await appendChatMessage({
-      sessionId: chatSessionId,
-      role: 'assistant',
-      content: fullText,
-      timestamp: Date.now(),
-      tabId,
-    })
+    // Only append assistant response to history if historyEnabled
+    if (s.historyEnabled) {
+      await appendChatMessage({
+        sessionId: chatSessionId,
+        role: 'assistant',
+        content: fullText,
+        timestamp: Date.now(),
+        tabId,
+      })
+    }
 
     const actions = parseActionsFromText(fullText)
     if (tabId > 0) {
@@ -1337,7 +1385,7 @@ Keep it concise. Use bullet points. Format beautifully. Do NOT output any action
 
       const fullText = await streamChat(messages, s, port, tabId)
 
-      if (fullText) {
+      if (fullText && s.historyEnabled) {
         await appendChatMessage({
           sessionId: chatSessionId,
           role: 'assistant',
@@ -1753,6 +1801,17 @@ async function handleMessage(
       settings = null
       // Reset background AI failure counter when settings change (e.g., new model, new endpoint)
       resetBgCallFailures()
+
+      // Restart screenshot loop if monitoring settings changed
+      const s = await getSettings()
+      if (partial.monitoringEnabled !== undefined || partial.screenshotIntervalSec !== undefined) {
+        if (s.monitoringEnabled && s.screenshotIntervalSec > 0) {
+          startScreenshotLoop(s.screenshotIntervalSec)
+        } else {
+          stopScreenshotLoop()
+        }
+      }
+
       return { ok: true }
     }
 
@@ -1900,12 +1959,15 @@ async function handleMessage(
             await import('../shared/idb').then(idb => idb.dbDelete(STORE.CHAT_HISTORY, m.id!))
           }
         }
-        await appendChatMessage({
-          sessionId: compactSid,
-          role: 'system',
-          content: `[Context Summary] ${summary}`,
-          timestamp: toCompact[0]?.timestamp ?? Date.now(),
-        })
+        // Only add summary to history if historyEnabled
+        if (s.historyEnabled) {
+          await appendChatMessage({
+            sessionId: compactSid,
+            role: 'system',
+            content: `[Context Summary] ${summary}`,
+            timestamp: toCompact[0]?.timestamp ?? Date.now(),
+          })
+        }
         return { ok: true, compacted: true, summary }
       }
       return { ok: true, compacted: false }

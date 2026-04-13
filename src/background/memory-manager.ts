@@ -70,6 +70,16 @@ export async function getAllSettings(): Promise<Settings> {
     globalAutoAccept: (map.globalAutoAccept as boolean) ?? false,
     contextWindowTokens: (map.contextWindowTokens as number) ?? DEFAULTS.CONTEXT_WINDOW_TOKENS,
     liteMode: (map.liteMode as boolean) ?? DEFAULTS.LITE_MODE,
+    historyEnabled: (map.historyEnabled as boolean) ?? DEFAULTS.HISTORY_ENABLED,
+    historyShowInPanel: (map.historyShowInPanel as boolean) ?? DEFAULTS.HISTORY_SHOW_IN_PANEL,
+    insightsEnabled: (map.insightsEnabled as boolean) ?? DEFAULTS.INSIGHTS_ENABLED,
+    insightsShowInPanel: (map.insightsShowInPanel as boolean) ?? DEFAULTS.INSIGHTS_SHOW_IN_PANEL,
+    vaultEnabled: (map.vaultEnabled as boolean) ?? DEFAULTS.VAULT_ENABLED,
+    vaultShowInPanel: (map.vaultShowInPanel as boolean) ?? DEFAULTS.VAULT_SHOW_IN_PANEL,
+    learnEnabled: (map.learnEnabled as boolean) ?? DEFAULTS.LEARN_ENABLED,
+    learnShowInPanel: (map.learnShowInPanel as boolean) ?? DEFAULTS.LEARN_SHOW_IN_PANEL,
+    tabGroupsEnabled: (map.tabGroupsEnabled as boolean) ?? DEFAULTS.TAB_GROUPS_ENABLED,
+    tabGroupsShowInPanel: (map.tabGroupsShowInPanel as boolean) ?? DEFAULTS.TAB_GROUPS_SHOW_IN_PANEL,
   }
 }
 

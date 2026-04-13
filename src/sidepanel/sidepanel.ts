@@ -210,7 +210,14 @@ function showOnboarding(): void {
   })
 }
 
-function showMainUI(startTab: TabId = 'chat'): void {
+async function showMainUI(startTab: TabId = 'chat'): Promise<void> {
+  // Get settings for tab visibility
+  let s: Settings | null = null
+  try {
+    const res = await chrome.runtime.sendMessage({ type: MSG.SETTINGS_GET }) as { ok: boolean; settings: Settings }
+    s = res.ok ? res.settings : null
+  } catch { /* settings not available yet */ }
+
   const app = document.getElementById('app')!
   app.innerHTML = `
     <div class="learning-bar" id="learning-bar" style="display:none">
@@ -249,30 +256,40 @@ function showMainUI(startTab: TabId = 'chat'): void {
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
         <span>Memory</span>
       </button>
+      ${s?.insightsShowInPanel ? `
       <button class="tab-btn" data-tab="insights" title="Insights" role="tab" aria-selected="false" aria-controls="panel-insights" aria-label="Insights and stats">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10M12 20V4M6 20v-6"></path></svg>
         <span>Insights</span>
       </button>
+      ` : ''}
+      ${s?.vaultShowInPanel ? `
       <button class="tab-btn" data-tab="vault" title="Vault" role="tab" aria-selected="false" aria-controls="panel-vault" aria-label="Encrypted vault">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
         <span>Vault</span>
       </button>
+      ` : ''}
+      ${s?.historyShowInPanel ? `
       <button class="tab-btn" data-tab="history" title="History" role="tab" aria-selected="false" aria-controls="panel-history" aria-label="Chat history">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg>
         <span>History</span>
       </button>
+      ` : ''}
+      ${s?.tabGroupsShowInPanel !== false ? `
       <button class="tab-btn" data-tab="active-tabs" title="Active Groups" role="tab" aria-selected="false" aria-controls="panel-active-tabs" aria-label="Active tab groups">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect></svg>
         <span>Groups</span>
       </button>
+      ` : ''}
       <button class="tab-btn${startTab === 'settings' ? ' active' : ''}" data-tab="settings" title="Settings" role="tab" aria-selected="${startTab === 'settings'}" aria-controls="panel-settings" aria-label="Settings">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"></path></svg>
         <span>Settings</span>
       </button>
+      ${s?.learnShowInPanel ? `
       <button class="tab-btn learning-btn" id="btn-learning-toggle" title="Learning Mode" role="tab" aria-selected="false" aria-label="Supervised learning mode">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path></svg>
         <span>Learn</span>
       </button>
+      ` : ''}
     </nav>
     <div id="panel-chat" class="panel${startTab === 'chat' ? ' active' : ''}" role="tabpanel" aria-label="Chat panel"></div>
     <div id="panel-memory" class="panel" role="tabpanel" aria-label="Memory panel"></div>
@@ -310,8 +327,11 @@ let supervisedActive = false
 let transcriptHistory: string[] = []
 
 function wireLearningButton(): void {
-  const btn = document.getElementById('btn-learning-toggle')!
+  const btn = document.getElementById('btn-learning-toggle')
   const stopBtn = document.getElementById('btn-learning-stop')!
+
+  // If Learn tab is hidden, don't wire it
+  if (!btn) return
 
   checkSupervisedStatus()
 
@@ -353,7 +373,9 @@ function appendToTranscriptLog(text: string, type: 'interim' | 'final' | 'comman
 }
 
 async function startSupervisedMode(): Promise<void> {
-  const btn = document.getElementById('btn-learning-toggle')!
+  const btn = document.getElementById('btn-learning-toggle')
+  if (!btn) return // Learn tab is hidden
+
   const bar = document.getElementById('learning-bar')!
   const transcriptBar = document.getElementById('supervised-transcript')!
   const reviewBar = document.getElementById('supervised-review')!
@@ -369,6 +391,12 @@ async function startSupervisedMode(): Promise<void> {
 
   const settingsRes = await chrome.runtime.sendMessage({ type: MSG.SETTINGS_GET }) as { ok: boolean; settings: Settings }
   const s = settingsRes.ok ? settingsRes.settings : null
+
+  // Check if Learn is enabled
+  if (!s?.learnEnabled) {
+    return
+  }
+
   const sttProvider = s?.sttProvider ?? 'web-speech'
 
   speech.configure(sttProvider, s?.whisperEndpoint)

@@ -390,6 +390,17 @@ export interface Settings {
   vaultLockTimeoutMin?: number
   /** UI theme preference */
   theme?: 'system' | 'dark' | 'light'
+  /** Panel tab visibility — opt-in features */
+  historyEnabled: boolean
+  historyShowInPanel: boolean
+  insightsEnabled: boolean
+  insightsShowInPanel: boolean
+  vaultEnabled: boolean
+  vaultShowInPanel: boolean
+  learnEnabled: boolean
+  learnShowInPanel: boolean
+  tabGroupsEnabled: boolean
+  tabGroupsShowInPanel: boolean
 }
 
 // ─── Confirmation ─────────────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 {
   "name": "orion",
-  "version": "1.0.6",
+  "version": "1.0.34",
   "private": true,
   "scripts": {
     "build": "npx tsx build.ts",
@@ -16,6 +16,7 @@
     "scheduler:once": "npx tsx scripts/agent-scheduler.ts once"
   },
   "devDependencies": {
+    "@google/generative-ai": "^0.24.1",
     "@playwright/test": "^1.44.0",
     "@types/chrome": "^0.0.268",
     "esbuild": "^0.21.0",
@@ -23,5 +24,8 @@
     "tsx": "^4.7.0",
     "typescript": "^5.4.0",
     "vitest": "^4.1.4"
+  },
+  "dependencies": {
+    "pdfjs-dist": "^4.10.38"
   }
 }

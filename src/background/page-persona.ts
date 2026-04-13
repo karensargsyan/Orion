@@ -327,6 +327,8 @@ const DOMAIN_PERSONAS: Record<PageType, DomainPersona> = {
     taskTemplates: {
       'create issue': ['Click New Issue', 'Type title', 'Type description', 'Add labels', 'Submit'],
       'review code': ['Open PR', 'Read description', 'Browse file changes', 'Add comments', 'Submit review'],
+      'delete branch': ['Read branch list', 'Identify default branch and active PRs', 'Recommend keep/delete decision'],
+      'clean up branches': ['Read branch list', 'Group active vs stale branches', 'Recommend cleanup actions'],
     },
   },
 

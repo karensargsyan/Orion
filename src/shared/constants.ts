@@ -306,6 +306,16 @@ export const DEFAULTS = {
   INPUT_JOURNAL_ENABLED: true,
   VAULT_LOCK_TIMEOUT_MIN: 15,
   THEME: 'dark' as const,
+  HISTORY_ENABLED: false,
+  HISTORY_SHOW_IN_PANEL: false,
+  INSIGHTS_ENABLED: false,
+  INSIGHTS_SHOW_IN_PANEL: false,
+  VAULT_ENABLED: false,
+  VAULT_SHOW_IN_PANEL: false,
+  LEARN_ENABLED: false,
+  LEARN_SHOW_IN_PANEL: false,
+  TAB_GROUPS_ENABLED: true,
+  TAB_GROUPS_SHOW_IN_PANEL: true,
 } as const
 
 export const SESSION_KEY_STORAGE = 'sessionKey'
