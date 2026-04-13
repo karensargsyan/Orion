@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>File Upload Test - Orion AI Assistant</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      max-width: 800px;
+      margin: 40px auto;
+      padding: 20px;
+      line-height: 1.6;
+      background: #f5f5f5;
+    }
+    .card {
+      background: white;
+      border-radius: 8px;
+      padding: 24px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    h1 {
+      color: #2563eb;
+      margin: 0 0 16px 0;
+    }
+    h2 {
+      color: #374151;
+      margin: 24px 0 12px 0;
+      font-size: 18px;
+    }
+    ol {
+      padding-left: 24px;
+    }
+    li {
+      margin: 8px 0;
+    }
+    textarea {
+      width: 100%;
+      height: 200px;
+      padding: 12px;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      font-family: monospace;
+      font-size: 13px;
+      resize: vertical;
+      box-sizing: border-box;
+    }
+    .info {
+      background: #eff6ff;
+      border-left: 4px solid #2563eb;
+      padding: 12px;
+      margin: 16px 0;
+      border-radius: 4px;
+    }
+    .warning {
+      background: #fffbeb;
+      border-left: 4px solid #f59e0b;
+      padding: 12px;
+      margin: 16px 0;
+      border-radius: 4px;
+    }
+    .expected {
+      background: #f0fdf4;
+      border-left: 4px solid #10b981;
+      padding: 12px;
+      margin: 16px 0;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 11px;
+      white-space: pre-wrap;
+    }
+    code {
+      background: #f3f4f6;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-family: monospace;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>📎 File Upload Test Page</h1>
+    <p>Use this page to test Orion's file upload feature with comprehensive debug output.</p>
+  </div>
+
+  <div class="card">
+    <h2>📋 Test Instructions</h2>
+    <ol>
+      <li>Click the <strong>Orion extension icon</strong> in your browser toolbar</li>
+      <li>Open the <strong>sidepanel</strong></li>
+      <li>Click the <strong>📎 paperclip icon</strong> at the bottom of the chat</li>
+      <li>Select the <code>test.txt</code> file you created (see below)</li>
+      <li>Type a message like: <code>"analyze this file"</code> or <code>"what's in the file?"</code></li>
+      <li>Press <strong>Send</strong></li>
+      <li>Check for <strong>[DEBUG]</strong> messages in the chat</li>
+    </ol>
+
+    <div class="info">
+      <strong>ℹ️ Note:</strong> The debug messages will appear as colored banners in the chat area showing exactly what's happening at each step.
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>📝 Test File Content</h2>
+    <p>Copy the text below, save it as <code>test.txt</code>, then upload it to Orion:</p>
+    <textarea id="test-file-content" readonly>This is test file content for Orion file upload debugging.
+Line 2 of the file with some sample data.
+Line 3 contains numbers: 12345, 67890
+Line 4 has special characters: !@#$%^&*()
+Line 5: The quick brown fox jumps over the lazy dog.
+
+This file should be successfully:
+- Loaded in chat.ts (attachFile function)
+- Shown in preview bar
+- Prepended to message text
+- Displayed as a file card in the chat bubble
+- Received by service worker
+- Sent to the AI model
+
+Expected file size: ~400 bytes
+Expected format: Plain text (.txt)</textarea>
+    <button onclick="copyContent()" style="margin-top: 12px; padding: 8px 16px; background: #2563eb; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px;">
+      📋 Copy to Clipboard
+    </button>
+  </div>
+
+  <div class="card">
+    <h2>✅ Expected Debug Messages</h2>
+    <p>If file upload works correctly, you should see these debug messages in order:</p>
+    <div class="expected">[DEBUG] File selected: test.txt (XXX bytes)
+[DEBUG] File loaded: test.txt (XXX chars)
+[DEBUG] Preview bar shown
+[DEBUG] Preparing to send file: test.txt (XXX chars)
+[DEBUG] File content prepended. Total text: XXX chars
+[DEBUG] File card added to chat bubble
+[DEBUG] Message sent to AI (XXX chars)
+[DEBUG] Service worker received file: test.txt (XXX chars)</div>
+
+    <div class="warning">
+      <strong>⚠️ If any message is missing:</strong> That's where the bug is! Check the browser console (F12) for detailed logs starting with <code>[FILE UPLOAD]</code>, <code>[SEND MESSAGE]</code>, or <code>[AI CHAT]</code>.
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>🐛 Common Issues to Check</h2>
+    <ul>
+      <li><strong>No "File selected" message:</strong> File picker not working</li>
+      <li><strong>No "File loaded" message:</strong> FileReader failed</li>
+      <li><strong>No "Preview bar shown":</strong> Preview UI elements missing/broken</li>
+      <li><strong>"WARNING: fileName exists but no fileContext":</strong> State cleared too early</li>
+      <li><strong>No "File card added":</strong> Card creation or append failed</li>
+      <li><strong>No "Service worker received":</strong> Message format wrong or not reaching backend</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>🔍 Additional Debugging</h2>
+    <p>Open browser console (F12) and filter by:</p>
+    <ul>
+      <li><code>[FILE UPLOAD]</code> - File loading process</li>
+      <li><code>[SEND MESSAGE]</code> - Message preparation and sending</li>
+      <li><code>[AI CHAT]</code> - Service worker reception</li>
+      <li><code>[FILE CARD]</code> - File card UI creation</li>
+    </ul>
+
+    <div class="info">
+      <strong>💡 Tip:</strong> Open console BEFORE uploading the file to capture all log messages from the start.
+    </div>
+  </div>
+
+  <script>
+    function copyContent() {
+      const textarea = document.getElementById('test-file-content');
+      textarea.select();
+      document.execCommand('copy');
+
+      const btn = event.target;
+      const originalText = btn.innerHTML;
+      btn.innerHTML = '✅ Copied!';
+      btn.style.background = '#10b981';
+
+      setTimeout(() => {
+        btn.innerHTML = originalText;
+        btn.style.background = '#2563eb';
+      }, 2000);
+    }
+  </script>
+</body>
+</html>

@@ -1,5 +1,6 @@
 import { tabState } from './tab-state'
 import { recordPageVisit } from './visual-sitemap'
+import { isOrionTab } from './web-researcher'
 
 let intervalId: ReturnType<typeof setInterval> | null = null
 
@@ -23,6 +24,8 @@ async function captureActiveTab(): Promise<void> {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
     if (!tab?.id || tab.url?.startsWith('chrome://')) return
+    // Only capture tabs that belong to Orion's group
+    if (!isOrionTab(tab.id)) return
     await captureScreenshot(tab.id)
   } catch { /* no active capturable tab */ }
 }

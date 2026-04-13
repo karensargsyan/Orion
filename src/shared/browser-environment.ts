@@ -20,23 +20,24 @@ export async function isBraveBrowserAsync(): Promise<boolean> {
 }
 
 /**
- * User-facing explanation when Web Speech fails with a network error (often Brave Shields or offline).
- * Shared by side panel formatting and the offscreen STT document.
+ * User-facing explanation when Web Speech fails with a network error.
  *
- * Brave: there is no second “Brave-only” speech engine exposed to extensions—Web Speech still uses Google’s
- * service, which Shields often blocks. The practical alternative in Brave is Local Whisper (this extension).
+ * Brave permanently blocks Google’s speech service at the code level — there is no flag or setting
+ * to re-enable it. The only in-extension alternative is Local Whisper. OS-level dictation also works.
  */
 export function getWebSpeechNetworkBlockedMessage(): string {
   const generic =
-    'Web Speech uses Google’s online recognition service; this browser blocked the connection (network, VPN, firewall, or Shields). '
-    + 'Switch to Settings → Speech Recognition → Local Whisper Server for STT on your machine, or fix the connection and retry.'
+    `Web Speech uses Google\u2019s online service and this browser blocked the connection. `
+    + `Options: (1) Switch to Local Whisper Server in Settings \u2192 Speech Recognition (works offline, audio stays local). `
+    + `(2) Use OS dictation instead (Mac: Fn key twice, Windows: Win+H). `
+    + `(3) Check your network/firewall if you believe this browser should support Web Speech.`
 
   if (isLikelyBraveBrowser()) {
     return (
-      'Brave does not provide a different built-in speech-to-text API for extensions—Web Speech still reaches Google’s servers, and Shields often blocks that. '
-      + 'Practical options: (1) Settings → Speech Recognition → Local Whisper Server (recommended; audio stays local and works in Brave). '
-      + '(2) Address bar Brave icon → Shields → turn off for this extension, then retry Web Speech. '
-      + '(3) Use Chrome for Web Speech if you are not running a local Whisper server.'
+      `Brave permanently blocks Google\u2019s speech service \u2014 there is no flag or setting to enable it. `
+      + `Options: (1) Use Local Whisper Server in Settings \u2192 Speech Recognition (recommended \u2014 works offline, audio stays on your machine). `
+      + `(2) Use OS dictation (Mac: press Fn twice, Windows: Win+H) \u2014 works in any app. `
+      + `(3) Use Chrome or Edge if you need Google Web Speech.`
     )
   }
   return generic

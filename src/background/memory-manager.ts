@@ -1,5 +1,5 @@
 import {
-  dbGet, dbGetAll, dbGetAllByIndex, dbGetByIndexRange, dbPut, dbDelete, dbClear,
+  openDB, dbGet, dbGetAll, dbGetAllByIndex, dbGetByIndexRange, dbPut, dbDelete, dbClear,
 } from '../shared/idb'
 import { STORE, DEFAULTS } from '../shared/constants'
 import type {
@@ -47,6 +47,19 @@ export async function getAllSettings(): Promise<Settings> {
     mempalaceBridgeEnabled: (map.mempalaceBridgeEnabled as boolean) ?? DEFAULTS.MEMPALACE_BRIDGE_ENABLED,
     mempalaceBridgeUrl: (map.mempalaceBridgeUrl as string) ?? DEFAULTS.MEMPALACE_BRIDGE_URL,
     mempalaceWing: map.mempalaceWing as string | undefined,
+    localMemoryEnabled: (map.localMemoryEnabled as boolean) ?? DEFAULTS.LOCAL_MEMORY_ENABLED,
+    localMemoryMaxEntries: (map.localMemoryMaxEntries as number) ?? DEFAULTS.LOCAL_MEMORY_MAX_ENTRIES,
+    autoCollectEnabled: (map.autoCollectEnabled as boolean) ?? DEFAULTS.AUTO_COLLECT_ENABLED,
+    autoCollectMinFields: (map.autoCollectMinFields as number) ?? DEFAULTS.AUTO_COLLECT_MIN_FIELDS,
+    autoCollectExcludeDomains: (map.autoCollectExcludeDomains as string[]) ?? [],
+    telegramBotEnabled: (map.telegramBotEnabled as boolean) ?? DEFAULTS.TELEGRAM_BOT_ENABLED,
+    telegramBotToken: map.telegramBotToken as string | undefined,
+    telegramAllowedChatIds: (map.telegramAllowedChatIds as string[]) ?? [],
+    telegramPollIntervalSec: (map.telegramPollIntervalSec as number) ?? DEFAULTS.TELEGRAM_POLL_INTERVAL_SEC,
+    automationPreference: (map.automationPreference as 'ask' | 'auto' | 'guided') ?? DEFAULTS.AUTOMATION_PREFERENCE,
+    inputJournalEnabled: (map.inputJournalEnabled as boolean) ?? DEFAULTS.INPUT_JOURNAL_ENABLED,
+    vaultLockTimeoutMin: (map.vaultLockTimeoutMin as number) ?? DEFAULTS.VAULT_LOCK_TIMEOUT_MIN,
+    theme: (map.theme as 'system' | 'dark' | 'light') ?? DEFAULTS.THEME,
     calendarDetectionEnabled: (map.calendarDetectionEnabled as boolean) ?? DEFAULTS.CALENDAR_DETECTION_ENABLED,
     onboardingComplete: (map.onboardingComplete as boolean) ?? DEFAULTS.ONBOARDING_COMPLETE,
     learningModeActive: (map.learningModeActive as boolean) ?? DEFAULTS.LEARNING_MODE_ACTIVE,
@@ -57,6 +70,16 @@ export async function getAllSettings(): Promise<Settings> {
     globalAutoAccept: (map.globalAutoAccept as boolean) ?? false,
     contextWindowTokens: (map.contextWindowTokens as number) ?? DEFAULTS.CONTEXT_WINDOW_TOKENS,
     liteMode: (map.liteMode as boolean) ?? DEFAULTS.LITE_MODE,
+    historyEnabled: (map.historyEnabled as boolean) ?? DEFAULTS.HISTORY_ENABLED,
+    historyShowInPanel: (map.historyShowInPanel as boolean) ?? DEFAULTS.HISTORY_SHOW_IN_PANEL,
+    insightsEnabled: (map.insightsEnabled as boolean) ?? DEFAULTS.INSIGHTS_ENABLED,
+    insightsShowInPanel: (map.insightsShowInPanel as boolean) ?? DEFAULTS.INSIGHTS_SHOW_IN_PANEL,
+    vaultEnabled: (map.vaultEnabled as boolean) ?? DEFAULTS.VAULT_ENABLED,
+    vaultShowInPanel: (map.vaultShowInPanel as boolean) ?? DEFAULTS.VAULT_SHOW_IN_PANEL,
+    learnEnabled: (map.learnEnabled as boolean) ?? DEFAULTS.LEARN_ENABLED,
+    learnShowInPanel: (map.learnShowInPanel as boolean) ?? DEFAULTS.LEARN_SHOW_IN_PANEL,
+    tabGroupsEnabled: (map.tabGroupsEnabled as boolean) ?? DEFAULTS.TAB_GROUPS_ENABLED,
+    tabGroupsShowInPanel: (map.tabGroupsShowInPanel as boolean) ?? DEFAULTS.TAB_GROUPS_SHOW_IN_PANEL,
   }
 }
 
@@ -112,6 +135,27 @@ export async function clearSessionMemory(): Promise<void> {
   await dbClear(STORE.SESSION_MEMORY)
 }
 
+/** Delete session memory entries older than `maxAgeDays` days. Returns count deleted. */
+export async function pruneOldSessionMemory(maxAgeDays = 30): Promise<number> {
+  const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000
+  const db = await openDB()
+  let deleted = 0
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE.SESSION_MEMORY, 'readwrite')
+    const req = tx.objectStore(STORE.SESSION_MEMORY).index('by_timestamp')
+                   .openCursor(IDBKeyRange.upperBound(cutoff))
+    req.onsuccess = () => {
+      const cursor = req.result
+      if (!cursor) { resolve(); return }
+      cursor.delete()
+      deleted++
+      cursor.continue()
+    }
+    req.onerror = () => reject(req.error)
+  })
+  return deleted
+}
+
 // ─── Global Memory ────────────────────────────────────────────────────────────
 
 export async function addGlobalMemory(entry: Omit<GlobalMemoryEntry, 'id'>): Promise<void> {
@@ -157,6 +201,24 @@ export async function vaultDelete(id: string): Promise<void> {
 
 // ─── Memory export ─────────────────────────────────────────────────────────────
 
+/** All IDB stores included in full backup (vault excluded for security — exported separately). */
+const BACKUP_STORES = [
+  STORE.CHAT_HISTORY,
+  STORE.SESSION_MEMORY,
+  STORE.GLOBAL_MEMORY,
+  STORE.SETTINGS,
+  STORE.CALENDAR_EVENTS,
+  STORE.HABIT_PATTERNS,
+  STORE.DOMAIN_SKILLS,
+  STORE.USER_BEHAVIORS,
+  STORE.LEARNING_SESSIONS,
+  STORE.SUPERVISED_PLAYBOOKS,
+  STORE.SUPERVISED_SESSIONS,
+  STORE.VISUAL_SITEMAP,
+  STORE.LOCAL_MEMORY,
+  STORE.INPUT_JOURNAL,
+] as const
+
 export async function exportMemory(): Promise<object> {
   const [chatHistory, sessionMemory, globalMemory] = await Promise.all([
     dbGetAll(STORE.CHAT_HISTORY),
@@ -164,6 +226,49 @@ export async function exportMemory(): Promise<object> {
     dbGetAll(STORE.GLOBAL_MEMORY),
   ])
   return { chatHistory, sessionMemory, globalMemory, exportedAt: new Date().toISOString() }
+}
+
+/** Full backup — all 14 stores (vault excluded). */
+export async function exportFullBackup(): Promise<object> {
+  const data: Record<string, unknown[]> = {}
+  await Promise.all(BACKUP_STORES.map(async storeName => {
+    try {
+      data[storeName] = await dbGetAll(storeName)
+    } catch {
+      data[storeName] = []
+    }
+  }))
+  return {
+    _orionBackup: true,
+    version: 2,
+    exportedAt: new Date().toISOString(),
+    stores: data,
+  }
+}
+
+/** Import a full backup. Clears each store before restoring. */
+export async function importFullBackup(backup: Record<string, unknown>): Promise<{ restored: number; errors: string[] }> {
+  if (!backup._orionBackup || !backup.stores) {
+    return { restored: 0, errors: ['Invalid backup file format.'] }
+  }
+  const stores = backup.stores as Record<string, unknown[]>
+  let restored = 0
+  const errors: string[] = []
+
+  for (const storeName of BACKUP_STORES) {
+    const rows = stores[storeName]
+    if (!rows || !Array.isArray(rows)) continue
+    try {
+      await dbClear(storeName)
+      for (const row of rows) {
+        await dbPut(storeName, row)
+      }
+      restored += rows.length
+    } catch (e) {
+      errors.push(`${storeName}: ${String(e)}`)
+    }
+  }
+  return { restored, errors }
 }
 
 // ─── Domain Stats ─────────────────────────────────────────────────────────────

@@ -126,6 +126,45 @@ function setupSchema(db: IDBDatabase, tx: IDBTransaction, oldVersion: number): v
       sm.createIndex('by_updated', 'lastUpdated', { unique: false })
     }
   }
+
+  // v7 -> v8: local memory store (MemPalace replacement — no external server)
+  if (oldVersion < 8) {
+    if (!db.objectStoreNames.contains(STORE.LOCAL_MEMORY)) {
+      const lm = db.createObjectStore(STORE.LOCAL_MEMORY, { keyPath: 'id', autoIncrement: true })
+      lm.createIndex('by_category', 'category', { unique: false })
+      lm.createIndex('by_domain', 'domain', { unique: false })
+      lm.createIndex('by_timestamp', 'timestamp', { unique: false })
+    }
+  }
+
+  // v8 -> v9: input journal — Total Recall (capture all form inputs)
+  if (oldVersion < 9) {
+    if (!db.objectStoreNames.contains(STORE.INPUT_JOURNAL)) {
+      const ij = db.createObjectStore(STORE.INPUT_JOURNAL, { keyPath: 'id', autoIncrement: true })
+      ij.createIndex('by_fieldType', 'fieldType', { unique: false })
+      ij.createIndex('by_domain', 'domain', { unique: false })
+      ij.createIndex('by_timestamp', 'timestamp', { unique: false })
+      ij.createIndex('by_fieldType_domain', ['fieldType', 'domain'], { unique: false })
+    }
+  }
+
+  // v9 -> v10: pinned facts store
+  if (oldVersion < 10) {
+    if (!db.objectStoreNames.contains(STORE.PINNED_FACTS)) {
+      const pf = db.createObjectStore(STORE.PINNED_FACTS, { keyPath: 'id' })
+      pf.createIndex('by_session', 'sessionId', { unique: false })
+      pf.createIndex('by_pinned', 'pinnedAt', { unique: false })
+    }
+  }
+
+  // v10 -> v11: saved workflows store (V3: FR-V3-1)
+  if (oldVersion < 11) {
+    if (!db.objectStoreNames.contains(STORE.WORKFLOWS)) {
+      const wf = db.createObjectStore(STORE.WORKFLOWS, { keyPath: 'id' })
+      wf.createIndex('by_name', 'name', { unique: false })
+      wf.createIndex('by_updated', 'updatedAt', { unique: false })
+    }
+  }
 }
 
 // ─── Generic helpers ──────────────────────────────────────────────────────────

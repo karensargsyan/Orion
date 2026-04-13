@@ -1,18 +1,28 @@
 import { MSG } from '../shared/constants'
-import type { AIAction, AIActionResult, Settings, ChatMessage, PageSnapshot, FillAssignment } from '../shared/types'
-import { callAI } from './ai-client'
+import type { AIAction, AIActionType, AIActionResult, Settings, ChatMessage, PageSnapshot, FillAssignment } from '../shared/types'
+import { callAI, estimateTokens, truncateMessagesToFit } from './ai-client'
 import type { StreamPort } from './ai-client'
 import { tabState } from './tab-state'
-import { searchGoogle, openAndReadTab, closeAllResearchTabs, openAndReadMultipleTabs, getResearchTabCount, addTabToAIGroup, removeTabFromAIGroup } from './web-researcher'
+import { searchGoogle, openAndReadTab, closeAllResearchTabs, openAndReadMultipleTabs, getResearchTabCount, isTabInPausedGroup } from './web-researcher'
 import { sanitizeModelOutput, stripMalformedActions } from '../shared/sanitize-output'
 import { extractTaskPattern, buildCompactSequence, saveOrReinforceSkill, recordSkillFailure } from './skill-manager'
 import { recordActionFailure, recordActionSuccess, recallRelevantMemories } from './mempalace-learner'
 import { getAllSettings } from './memory-manager'
 import { classifyField } from './form-intelligence'
 import { mempalaceEnabled, searchMempalace } from './mempalace-client'
-import { getCDPAccessibilityTree } from './cdp-accessibility'
+import { localMemoryEnabled, recallLocalMemories, recordLocalFailure, recordLocalSuccess } from './local-memory'
+import { getCDPAccessibilityTree, getCDPAccessibilityTreeCached, resolveElementCoords, invalidateTreeCache } from './cdp-accessibility'
 import { captureMiniMap, captureAutomationScreenshot } from './minimap-screenshot'
 import { recordPageVisit, getPageScreenshot } from './visual-sitemap'
+import { getDomainPersona, classifyPage } from './page-persona'
+import type { PageType } from './page-persona'
+import { acquireSession, releaseSession, isSessionActive } from './cdp-session'
+import {
+  cdpClickAt, cdpDoubleClickAt, cdpHoverAt, cdpTypeText, cdpPressKey,
+  cdpFocusNode, cdpScrollPage, cdpScrollIntoView, cdpClearField,
+  cdpWaitForNavigation, cdpWaitForDOMStable, cdpScreenshot,
+} from './cdp-actions'
+import { logAction, logAIRound, logTabEvent } from './error-logger'
 
 const ACTION_PATTERN = /\[ACTION:(\w+)([^\]]*)\]/g
 const MAX_INJECT_RETRIES = 2
@@ -23,9 +33,13 @@ const NAV_ACTIONS = new Set(['navigate', 'back', 'forward'])
 // Allows aborting the executeWithFollowUp loop from outside (e.g., stop button)
 
 const cancelledTabs = new Set<number>()
+const executionAbortControllers = new Map<number, AbortController>()
 
 export function cancelAutomation(tabId: number): void {
   cancelledTabs.add(tabId)
+  // Abort any in-flight callAI() request for this execution
+  executionAbortControllers.get(tabId)?.abort()
+  executionAbortControllers.delete(tabId)
 }
 
 function isCancelled(tabId: number): boolean {
@@ -34,6 +48,7 @@ function isCancelled(tabId: number): boolean {
 
 function clearCancellation(tabId: number): void {
   cancelledTabs.delete(tabId)
+  executionAbortControllers.delete(tabId)
 }
 
 interface ParsedAction {
@@ -301,14 +316,14 @@ export async function ensureContentScript(tabId: number): Promise<boolean> {
     return true
   } catch {
     try {
-      console.log(`[LocalAI] Injecting content script on ${tabUrl.slice(0, 80)}...`)
+      console.warn(`[LocalAI] Injecting content script on ${tabUrl.slice(0, 80)}...`)
       await chrome.scripting.executeScript({
         target: { tabId },
         files: ['content/content-main.js'],
       })
       await sleep(400)
       await chrome.tabs.sendMessage(tabId, { type: MSG.PING })
-      console.log(`[LocalAI] Content script injected successfully`)
+      console.warn(`[LocalAI] Content script injected successfully`)
       return true
     } catch (err) {
       console.warn(`[LocalAI] Content script injection failed on ${tabUrl.slice(0, 80)}:`, err)
@@ -341,10 +356,25 @@ const PARALLELIZABLE_ACTIONS = new Set([
 ])
 
 function groupActionsIntoBatches(actions: AIAction[]): AIAction[][] {
+  // Step 1: Deduplicate — collapse identical actions (same action + same target)
+  const seen = new Set<string>()
+  const deduped: AIAction[] = []
+  for (const action of actions) {
+    const target = action.selector ?? action.markerId ?? action.url ?? action.value ?? ''
+    const key = `${action.action}:${target}`
+    if (seen.has(key)) {
+      console.warn(`[LocalAI] Dedup: skipping duplicate ${action.action} on "${String(target).slice(0, 60)}"`)
+      continue
+    }
+    seen.add(key)
+    deduped.push(action)
+  }
+
+  // Step 2: Group into batches
   const batches: AIAction[][] = []
   let currentParallel: AIAction[] = []
 
-  for (const action of actions) {
+  for (const action of deduped) {
     if (BARRIER_ACTIONS.has(action.action)) {
       if (currentParallel.length > 0) {
         batches.push(currentParallel)
@@ -394,6 +424,50 @@ async function executeParsedActions(
   return executeAIActions(allActions, tabId)
 }
 
+/**
+ * Validate parsed actions — reject obviously hallucinated or malformed selectors.
+ * Keeps actions that have no selector (like navigate, search, scroll, etc.).
+ */
+function validateParsedActions(actions: ParsedAction[]): ParsedAction[] {
+  return actions.filter(a => {
+    const sel = a.params.selector ?? ''
+    const markerId = a.params.markerId ?? ''
+
+    // Actions that don't need selectors are always valid
+    const NO_SELECTOR_ACTIONS = new Set([
+      'navigate', 'search', 'scroll', 'scroll_down', 'scroll_up', 'scroll_to',
+      'back', 'forward', 'wait', 'screenshot', 'read', 'read_page',
+      'get_page_text', 'get_page_state', 'read_options', 'batch_read',
+      'analyze_file', 'open_tab', 'read_tab', 'close_tab', 'keypress',
+      'research_done', 'sitemap_screenshot', 'form_coach', 'fill_form',
+    ])
+    if (NO_SELECTOR_ACTIONS.has(a.action)) return true
+
+    // If action has a markerId, trust it (integer reference to a marked element)
+    if (markerId && /^\d+$/.test(markerId)) return true
+
+    // If no selector at all for an action that needs one, reject
+    if (!sel && !markerId) {
+      console.warn(`[LocalAI] Rejecting action ${a.action}: no selector or markerId`)
+      return false
+    }
+
+    // Reject selectors that look like prose/hallucination rather than CSS
+    if (sel.length > 200) {
+      console.warn(`[LocalAI] Rejecting action ${a.action}: selector too long (${sel.length} chars) — likely hallucinated`)
+      return false
+    }
+
+    // Reject selectors that contain sentence-like patterns
+    if (/\b(the|button|that|which|click|please|and|with|for|this|from)\b/i.test(sel) && sel.includes(' ') && sel.split(' ').length > 4) {
+      console.warn(`[LocalAI] Rejecting action ${a.action}: selector looks like prose: "${sel.slice(0, 60)}"`)
+      return false
+    }
+
+    return true
+  })
+}
+
 export async function executeActionsFromText(
   text: string,
   tabId: number
@@ -401,6 +475,128 @@ export async function executeActionsFromText(
   const parsed = parseActionsFromText(text)
   if (parsed.length === 0) return []
   return executeParsedActions(parsed, tabId)
+}
+
+// ─── Guided Mode ──────────────────────────────────────────────────────────
+
+/** Actions that run normally even in guided mode (no user interaction needed) */
+const NON_INTERACTIVE_ACTIONS = new Set([
+  'read', 'screenshot', 'scroll', 'search', 'navigate', 'back', 'forward',
+  'get_page_state', 'get_page_text', 'read_page', 'read_options',
+  'batch_read', 'analyze_file', 'open_tab', 'read_tab', 'close_tab',
+  'wait', 'scroll_to', 'sitemap_screenshot', 'research_done',
+])
+
+function isNonInteractiveAction(action: string): boolean {
+  return NON_INTERACTIVE_ACTIONS.has(action)
+}
+
+/** Convert a parsed action to a human-readable instruction */
+function buildGuidedInstruction(action: ParsedAction): string {
+  const sel = action.params.selector ?? ''
+  const val = action.params.value ?? ''
+  const url = action.params.url ?? ''
+  // Use the most descriptive identifier
+  const target = sel || val || url
+  const short = target.length > 60 ? target.slice(0, 57) + '...' : target
+
+  switch (action.action) {
+    case 'click': return `Click "${short}"`
+    case 'type': return `Type "${val}" into "${sel ? sel.slice(0, 40) : 'field'}"`
+    case 'fill_form': return `Fill the form`
+    case 'select_option': return `Select "${val}" in "${sel ? sel.slice(0, 40) : 'dropdown'}"`
+    case 'check': case 'toggle': return `Toggle "${short}"`
+    case 'hover': return `Hover over "${short}"`
+    case 'doubleclick': return `Double-click "${short}"`
+    case 'focus': return `Click into "${short}"`
+    case 'clear': return `Clear "${short}"`
+    case 'keypress': return `Press ${val || action.params.key || 'key'}`
+    default: return `${action.action} "${short}"`
+  }
+}
+
+/**
+ * Execute actions in guided mode — highlights elements for user to click
+ * instead of executing them automatically via CDP/content script.
+ */
+async function executeGuidedActions(
+  actions: ParsedAction[],
+  tabId: number,
+  port: StreamPort,
+  stepNumber: number,
+): Promise<AIActionResult[]> {
+  const results: AIActionResult[] = []
+
+  for (const action of actions) {
+    // Check cancellation
+    if (isCancelled(tabId)) {
+      results.push({ action: action.action as AIActionType, success: false, error: 'Cancelled' })
+      break
+    }
+
+    // Non-interactive actions run normally
+    if (isNonInteractiveAction(action.action)) {
+      const normalResults = await executeParsedActions([action], tabId)
+      results.push(...normalResults)
+      continue
+    }
+
+    // Build instruction text
+    const instruction = buildGuidedInstruction(action)
+
+    // Stream instruction to sidepanel
+    port.postMessage({
+      type: MSG.STREAM_CHUNK,
+      chunk: `\n\n> **Step ${stepNumber}:** ${instruction}\n`,
+    })
+
+    // Send highlight to content script and wait for user response
+    try {
+      const response = await chrome.tabs.sendMessage(tabId, {
+        type: MSG.GUIDED_HIGHLIGHT,
+        target: {
+          selector: action.params.selector ?? '',
+          markerId: action.params.markerId ? Number(action.params.markerId) : undefined,
+          actionType: action.action,
+          instruction,
+          value: action.params.value,
+          stepNumber,
+        },
+      }) as { ok: boolean; clicked?: boolean; skipped?: boolean; stopped?: boolean; value?: string }
+
+      if (response.stopped) {
+        cancelAutomation(tabId)
+        port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '\n> Guided mode stopped by user.\n' })
+        results.push({ action: action.action as AIActionType, success: false, error: 'User stopped guided mode' })
+        break
+      }
+
+      if (response.skipped) {
+        port.postMessage({ type: MSG.STREAM_CHUNK, chunk: ' *(skipped)*\n' })
+        results.push({ action: action.action as AIActionType, success: true, result: `User skipped: ${instruction}` })
+        continue
+      }
+
+      if (response.clicked) {
+        port.postMessage({ type: MSG.STREAM_CHUNK, chunk: ' *done*\n' })
+        results.push({
+          action: action.action as AIActionType,
+          success: true,
+          result: `User completed: ${instruction}${response.value ? ` (value: ${response.value})` : ''}`,
+        })
+      }
+    } catch (err) {
+      // Content script unreachable (page navigated mid-highlight, etc.)
+      port.postMessage({ type: MSG.STREAM_CHUNK, chunk: ' *(element not found)*\n' })
+      results.push({
+        action: action.action as AIActionType,
+        success: false,
+        error: `Guided highlight failed: ${String(err)}`,
+      })
+    }
+  }
+
+  return results
 }
 
 async function executeAIActions(allActions: AIAction[], tabId: number): Promise<AIActionResult[]> {
@@ -418,10 +614,15 @@ async function executeAIActions(allActions: AIAction[], tabId: number): Promise<
         const isNavAction = NAV_ACTIONS.has(action.action) ||
           (action.action === 'click' && result.result?.includes('Navigat'))
         if (isNavAction) {
-          // Wait for the new page to load, then re-inject the content script
-          await sleep(2000)
+          // Wait for navigation: event-based if CDP is active, else fixed delay
+          if (isSessionActive(tabId)) {
+            await cdpWaitForNavigation(tabId, 5000)
+            invalidateTreeCache()
+          } else {
+            await sleep(2000)
+          }
           await ensureContentScript(tabId).catch(() => false)
-          await sleep(500)
+          await sleep(300)
         }
       }
     } else {
@@ -437,35 +638,187 @@ async function executeAIActions(allActions: AIAction[], tabId: number): Promise<
     if (lastResult?.success) {
       await requestFreshSnapshot(tabId)
       try {
-        const verifyShot = await captureAutomationScreenshot(tabId).catch(() => null)
-        if (verifyShot) {
-          tabState.setScreenshot(tabId, verifyShot.dataUrl)
+        // Use CDP screenshot when session is active (faster, no extra API call)
+        const shotUrl = isSessionActive(tabId)
+          ? await cdpScreenshot(tabId, 20)
+          : (await captureAutomationScreenshot(tabId).catch(() => null))?.dataUrl ?? null
+        if (shotUrl) {
+          tabState.setScreenshot(tabId, shotUrl)
           const snap = tabState.get(tabId)
           if (snap?.url) {
             const domain = extractDomainFromUrl(snap.url)
-            recordPageVisit(domain, snap.url, snap, verifyShot.dataUrl).catch(() => {})
+            recordPageVisit(domain, snap.url, snap, shotUrl).catch(() => {})
           }
         }
       } catch { /* screenshot not critical */ }
     }
-    await sleep(200)
+    await sleep(100) // reduced from 200ms
   }
 
   return results
 }
 
-/** Click at exact pixel coordinates using CDP — produces trusted browser events */
-async function cdpClick(tabId: number, x: number, y: number): Promise<void> {
-  try {
-    await chrome.debugger.attach({ tabId }, '1.3').catch(() => {})
-    await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
-      type: 'mousePressed', x, y, button: 'left', clickCount: 1,
+// ─── CDP-first action execution ─────────────────────────────────────────────
+// Tries to execute DOM-interactive actions via CDP (trusted events) first.
+// Returns null if CDP is unavailable or the action can't be handled via CDP,
+// causing automatic fallback to the content script path.
+
+const CDP_CLICK_ACTIONS = new Set(['click', 'doubleclick', 'toggle', 'check'])
+const CDP_INPUT_ACTIONS = new Set(['type', 'clear'])
+const CDP_OTHER_ACTIONS = new Set(['hover', 'focus', 'scroll', 'scroll_to', 'select_option', 'keypress'])
+
+async function executeSingleActionCDP(action: AIAction, tabId: number): Promise<AIActionResult | null> {
+  if (!isSessionActive(tabId)) return null
+
+  // ── Click / DoubleClick / Toggle / Check ───────────────────────────────
+  if (CDP_CLICK_ACTIONS.has(action.action)) {
+    const coords = await resolveElementCoords(tabId, {
+      aiId: action.markerId,
+      selector: action.selector,
+      text: action.value,
     })
-    await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
-      type: 'mouseReleased', x, y, button: 'left', clickCount: 1,
+    if (!coords) return null // can't find element → fallback
+
+    // Scroll into view if we have a backendNodeId
+    if (coords.backendNodeId) {
+      await cdpScrollIntoView(tabId, coords.backendNodeId)
+      // Re-fetch coordinates after scroll
+      const fresh = await resolveElementCoords(tabId, {
+        aiId: action.markerId,
+        selector: action.selector,
+        text: action.value,
+      })
+      if (fresh) {
+        coords.x = fresh.x
+        coords.y = fresh.y
+      }
+    }
+
+    const clickFn = action.action === 'doubleclick' ? cdpDoubleClickAt : cdpClickAt
+    const ok = await clickFn(tabId, coords.x, coords.y)
+    if (!ok) return null
+
+    // Wait for DOM to stabilize (event-based, not fixed sleep)
+    await cdpWaitForDOMStable(tabId, 1500)
+
+    return { action: action.action, success: true, result: `${action.action} via CDP at (${coords.x}, ${coords.y})` }
+  }
+
+  // ── Type ───────────────────────────────────────────────────────────────
+  if (action.action === 'type') {
+    // Focus the target element first
+    if (action.markerId || action.selector) {
+      const coords = await resolveElementCoords(tabId, {
+        aiId: action.markerId,
+        selector: action.selector,
+      })
+      if (coords) {
+        if (coords.backendNodeId) {
+          await cdpFocusNode(tabId, coords.backendNodeId)
+        } else {
+          await cdpClickAt(tabId, coords.x, coords.y)
+        }
+        await sleep(100) // brief pause after focus
+      } else {
+        return null // can't find target → fallback
+      }
+    }
+
+    const ok = await cdpTypeText(tabId, action.value ?? '')
+    if (!ok) return null
+    return { action: 'type', success: true, result: `Typed "${(action.value ?? '').slice(0, 50)}" via CDP` }
+  }
+
+  // ── Clear ──────────────────────────────────────────────────────────────
+  if (action.action === 'clear') {
+    if (action.markerId || action.selector) {
+      const coords = await resolveElementCoords(tabId, {
+        aiId: action.markerId,
+        selector: action.selector,
+      })
+      if (coords) {
+        if (coords.backendNodeId) {
+          await cdpFocusNode(tabId, coords.backendNodeId)
+        } else {
+          await cdpClickAt(tabId, coords.x, coords.y)
+        }
+      }
+    }
+    const ok = await cdpClearField(tabId)
+    if (!ok) return null
+    return { action: 'clear', success: true, result: 'Field cleared via CDP' }
+  }
+
+  // ── Hover ──────────────────────────────────────────────────────────────
+  if (action.action === 'hover') {
+    const coords = await resolveElementCoords(tabId, {
+      aiId: action.markerId,
+      selector: action.selector,
+      text: action.value,
     })
-    await chrome.debugger.detach({ tabId }).catch(() => {})
-  } catch { /* debugger may already be attached/detached */ }
+    if (!coords) return null
+    const ok = await cdpHoverAt(tabId, coords.x, coords.y)
+    if (!ok) return null
+    return { action: 'hover', success: true, result: `Hovered via CDP at (${coords.x}, ${coords.y})` }
+  }
+
+  // ── Focus ──────────────────────────────────────────────────────────────
+  if (action.action === 'focus') {
+    const coords = await resolveElementCoords(tabId, {
+      aiId: action.markerId,
+      selector: action.selector,
+    })
+    if (!coords?.backendNodeId) return null
+    const ok = await cdpFocusNode(tabId, coords.backendNodeId)
+    if (!ok) return null
+    return { action: 'focus', success: true, result: 'Focused via CDP' }
+  }
+
+  // ── Scroll ─────────────────────────────────────────────────────────────
+  if (action.action === 'scroll') {
+    const direction = (action.value ?? 'down').toLowerCase() as 'up' | 'down'
+    const ok = await cdpScrollPage(tabId, direction)
+    if (!ok) return null
+    return { action: 'scroll', success: true, result: `Scrolled ${direction} via CDP` }
+  }
+
+  // ── Scroll To (specific element) ───────────────────────────────────────
+  if (action.action === 'scroll_to') {
+    const coords = await resolveElementCoords(tabId, {
+      aiId: action.markerId,
+      selector: action.selector,
+      text: action.value,
+    })
+    if (!coords?.backendNodeId) return null
+    const ok = await cdpScrollIntoView(tabId, coords.backendNodeId)
+    if (!ok) return null
+    return { action: 'scroll_to', success: true, result: 'Scrolled to element via CDP' }
+  }
+
+  // ── Keypress ───────────────────────────────────────────────────────────
+  if (action.action === 'keypress') {
+    const key = action.value ?? action.selector ?? 'Enter'
+    const ok = await cdpPressKey(tabId, key)
+    if (!ok) return null
+    return { action: 'keypress', success: true, result: `Pressed ${key} via CDP` }
+  }
+
+  // ── Select Option ──────────────────────────────────────────────────────
+  if (action.action === 'select_option') {
+    // Click the select, then try to find and click the option
+    const coords = await resolveElementCoords(tabId, {
+      aiId: action.markerId,
+      selector: action.selector,
+    })
+    if (coords) {
+      await cdpClickAt(tabId, coords.x, coords.y)
+      await sleep(200) // wait for dropdown
+    }
+    // Fall through to content script for actual option selection
+    return null
+  }
+
+  return null // action not handled by CDP → fallback
 }
 
 async function executeSingleAction(action: AIAction, tabId: number): Promise<AIActionResult> {
@@ -547,8 +900,24 @@ async function executeSingleAction(action: AIAction, tabId: number): Promise<AIA
   }
 
   if (action.action === 'open_tab' || action.action === 'read_tab') {
+    const targetUrl = action.url ?? ''
+    // Guard: if trying to open the same URL as the current tab, don't open a new tab
     try {
-      const content = await openAndReadTab(action.url ?? '')
+      const currentTab = await chrome.tabs.get(tabId)
+      if (currentTab.url && targetUrl) {
+        const currentHref = new URL(currentTab.url).href
+        const targetHref = new URL(targetUrl).href
+        if (currentHref === targetHref || currentTab.url.replace(/\/$/, '') === targetUrl.replace(/\/$/, '')) {
+          return {
+            action: action.action, success: true,
+            result: `You are ALREADY on this page (${currentTab.url}). Do NOT open it again. Use CLICK, TYPE, or other interaction actions to work with elements on THIS page.`,
+          }
+        }
+      }
+    } catch { /* tab lookup failed, proceed normally */ }
+
+    try {
+      const content = await openAndReadTab(targetUrl)
       return { action: action.action, success: true, result: `Title: ${content.title}\nURL: ${content.url}\n\n${content.text}` }
     } catch (err) {
       return { action: action.action, success: false, error: String(err) }
@@ -638,8 +1007,24 @@ async function executeSingleAction(action: AIAction, tabId: number): Promise<AIA
     const url = action.url ?? action.value ?? ''
     if (!url) return { action: 'navigate', success: false, error: 'No URL provided' }
     try {
-      // Ensure URL has a protocol
       const fullUrl = /^https?:\/\//i.test(url) ? url : `https://${url}`
+
+      // Guard: check if we're already on this URL (including redirected URLs)
+      try {
+        const currentTab = await chrome.tabs.get(tabId)
+        if (currentTab.url) {
+          const currentHost = new URL(currentTab.url).hostname.replace(/^www\./, '')
+          const targetHost = new URL(fullUrl).hostname.replace(/^www\./, '')
+          const currentPath = new URL(currentTab.url).pathname
+          const targetPath = new URL(fullUrl).pathname
+          if (currentHost === targetHost && (currentPath === targetPath || targetPath === '/')) {
+            logTabEvent('duplicate_blocked', tabId, fullUrl, 'navigate')
+            return { action: 'navigate', success: true, result: `Already on ${currentTab.url}. No navigation needed. Interact with the current page using CLICK, TYPE, etc.` }
+          }
+        }
+      } catch { /* proceed with navigation */ }
+
+      logTabEvent('navigated', tabId, fullUrl, 'navigate')
       await chrome.tabs.update(tabId, { url: fullUrl })
       // Wait for page to start loading
       await sleep(2000)
@@ -669,13 +1054,19 @@ async function executeSingleAction(action: AIAction, tabId: number): Promise<AIA
     }
   }
 
+  // ── CDP-FIRST: try trusted browser events before content script ──────
+  // CDP clicks are isTrusted:true — they work on Gmail, React, Angular, etc.
+  const cdpResult = await executeSingleActionCDP(action, tabId)
+  if (cdpResult) return cdpResult
+
+  // ── Content script fallback path ────────────────────────────────────────
   if (action.action === 'scroll') {
-    // Scroll can work via CDP even without content script
+    // Scroll can work via CDP even without content script (standalone fallback)
     try {
       const direction = (action.value ?? 'down').toLowerCase()
       const deltaY = direction === 'up' ? -500 : 500
       await chrome.debugger.attach({ tabId }, '1.3').catch(() => {})
-      await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
+      await chrome.debugger.sendCommand.call(chrome.debugger, { tabId }, 'Input.dispatchMouseEvent', {
         type: 'mouseWheel', x: 400, y: 400, deltaX: 0, deltaY,
       })
       await chrome.debugger.detach({ tabId }).catch(() => {})
@@ -729,14 +1120,30 @@ async function executeSingleAction(action: AIAction, tabId: number): Promise<AIA
       }
 
       // If click reported "no visible change" with coordinates, retry via CDP
-      // CDP produces trusted browser events that frameworks like Google Flights respond to
+      // CDP produces trusted browser events that frameworks like Gmail respond to
       if (action.action === 'click' && response.ok && response.result?.includes('[COORDS:')) {
         const coordMatch = response.result.match(/\[COORDS:(\d+),(\d+)\]/)
         if (coordMatch) {
-          const cx = parseInt(coordMatch[1])
-          const cy = parseInt(coordMatch[2])
-          await cdpClick(tabId, cx, cy)
-          await sleep(500)
+          const cx = parseInt(coordMatch[1], 10)
+          const cy = parseInt(coordMatch[2], 10)
+          if (isNaN(cx) || isNaN(cy)) return result
+          // Use CDP actions module if session active, else standalone
+          if (isSessionActive(tabId)) {
+            await cdpClickAt(tabId, cx, cy)
+          } else {
+            try {
+              await chrome.debugger.attach({ tabId }, '1.3').catch(() => {})
+              await chrome.debugger.sendCommand.call(chrome.debugger, { tabId }, 'Input.dispatchMouseEvent', {
+                type: 'mousePressed', x: cx, y: cy, button: 'left', clickCount: 1,
+              })
+              await chrome.debugger.sendCommand.call(chrome.debugger, { tabId }, 'Input.dispatchMouseEvent', {
+                type: 'mouseReleased', x: cx, y: cy, button: 'left', clickCount: 1,
+              })
+            } catch { /* ok */ } finally {
+              await chrome.debugger.detach({ tabId }).catch(() => {})
+            }
+          }
+          await sleep(300)
           result.result = result.result?.replace(/\[COORDS:\d+,\d+\]/, '').replace('WARNING:', 'retried with CDP click.')
         }
       }
@@ -971,7 +1378,8 @@ export async function executeWithFollowUp(
   settings: Settings,
   port: StreamPort,
   sessionMessages: Pick<ChatMessage, 'role' | 'content'>[],
-  maxRounds = 25
+  maxRounds = 25,
+  guided = false
 ): Promise<void> {
   let response = aiResponse
   let round = 0
@@ -983,14 +1391,39 @@ export async function executeWithFollowUp(
   let errorRepeatCount = 0
   const allParsedActions: ParsedAction[] = []
   const allResults: AIActionResult[] = []
+  /** URLs already opened/navigated during this execution — prevents duplicate tab opens */
+  const visitedUrls = new Set<string>()
+  /** Track consecutive tab-opening rounds (no click/type/interaction actions) */
+  let consecutiveTabOpenRounds = 0
+  /** Track failed selectors per URL to prevent AI from retrying the same broken selectors */
+  const failedSelectors = new Map<string, Array<{ selector: string; action: string; error: string }>>()
+  /** Track action+result per round for attempt history in follow-up prompts */
+  const roundHistory: Array<{ round: number; actions: string; outcome: string }> = []
 
   // Clear any stale cancellation for this tab, then show stop overlay
   clearCancellation(tabId)
+
+  // Pause guard — if the tab's group is paused, don't start automation
+  if (isTabInPausedGroup(tabId)) {
+    port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '\n\n> Group is paused. Resume from the Groups panel.\n\n' })
+    port.postMessage({ type: MSG.STREAM_END })
+    return
+  }
+
+  const executionAbort = new AbortController()
+  executionAbortControllers.set(tabId, executionAbort)
   signalActivity(tabId, true)
 
-  // Add the working tab to the AI tab group so the user can see which tabs the AI is using
-  await addTabToAIGroup(tabId)
+  // ── Acquire CDP session for the entire automation sequence ──────────
+  // This attaches the debugger ONCE and keeps it attached for all rounds,
+  // avoiding ~100ms attach/detach overhead per action.
+  const cdpSession = await acquireSession(tabId).catch(() => null)
+  if (cdpSession) {
+    console.warn(`[LocalAI] CDP session acquired for tab ${tabId} — using trusted events`)
+    invalidateTreeCache() // fresh tree for new sequence
+  }
 
+  try {
   // Helper: check if current tab is restricted (no DOM interaction possible)
   async function isTabRestricted(): Promise<boolean> {
     if (tabId <= 0) return true
@@ -1006,7 +1439,7 @@ export async function executeWithFollowUp(
   if (!restricted && tabId > 0) {
     await ensureContentScript(tabId).catch(() => false)
   } else if (restricted) {
-    console.log(`[LocalAI] Tab is on restricted/blank page. DOM actions will use background alternatives.`)
+    console.warn(`[LocalAI] Tab is on restricted/blank page. DOM actions will use background alternatives.`)
   }
 
   let consecutiveFailures = 0
@@ -1018,36 +1451,51 @@ export async function executeWithFollowUp(
       break
     }
 
-    // Check for is_complete signal from AI
-    if (checkIsComplete(response)) {
-      port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '' })
+    // Check if group was paused mid-execution
+    if (isTabInPausedGroup(tabId)) {
+      port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '\n\n> Group paused — automation suspended.\n\n' })
       break
     }
 
+    // Check for is_complete signal — but still parse & execute any actions in this response first
+    const isComplete = checkIsComplete(response)
+
     let actions = parseActionsFromText(response)
-    console.log(`[LocalAI] Round ${round + 1}: parsed ${actions.length} actions from AI response (${response.length} chars)`)
+    console.warn(`[LocalAI] Round ${round + 1}: parsed ${actions.length} actions from AI response (${response.length} chars)`)
     if (actions.length > 0) {
-      console.log(`[LocalAI] Actions: ${actions.map(a => `${a.action}(${JSON.stringify(a.params)})`).join(', ')}`)
+      console.warn(`[LocalAI] Actions: ${actions.map(a => `${a.action}(${JSON.stringify(a.params)})`).join(', ')}`)
     }
+
+    // Validate parsed actions — reject obviously hallucinated selectors
+    actions = validateParsedActions(actions)
+
     // Log raw response for debugging empty selectors
     if (actions.some(a => !a.params.selector && !a.params.url && !a.params.query && !a.params.markerId && !a.params.key && !a.params.direction)) {
-      console.log(`[LocalAI] Raw AI response: ${response.slice(0, 300)}`)
+      console.warn(`[LocalAI] Raw AI response: ${response.slice(0, 300)}`)
     }
 
     // If no actions found on first round, try auto-kickstart based on user intent
     if (actions.length === 0 && round === 0) {
       const userGoal = sessionMessages.filter(m => m.role === 'user').pop()?.content ?? ''
-      console.log(`[LocalAI] No actions parsed. Trying auto-kickstart from user intent...`)
+      console.warn(`[LocalAI] No actions parsed (isComplete=${isComplete}). Trying auto-kickstart from user intent...`)
+
+      // Detect AI hallucination: claims it clicked/typed but emitted no action tags
+      const claimsAction = /\b(I have clicked|I clicked|I have pressed|I pressed|habe.*geklickt|habe.*gedrückt|button.*clicked|navigated to)/i.test(response)
+      if (claimsAction) {
+        console.warn(`[LocalAI] AI claimed to perform action but emitted no [ACTION] tags — hallucination detected`)
+      }
+
       const kickstart = detectIntentAndKickstart(userGoal)
       if (kickstart.length > 0) {
-        console.log(`[LocalAI] Auto-kickstart: ${kickstart.map(a => `${a.action}(${JSON.stringify(a.params)})`).join(', ')}`)
+        console.warn(`[LocalAI] Auto-kickstart: ${kickstart.map(a => `${a.action}(${JSON.stringify(a.params)})`).join(', ')}`)
         port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '\n\n> Starting actions...\n\n' })
         actions = kickstart
       }
     }
 
-    // If still no actions, retry once with a clearer prompt
-    if (actions.length === 0 && round <= 1) {
+    // If still no actions, retry once with a clearer prompt — only after a real execution round,
+    // not on the initial AI response (round 0) which may intentionally contain no actions (e.g. answering a question)
+    if (actions.length === 0 && round === 1) {
       const hasWrongFormat = containsMalformedActions(response)
       const retryPrompt = hasWrongFormat
         ? `Your response used an unsupported format. You MUST use either:\n1. [ACTION:SEARCH query="..."] bracket syntax\n2. {"action": "click", "element_id": 5} JSON format\n\nTry again. What action should you take?`
@@ -1059,16 +1507,16 @@ export async function executeWithFollowUp(
         { role: 'user' as const, content: retryPrompt, imageData: undefined },
       ]
 
-      console.log(`[LocalAI] Retrying with clearer prompt (hasWrongFormat: ${hasWrongFormat})...`)
-      const retryResponse = await callAI(retryMessages, settings, 2048)
+      console.warn(`[LocalAI] Retrying with clearer prompt (hasWrongFormat: ${hasWrongFormat})...`)
+      const retryResponse = await callAI(retryMessages, settings, 2048, false, executionAbort.signal)
       if (retryResponse) {
-        console.log(`[LocalAI] Retry response: ${retryResponse.slice(0, 200)}`)
+        console.warn(`[LocalAI] Retry response: ${retryResponse.slice(0, 200)}`)
         const cleanedRetry = stripActionMarkersForDisplay(retryResponse)
         if (cleanedRetry.trim()) {
           port.postMessage({ type: MSG.STREAM_CHUNK, chunk: cleanedRetry })
         }
         actions = parseActionsFromText(retryResponse)
-        console.log(`[LocalAI] Retry parsed ${actions.length} actions`)
+        console.warn(`[LocalAI] Retry parsed ${actions.length} actions`)
         if (actions.length > 0) {
           response = retryResponse
         }
@@ -1078,16 +1526,100 @@ export async function executeWithFollowUp(
     }
 
     if (actions.length === 0) {
-      console.warn(`[LocalAI] No actions after all attempts on round ${round + 1}. Breaking.`)
-      if (round === 0) {
-        port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '\n\n> Could not determine actions to take. Try rephrasing your request.\n\n' })
+      if (isComplete && round > 0) {
+        // AI said it's done and has no more actions — clean exit (only trust after round 0)
+        break
       }
+      console.warn(`[LocalAI] No actions after all attempts on round ${round + 1}. Breaking.`)
       break
     }
 
-    // Loop detection: only trigger after 4 identical action+selector+value signatures
-    // AND only if none of those rounds had any success
-    const actionSig = actions.map(a => `${a.action}:${a.params.selector ?? ''}:${a.params.value ?? ''}`).join('|')
+    // ── Duplicate URL guard ──────────────────────────────────────────────
+    // Filter out OPEN_TAB/READ_TAB/NAVIGATE actions that target URLs already visited
+    // in this execution. This prevents the AI from repeatedly opening the same page.
+    const TAB_OPEN_ACTIONS = new Set(['open_tab', 'read_tab', 'navigate', 'search'])
+    const INTERACTION_ACTIONS = new Set(['click', 'type', 'select_option', 'toggle', 'fill_form', 'scroll', 'hover', 'focus', 'clear', 'press_key', 'double_click', 'screenshot', 'form_coach'])
+    const hasInteraction = actions.some(a => INTERACTION_ACTIONS.has(a.action))
+    const onlyTabOpens = actions.every(a => TAB_OPEN_ACTIONS.has(a.action))
+
+    if (onlyTabOpens && !restricted) {
+      consecutiveTabOpenRounds++
+    } else if (hasInteraction) {
+      consecutiveTabOpenRounds = 0
+    }
+
+    // If AI has spent 2+ consecutive rounds only opening tabs without interacting,
+    // force it to stop opening and interact with the current page
+    if (consecutiveTabOpenRounds >= 2 && !restricted) {
+      port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '\n\n> Redirecting: you have the page open — now interact with it.\n' })
+      // Replace tab-open actions with a hint and let the AI try again
+      const currentTab = await chrome.tabs.get(tabId).catch(() => null)
+      const forceMsg = `STOP opening new tabs. You are on ${currentTab?.url ?? 'the current page'} and have opened tabs ${consecutiveTabOpenRounds} times without interacting. Use CLICK, TYPE, or other interaction actions on the CURRENT page. Do NOT use OPEN_TAB, NAVIGATE, or SEARCH again.`
+      const forceMsgs: Pick<ChatMessage, 'role' | 'content'>[] = [
+        ...sessionMessages,
+        { role: 'assistant' as const, content: response },
+        { role: 'user' as const, content: forceMsg },
+      ]
+      const forceResponse = await callAI(forceMsgs, settings, 2048, false, executionAbort.signal)
+      if (forceResponse) {
+        actions = parseActionsFromText(forceResponse)
+        response = forceResponse
+        const cleaned = stripActionMarkersForDisplay(forceResponse)
+        if (cleaned.trim()) port.postMessage({ type: MSG.STREAM_CHUNK, chunk: cleaned })
+      }
+      consecutiveTabOpenRounds = 0
+    }
+
+    // Deduplicate: block OPEN_TAB/NAVIGATE for URLs already visited in this automation
+    // Uses origin+pathname (ignoring query params) to catch login redirects with different tokens
+    let tabOpenCount = 0
+    const MAX_TABS_PER_ROUND = 3
+    actions = actions.filter(a => {
+      if (a.action === 'open_tab' || a.action === 'read_tab') {
+        const url = a.params.url ?? ''
+        if (!url) return true
+        // Per-round cap: max 3 tab-opens per round
+        tabOpenCount++
+        if (tabOpenCount > MAX_TABS_PER_ROUND) {
+          logTabEvent('duplicate_blocked', tabId, url, 'research')
+          return false
+        }
+        try {
+          const parsed = new URL(/^https?:\/\//i.test(url) ? url : `https://${url}`)
+          const key = `${parsed.origin}${parsed.pathname}` // ignore query params
+          if (visitedUrls.has(key)) {
+            logTabEvent('duplicate_blocked', tabId, url, 'research')
+            return false
+          }
+          visitedUrls.add(key)
+        } catch { /* invalid URL, let it through */ }
+      }
+      if (a.action === 'navigate') {
+        const url = a.params.url ?? a.params.value ?? ''
+        if (url) {
+          try {
+            const parsed = new URL(/^https?:\/\//i.test(url) ? url : `https://${url}`)
+            const key = `${parsed.origin}${parsed.pathname}`
+            if (visitedUrls.has(key)) {
+              logTabEvent('duplicate_blocked', tabId, url, 'navigate')
+              return false  // Block duplicate navigate too
+            }
+            visitedUrls.add(key)
+          } catch { /* ok */ }
+        }
+      }
+      return true
+    })
+
+    if (actions.length === 0 && round > 0) {
+      console.warn(`[LocalAI] All actions were duplicates on round ${round + 1}. Breaking.`)
+      port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '\n\n> Already visited those pages. Finishing up.\n\n' })
+      break
+    }
+
+    // Loop detection: URL-aware signature prevents repeating the same action on the same page
+    const currentUrl = (await chrome.tabs.get(tabId).catch(() => null))?.url ?? ''
+    const actionSig = `${currentUrl}|${actions.map(a => `${a.action}:${a.params.selector ?? ''}:${a.params.value ?? ''}`).join('|')}`
     if (actionSig === lastActionSignature) {
       stuckCount++
     } else {
@@ -1100,28 +1632,42 @@ export async function executeWithFollowUp(
     const errorSig = lastErrorSignature
 
     // Pre-action DOM ops: only when tab has a real page loaded
+    // In guided mode after round 0, skip expensive captures — user sees the page
     let preState: Awaited<ReturnType<typeof captureVerificationState>> | undefined
     let preTree: Awaited<ReturnType<typeof getCDPAccessibilityTree>> | null = null
+    const guidedSkipExpensive = guided && round > 0
 
     if (!restricted && tabId > 0) {
+      if (isCancelled(tabId)) break
       const csAlive = await ensureContentScript(tabId).catch(() => false)
       if (!csAlive) {
         console.warn(`[LocalAI] Content script not available for tab ${tabId} — actions needing DOM will fail`)
       }
-      await captureAutomationScreenshot(tabId).catch(() => null)
-      preState = await captureVerificationState(tabId)
-      preTree = await getCDPAccessibilityTree(tabId).catch(() => null)
+      if (!guidedSkipExpensive) {
+        if (isCancelled(tabId)) break
+        await captureAutomationScreenshot(tabId).catch(() => null)
+        if (isCancelled(tabId)) break
+        preState = await captureVerificationState(tabId)
+        if (isCancelled(tabId)) break
+        preTree = await getCDPAccessibilityTree(tabId).catch(() => null)
+      }
     }
 
     // Execute using the pre-parsed actions array (may include kickstart/retry actions)
-    let results = await executeParsedActions(actions, tabId)
-    console.log(`[LocalAI] Executed ${results.length} actions: ${results.map(r => `${r.action}=${r.success ? 'OK' : 'FAIL'}${r.error ? `(${r.error.slice(0, 60)})` : ''}`).join(', ')}`)
+    // In guided mode, interactive actions are highlighted for user to click
+    let results: AIActionResult[]
+    if (guided) {
+      results = await executeGuidedActions(actions, tabId, port, round + 1)
+    } else {
+      results = await executeParsedActions(actions, tabId)
+    }
+    console.warn(`[LocalAI] Executed ${results.length} actions: ${results.map(r => `${r.action}=${r.success ? 'OK' : 'FAIL'}${r.error ? `(${r.error.slice(0, 60)})` : ''}`).join(', ')}`)
 
     // If ALL actions failed due to content script unreachable (blank/restricted tab),
     // auto-recover: convert the user's intent into a background search action
     const allContentScriptFails = results.length > 0 && results.every(r => !r.success && r.error?.includes('Content script unreachable'))
     if (allContentScriptFails && round <= 1) {
-      console.log(`[LocalAI] All actions failed (restricted/blank page). Converting to background search...`)
+      console.warn(`[LocalAI] All actions failed (restricted/blank page). Converting to background search...`)
       const userGoal = sessionMessages.filter(m => m.role === 'user').pop()?.content ?? ''
       if (userGoal.length > 5) {
         // Use the search action which works without content script — strip filler words
@@ -1135,7 +1681,7 @@ export async function executeWithFollowUp(
           [{ action: 'search', params: { query } }],
           tabId
         )
-        console.log(`[LocalAI] Search fallback results: ${results.map(r => `${r.action}=${r.success ? 'OK' : 'FAIL'}`).join(', ')}`)
+        console.warn(`[LocalAI] Search fallback results: ${results.map(r => `${r.action}=${r.success ? 'OK' : 'FAIL'}`).join(', ')}`)
         if (results.some(r => r.success)) {
           // Search worked — continue the loop so AI can process results
           hadSuccess = true
@@ -1163,9 +1709,29 @@ export async function executeWithFollowUp(
       stuckCount = 0  // also reset stuck detection on any success
     }
 
-    // Check stuck AFTER execution: only break if 4+ identical rounds AND all failed
-    if (stuckCount >= 4 && results.every(r => !r.success)) {
-      port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '\n\n> Same action failed 4 times. Try rephrasing or a different approach.\n\n' })
+    // Track failed selectors per URL for anti-loop context in follow-up prompts
+    for (let ri = 0; ri < results.length; ri++) {
+      if (!results[ri].success && actions[ri]) {
+        const sel = actions[ri].params.selector ?? actions[ri].params.markerId ?? ''
+        if (sel) {
+          const urlKey = currentUrl || 'unknown'
+          if (!failedSelectors.has(urlKey)) failedSelectors.set(urlKey, [])
+          const existing = failedSelectors.get(urlKey)!
+          if (!existing.some(f => f.selector === sel && f.action === actions[ri].action)) {
+            existing.push({ selector: sel, action: actions[ri].action, error: (results[ri].error ?? '').slice(0, 80) })
+          }
+        }
+      }
+    }
+
+    // Record round history for attempt tracking in follow-up prompts
+    const actionDesc = actions.map(a => `${a.action.toUpperCase()}${a.params.selector ? ` "${a.params.selector}"` : ''}${a.params.value ? ` = "${a.params.value}"` : ''}`).join(', ')
+    const outcomeDesc = results.map(r => r.success ? 'ok' : `failed: ${(r.error ?? 'unknown').slice(0, 40)}`).join('; ')
+    roundHistory.push({ round: round + 1, actions: actionDesc, outcome: outcomeDesc })
+
+    // Check stuck AFTER execution: break if 2+ identical action signatures (loop detected)
+    if (stuckCount >= 2) {
+      port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '\n\n> Stuck in a loop — same action repeated. Try rephrasing or a different approach.\n\n' })
       break
     }
 
@@ -1174,6 +1740,28 @@ export async function executeWithFollowUp(
 
     allParsedActions.push(...actions)
     allResults.push(...results)
+
+    // ── Debug logging ──────────────────────────────────────────────────
+    for (let i = 0; i < results.length; i++) {
+      const r = results[i]
+      const a = actions[i]
+      logAction({
+        round: round + 1,
+        action: r.action,
+        params: a ? Object.entries(a.params).map(([k, v]) => `${k}=${v}`).join(' ').slice(0, 120) : '',
+        success: r.success,
+        result: (r.success ? r.result : r.error)?.slice(0, 200) ?? '',
+        tabId,
+      })
+    }
+    logAIRound({
+      round: round + 1,
+      maxRounds,
+      tabId,
+      actionCount: actions.length,
+      actions: actions.map(a => a.action).join(', ').slice(0, 120),
+      allSucceeded: results.every(r => r.success),
+    })
 
     if (results.every(r => r.success)) hadSuccess = true
     if (results.some(r => !r.success)) hadFailure = true
@@ -1187,6 +1775,9 @@ export async function executeWithFollowUp(
 
     if (round >= maxRounds - 1) break
 
+    // If AI signalled is_complete, exit now (after executing its final actions above)
+    if (isComplete) break
+
     // --- DOM-dependent ops: SKIP on restricted/blank tabs to avoid wasted time ---
     let postScreenshot: string | undefined
     let followUpA11y: string | undefined
@@ -1198,45 +1789,71 @@ export async function executeWithFollowUp(
     const anyFailed = results.some(r => !r.success) || suspiciousSuccess
     const userIsActive = results.some(r => r.userActive)
 
-    if (!restricted && tabId > 0) {
-      const postState = await captureVerificationState(tabId)
-      if (preState) verification = buildVerificationContext(preState, postState)
+    if (!restricted && tabId > 0 && !isCancelled(tabId)) {
+      if (guidedSkipExpensive) {
+        // Guided mode: lightweight context — user sees the page, AI only needs URL + title
+        try {
+          const tab = await chrome.tabs.get(tabId)
+          freshContext = `URL: ${tab.url ?? 'unknown'}\nTitle: ${tab.title ?? 'unknown'}`
+        } catch { freshContext = 'Tab state unknown' }
 
-      const postShot = await captureAutomationScreenshot(tabId).catch(() => null)
-      if (postShot) {
-        postScreenshot = postShot.dataUrl
-        tabState.setScreenshot(tabId, postShot.dataUrl)
-        const snap = tabState.get(tabId)
-        if (snap?.url) {
-          recordPageVisit(extractDomainFromUrl(snap.url), snap.url, snap, postShot.dataUrl).catch(() => {})
+        // Still handle navigation waits even in guided mode
+        const hasNav = results.some(r => r.success && (NAV_ACTIONS.has(r.action) || r.result?.includes('navigated')))
+        if (hasNav) {
+          await sleep(1500)
+          await ensureContentScript(tabId).catch(() => false)
+          await sleep(500)
+          restricted = await isTabRestricted()
+        }
+      } else {
+        // Full context capture for auto mode
+        if (isCancelled(tabId)) break
+
+        const hasNav = results.some(r => r.success && (NAV_ACTIONS.has(r.action) || r.result?.includes('navigated')))
+
+        if (hasNav) {
+          // After navigation: lightweight context only — skip screenshot/CDP to keep follow-up fast
+          // (tab just loaded; screenshot/CDP would block for 2-5s before the page is ready)
+          await sleep(200)
+          await ensureContentScript(tabId).catch(() => false)
+          restricted = await isTabRestricted()
+          if (!restricted) {
+            try { const tab = await chrome.tabs.get(tabId); freshContext = `URL: ${tab.url ?? ''}\nTitle: ${tab.title ?? ''}` } catch { freshContext = '' }
+          }
+        } else {
+          // No navigation: full capture (screenshot + CDP + verification)
+          const postState = await captureVerificationState(tabId)
+          if (preState) verification = buildVerificationContext(preState, postState)
+
+          if (isCancelled(tabId)) break
+          const postShot = await captureAutomationScreenshot(tabId).catch(() => null)
+          if (postShot) {
+            postScreenshot = postShot.dataUrl
+            tabState.setScreenshot(tabId, postShot.dataUrl)
+            const snap = tabState.get(tabId)
+            if (snap?.url) {
+              recordPageVisit(extractDomainFromUrl(snap.url), snap.url, snap, postShot.dataUrl).catch(() => {})
+            }
+          }
+
+          if (!restricted && !isCancelled(tabId)) {
+            // Get fresh page state via CDP accessibility tree (no markers needed —
+            // text selectors are more reliable than element IDs on dynamic sites)
+            const postTree2 = await getCDPAccessibilityTree(tabId).catch(() => null)
+            if (postTree2) {
+              followUpA11y = postTree2.treeText
+              if (preTree) stateDiff = buildStateDiff(preTree.elements, postTree2.elements)
+            }
+
+            await requestFreshSnapshot(tabId)
+            freshContext = tabState.summarize(tabId)
+            const freshSnap = tabState.get(tabId)
+            freshPageText = (freshSnap?.completePageText ?? '').slice(0, 6000)
+          }
         }
       }
-
-      const hasNav = results.some(r => r.success && (NAV_ACTIONS.has(r.action) || r.result?.includes('navigated')))
-      if (hasNav) {
-        await sleep(1500)
-        await ensureContentScript(tabId).catch(() => false)
-        await sleep(500)
-        await requestFreshSnapshot(tabId)
-        restricted = await isTabRestricted()
-      }
-
-      if (!restricted) {
-        // Get fresh page state via CDP accessibility tree (no markers needed —
-        // text selectors are more reliable than element IDs on dynamic sites)
-        const postTree2 = await getCDPAccessibilityTree(tabId).catch(() => null)
-        if (postTree2) {
-          followUpA11y = postTree2.treeText
-          if (preTree) stateDiff = buildStateDiff(preTree.elements, postTree2.elements)
-        }
-
-        await requestFreshSnapshot(tabId)
-        freshContext = tabState.summarize(tabId)
-        const freshSnap = tabState.get(tabId)
-        freshPageText = (freshSnap?.completePageText ?? '').slice(0, 6000)
-      }
-    } else {
-      console.log(`[LocalAI] Skipping DOM ops on restricted tab — building lightweight follow-up`)
+    } else if (restricted) {
+      console.warn(`[LocalAI] Skipping DOM ops on restricted tab — building lightweight follow-up`)
     }
 
     // Error tracking
@@ -1250,10 +1867,11 @@ export async function executeWithFollowUp(
     let palaceHints = ''
     if (anyFailed) {
       const s = await getAllSettings().catch(() => null)
+      const failQuery = failedActions.map(r => r.error ?? r.action).join(' ').slice(0, 200)
+      const snap = tabState.get(tabId)
+      const domain = snap?.url ? extractDomainFromUrl(snap.url) : ''
+
       if (s && mempalaceEnabled(s)) {
-        const failQuery = failedActions.map(r => r.error ?? r.action).join(' ').slice(0, 200)
-        const snap = tabState.get(tabId)
-        const domain = snap?.url ? extractDomainFromUrl(snap.url) : ''
         const hints = await recallRelevantMemories(s, failQuery, domain).catch(() => '')
         if (hints) palaceHints = `\n\nMEMORY FROM PAST SESSIONS:\n${hints}\n`
         for (const r of failedActions) {
@@ -1265,32 +1883,68 @@ export async function executeWithFollowUp(
           }).catch(() => {})
         }
       }
+      // Local memory: recall hints + record failures
+      if (s && localMemoryEnabled(s)) {
+        const localHints = await recallLocalMemories(failQuery, domain).catch(() => '')
+        if (localHints && !palaceHints) palaceHints = `\n\nMEMORY FROM PAST SESSIONS:\n${localHints}\n`
+        else if (localHints) palaceHints += localHints + '\n'
+        for (const r of failedActions) {
+          recordLocalFailure(r, {
+            url: snap?.url ?? '',
+            domain,
+            userGoal: sessionMessages.filter(m => m.role === 'user').pop()?.content?.slice(0, 200),
+            attempt: actions.map(a => `${a.action}(${a.params.selector ?? ''})`).join(', ').slice(0, 300),
+          }).catch(() => {})
+        }
+      }
     }
+
+    // Build attempt history and failed selector context for follow-up prompts
+    const attemptHistoryBlock = buildAttemptHistory(roundHistory)
+    const failedSelectorBlock = buildFailedSelectorContext(failedSelectors, currentUrl)
+    const stuckWarning = stuckCount >= 1
+      ? '\n\nWARNING: You just repeated the same action as the previous round. This WILL fail again. You MUST try a COMPLETELY DIFFERENT approach — different selector, different action type, or use [ACTION:READ_PAGE] / [ACTION:SCREENSHOT] to see what is actually on the page.\n'
+      : ''
 
     // Build follow-up content based on tab state
     let followUpContent: string
 
-    if (restricted) {
+    if (guidedSkipExpensive) {
+      // Guided mode: lightweight follow-up — user sees the page, AI just needs action results
+      followUpContent = `Action results:\n${resultSummary}\n\nPage: ${freshContext}${palaceHints ? palaceHints.slice(0, 500) : ''}${attemptHistoryBlock}${stuckWarning}\n\nRound ${round + 2}/${maxRounds}. The user is clicking elements you highlight. What should they do next? Give clear instructions.`
+    } else if (restricted) {
       // LIGHTWEIGHT follow-up for blank/restricted tabs — no DOM context, just results + clear guidance
       const hasSearchResults = results.some(r => r.action === 'search' && r.success && r.result)
       const guidance = hasSearchResults
         ? `\nYou searched successfully. Now you MUST use the URLs from the results above:\n- [ACTION:OPEN_TAB url="<url>"] — read a search result page (can open multiple in parallel)\n- [ACTION:NAVIGATE url="<url>"] — go to a specific website in this tab\nDo NOT search again. Read the pages, then answer the user.\n`
         : `\nYou are on a blank tab. Use [ACTION:SEARCH query="..."] or [ACTION:NAVIGATE url="..."].\n`
 
-      followUpContent = `Action results:\n${resultSummary}\n${guidance}${palaceHints}\nRound ${round + 2}/${maxRounds}. Act on the results above — do NOT repeat the same action.`
+      followUpContent = `Action results:\n${resultSummary}\n${guidance}${palaceHints}${attemptHistoryBlock}${failedSelectorBlock}${stuckWarning}\nRound ${round + 2}/${maxRounds}. Act on the results above — do NOT repeat the same action.`
     } else {
       let failureInstructions = ''
       if (anyFailed) {
         const errorTypes = new Set(failedActions.map(r => classifyError(r.error ?? '')))
-        const specificHints = buildErrorSpecificHints(errorTypes, errorRepeatCount, suspiciousSuccess)
+        const snap = tabState.get(tabId)
+        const specificHints = buildDomainAwareRecovery(errorTypes, errorRepeatCount, suspiciousSuccess, snap?.url)
         failureInstructions = `\nACTIONS FAILED:\n${failDetail}\n${specificHints}\nTry a DIFFERENT approach.\n`
       }
       let visualVerification = ''
       if (postScreenshot) {
         visualVerification = '\nScreenshot attached — verify actions worked visually.\n'
       }
-      const a11ySection = followUpA11y ? `\nAccessibility Tree:\n${followUpA11y}\n` : ''
-      followUpContent = `Action results:\n${resultSummary}\n\n${verification}${stateDiff ? `\nELEMENT STATE CHANGES:\n${stateDiff}\n` : ''}${visualVerification}\n${failureInstructions}${palaceHints}${userIsActive ? '\nUser is also interacting.\n' : ''}Updated page state:\n${freshContext}${a11ySection}${freshPageText ? `\n\nPage Content (excerpt):\n${freshPageText}\n` : ''}\n\nRound ${round + 2}/${maxRounds}. ${anyFailed ? 'RETRY with a DIFFERENT approach.' : 'Continue if more steps needed, or give a SHORT summary.'}`
+      // Cap a11y tree and page text to prevent context overflow on later rounds
+      const a11yMaxChars = round < 2 ? 8000 : 4000
+      const pageTextMaxChars = round < 2 ? 4000 : 2000
+      const cappedA11y = followUpA11y ? followUpA11y.slice(0, a11yMaxChars) : ''
+      const a11ySection = cappedA11y ? `\nAccessibility Tree:\n${cappedA11y}\n` : ''
+      // freshContext from tabState.summarize() already includes page text excerpts,
+      // so only add freshPageText when a11y tree is NOT present (it provides richer info)
+      const extraPageText = (!cappedA11y && freshPageText) ? freshPageText.slice(0, pageTextMaxChars) : ''
+      // Remind AI to interact with the current page instead of opening new tabs
+      const tabOpenWarning = consecutiveTabOpenRounds >= 1
+        ? '\nIMPORTANT: You already opened tabs. Do NOT open more tabs or search again. Use CLICK, TYPE, SCROLL, or other interaction actions on the CURRENT page.\n'
+        : ''
+      followUpContent = `Action results:\n${resultSummary}\n\n${verification}${stateDiff ? `\nELEMENT STATE CHANGES:\n${stateDiff}\n` : ''}${visualVerification}\n${failureInstructions}${tabOpenWarning}${palaceHints.slice(0, 1000)}${userIsActive ? '\nUser is also interacting.\n' : ''}${attemptHistoryBlock}${failedSelectorBlock}${stuckWarning}Updated page state:\n${freshContext}${a11ySection}${extraPageText ? `\n\nPage Content (excerpt):\n${extraPageText}\n` : ''}\n\nRound ${round + 2}/${maxRounds}. ${anyFailed ? 'RETRY with a DIFFERENT approach.' : 'Continue if more steps needed, or give a SHORT summary.'}`
     }
 
     const followUpMessages: Pick<ChatMessage, 'role' | 'content' | 'imageData'>[] = [
@@ -1304,27 +1958,66 @@ export async function executeWithFollowUp(
       break
     }
 
-    console.log(`[LocalAI] Calling AI for round ${round + 2}... (restricted=${restricted}, resultLen=${resultSummary.length})`)
-    // Notify user that a follow-up is in progress (model may be slow)
-    port.postMessage({ type: MSG.STREAM_CHUNK, chunk: `\n\n> Round ${round + 2}: thinking...\n` })
-
-    // Use smaller max_tokens for local models to avoid very long waits
+    // ── Token-aware context management ────────────────────────────────
     const isLocal = (settings.activeProvider ?? 'local') === 'local'
+    const ctxWindow = settings.contextWindowTokens || (isLocal ? 32768 : 131072)
     const followUpMaxTokens = isLocal ? 1024 : 4096
     const hasScreenshot = followUpMessages.some(m => !!m.imageData)
 
-    // Generous timeout — local models can be very slow (user accepts 20-30 min waits)
-    const followUpPromise = callAI(followUpMessages, settings, followUpMaxTokens, hasScreenshot)
-    const timeoutMs = isLocal ? 30 * 60_000 : 5 * 60_000
-    let followUp = await Promise.race([
-      followUpPromise,
-      new Promise<string>(resolve => setTimeout(() => resolve(''), timeoutMs)),
-    ])
+    // Estimate total input tokens — images are base64 and huge
+    const totalInputTokens = followUpMessages.reduce((sum, m) =>
+      sum + estimateTokens(m.content ?? '') + (m.imageData ? Math.ceil(m.imageData.length / 4) : 0), 0)
+    const totalTextTokens = followUpMessages.reduce((sum, m) =>
+      sum + estimateTokens(m.content ?? ''), 0)
+    const safeInputLimit = ctxWindow - followUpMaxTokens - 500
 
-    if (!followUp && hasScreenshot) {
-      console.log(`[LocalAI] Follow-up empty with screenshot, retrying without image...`)
-      const noImageMsgs = followUpMessages.map(m => ({ ...m, imageData: undefined }))
-      followUp = await callAI(noImageMsgs, settings, followUpMaxTokens)
+    // Always strip images from historical messages — only latest user message gets screenshot
+    let truncatedMessages = followUpMessages.map((m, i) => {
+      if (i < followUpMessages.length - 1) return { ...m, imageData: undefined }
+      return m
+    })
+
+    // Truncate text if still over budget
+    if (totalTextTokens > safeInputLimit) {
+      console.warn(`[LocalAI] Follow-up text too large: ~${totalTextTokens} tokens (limit ~${safeInputLimit}). Truncating...`)
+      truncatedMessages = truncateMessagesToFit(
+        truncatedMessages.map(m => ({ ...m, imageData: undefined })),
+        0, ctxWindow, followUpMaxTokens + 500,
+      )
+    }
+
+    console.warn(`[LocalAI] Calling AI for round ${round + 2}... (textTokens≈${totalTextTokens}, maxCtx=${ctxWindow}, restricted=${restricted})`)
+    port.postMessage({ type: MSG.STREAM_CHUNK, chunk: `\n\n> Round ${round + 2}: thinking...\n` })
+
+    // Timeout: 2 minutes for cloud, 30 minutes for local
+    const timeoutMs = isLocal ? 30 * 60_000 : 2 * 60_000
+    const callWithTimeout = (msgs: typeof truncatedMessages, maxTok: number, vision = false) =>
+      Promise.race([
+        callAI(msgs, settings, maxTok, vision, executionAbort.signal),
+        new Promise<string>(resolve => setTimeout(() => resolve(''), timeoutMs)),
+      ])
+
+    let followUp = await callWithTimeout(truncatedMessages, followUpMaxTokens, hasScreenshot)
+
+    // ── Retry logic: progressively reduce context on empty response ──────
+    if (!followUp) {
+      // Retry 1: strip ALL images
+      console.warn(`[LocalAI] Follow-up empty, retry 1/3: removing all images...`)
+      const textOnly = truncatedMessages.map(m => ({ ...m, imageData: undefined }))
+      followUp = await callWithTimeout(textOnly, followUpMaxTokens)
+    }
+    if (!followUp) {
+      // Retry 2: keep only last user message (the current follow-up context)
+      console.warn(`[LocalAI] Follow-up empty, retry 2/3: last message only...`)
+      const lastMsg = truncatedMessages.slice(-1).map(m => ({ ...m, imageData: undefined }))
+      followUp = await callWithTimeout(lastMsg, Math.min(followUpMaxTokens, 2048))
+    }
+    if (!followUp) {
+      // Retry 3: ultra-compact — just action results and instruction
+      console.warn(`[LocalAI] Follow-up empty, retry 3/3: compact prompt...`)
+      const compactContent = `${resultSummary}\n\nRound ${round + 2}/${maxRounds}. Continue the task or give a SHORT summary.`
+      const compact = [{ role: 'user' as const, content: compactContent, imageData: undefined }]
+      followUp = await callWithTimeout(compact, Math.min(followUpMaxTokens, 1024))
     }
 
     if (followUp) {
@@ -1337,7 +2030,7 @@ export async function executeWithFollowUp(
       }
       response = followUp
     } else {
-      port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '\n\n> AI did not respond — model may be overloaded or request too large.\n\n' })
+      port.postMessage({ type: MSG.STREAM_CHUNK, chunk: '\n\n> AI did not respond after multiple retries — model may be overloaded or request too large.\n\n' })
       break
     }
 
@@ -1354,12 +2047,25 @@ export async function executeWithFollowUp(
   }
 
   clearCancellation(tabId)
+  executionAbortControllers.delete(tabId)
   signalActivity(tabId, false)
 
-  // Remove the working tab from the AI group when automation is done
-  await removeTabFromAIGroup(tabId)
+  // ── Auto-close research tabs on automation end ─────────────────────
+  // The AI often finishes without emitting RESEARCH_DONE, leaving tabs open.
+  const openResearchTabs = getResearchTabCount()
+  if (openResearchTabs > 0) {
+    await closeAllResearchTabs()
+    console.warn(`[LocalAI] Auto-closed ${openResearchTabs} research tabs after automation ended`)
+  }
 
   learnFromExecution(tabId, sessionMessages, allParsedActions, allResults, hadSuccess, hadFailure)
+  } finally {
+    // ── Release CDP session (guaranteed cleanup) ──────────────────────
+    if (cdpSession) {
+      await releaseSession(tabId).catch(() => {})
+      console.warn(`[LocalAI] CDP session released for tab ${tabId}`)
+    }
+  }
 }
 
 const MALFORMED_RE = /call:[\w]*:?[\w]*\{/i
@@ -1378,9 +2084,7 @@ function containsMalformedActions(text: string): boolean {
 // When the AI doesn't produce actions, detect what the user wants and inject actions
 
 const SEARCH_INTENT_RE = /\b(suche?n?|find|search|flug|fl[üu]ge?|tickets?|book|buchen|finde|zeig mir|compare|vergleich|price|preis|hotel|rental|miete|kaufen?|shop|cheapest|günstigste|billigste|angebot|reise|travel|flight)\b/i
-const NAVIGATE_INTENT_RE = /\b(go to|open|navigate|visit|gehe? zu|öffne|besuche?)\b/i
-const ANALYZE_INTENT_RE = /\b(analy[sz]e?|report|bericht|check|prüfe?|investigate|untersuche?|research|recherche)\b/i
-
+const CLICK_INTENT_RE = /\b(click|klick|press|drück|tap|mach|starte?|beginn|anfangen|los|durchführ|absend|submit|send|go|continue|weiter|bestätig|confirm|akzeptier|accept|annehm|test|öffne|open|ausführ|execut|run|play|start)\b/i
 function detectIntentAndKickstart(userText: string): ParsedAction[] {
   const lower = userText.toLowerCase()
 
@@ -1403,10 +2107,21 @@ function detectIntentAndKickstart(userText: string): ParsedAction[] {
     }
   }
 
-  // Analyze intent — read the current page first
-  if (ANALYZE_INTENT_RE.test(lower)) {
+  // Click/interaction intent — try to extract a button/link target from the user's message
+  if (CLICK_INTENT_RE.test(lower)) {
+    // Try to extract what the user wants to click: "mache das test durch" → look for CTA-like buttons
+    // Extract quoted text as selector: 'click "Submit"' → selector="Submit"
+    const quotedMatch = userText.match(/["„"'']([^"„"'']+)["„"'']/)
+    if (quotedMatch) {
+      return [{ action: 'click', params: { selector: quotedMatch[1] } }]
+    }
+    // For "mache das test" / "start the test" / "do the quiz" — use get_page_text first
+    // so the AI can see the page and pick the right button
     return [{ action: 'get_page_text', params: {} }]
   }
+
+  // NOTE: Removed analyze/research kickstart — if the AI already saw the page
+  // and chose not to act, forcing get_page_text creates a pointless loop.
 
   return []
 }
@@ -1602,6 +2317,76 @@ function buildErrorSpecificHints(errorTypes: Set<ErrorCategory>, repeatCount: nu
   }
 
   return hints.join('\n\n')
+}
+
+// ─── Attempt History & Failed Selector Tracking ────────────────────────────
+
+/**
+ * Build a compact history of previous action attempts for follow-up prompts.
+ * Helps the AI learn from its own failures within the current session.
+ */
+function buildAttemptHistory(
+  roundHistory: Array<{ round: number; actions: string; outcome: string }>,
+  maxEntries = 6
+): string {
+  if (roundHistory.length === 0) return ''
+  const entries = roundHistory.slice(-maxEntries)
+  const lines = entries.map(e => `  Round ${e.round}: ${e.actions} → ${e.outcome}`)
+  return `\n\n## PREVIOUS ATTEMPTS (do NOT repeat failed approaches)\n${lines.join('\n')}\n`
+}
+
+/**
+ * Build a list of failed selectors for the current URL.
+ * Tells the AI exactly which selectors have already been tried and failed.
+ */
+function buildFailedSelectorContext(
+  failedSelectors: Map<string, Array<{ selector: string; action: string; error: string }>>,
+  currentUrl: string
+): string {
+  const urlKey = currentUrl || 'unknown'
+  const failed = failedSelectors.get(urlKey)
+  if (!failed || failed.length === 0) return ''
+  const lines = failed.slice(-8).map(f => `  - "${f.selector}" (${f.action.toUpperCase()}) → ${f.error}`)
+  return `\nFAILED SELECTORS on this page (do NOT reuse):\n${lines.join('\n')}\nTry completely different selectors or approaches.\n`
+}
+
+/**
+ * Domain-aware error recovery — enhances generic hints with domain-specific
+ * recovery strategies from the DomainPersona system.
+ */
+export function buildDomainAwareRecovery(
+  errorTypes: Set<ErrorCategory>,
+  repeatCount: number,
+  suspiciousSuccess: boolean,
+  pageUrl?: string
+): string {
+  // Get generic hints first
+  const genericHints = buildErrorSpecificHints(errorTypes, repeatCount, suspiciousSuccess)
+
+  // Detect page type for domain-specific hints
+  if (!pageUrl) return genericHints
+
+  const classification = classifyPage(pageUrl, '', [], '')
+  const persona = getDomainPersona(classification.type)
+  if (!persona || persona.recoveryStrategies.length === 0) return genericHints
+
+  // Find relevant recovery strategies based on error type
+  const relevant: string[] = []
+  for (const strategy of persona.recoveryStrategies) {
+    const lower = strategy.toLowerCase()
+    if (errorTypes.has('not_found') && (lower.includes('not found') || lower.includes('fail') || lower.includes('try'))) {
+      relevant.push(strategy)
+    } else if (errorTypes.has('nothing_changed') && (lower.includes('nothing') || lower.includes('change') || lower.includes('click'))) {
+      relevant.push(strategy)
+    } else if (relevant.length < 2) {
+      // Include generic domain strategies if we don't have specific matches
+      relevant.push(strategy)
+    }
+  }
+
+  if (relevant.length === 0) return genericHints
+
+  return `${genericHints}\n\nDOMAIN-SPECIFIC RECOVERY (${classification.type}):\n${relevant.map(r => `- ${r}`).join('\n')}`
 }
 
 function sleep(ms: number): Promise<void> {

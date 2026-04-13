@@ -1,6 +1,7 @@
 /**
- * Inline compose assistant: offers AI-improved text for emails / contact forms.
- * User clicks Accept to replace draft text.
+ * Inline compose assistant: offers context-aware AI-improved text.
+ * Detects the environment (email, chat, search, social media, etc.)
+ * and adapts the rewrite style accordingly.
  */
 
 import { MSG } from '../shared/constants'
@@ -22,6 +23,130 @@ const COMPOSE_SELECTORS = [
   'input[name*="message" i]',
   'input[name*="body" i]',
 ].join(', ')
+
+// ─── Context detection ──────────────────────────────────────────────────────
+
+type ComposeContext =
+  | 'email'
+  | 'search'
+  | 'chat'
+  | 'social'
+  | 'code'
+  | 'form'
+  | 'document'
+  | 'comment'
+  | 'general'
+
+/** Detect the writing context from URL, page structure, and field attributes */
+function detectComposeContext(el: HTMLElement): { context: ComposeContext; detail: string } {
+  const url = location.href.toLowerCase()
+  const host = location.hostname.toLowerCase()
+  const title = document.title.toLowerCase()
+  const fieldName = (
+    (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement ? el.name + el.id + el.placeholder : '') +
+    (el.getAttribute('aria-label') ?? '')
+  ).toLowerCase()
+
+  // Email services
+  if (
+    host.includes('mail.google') || host.includes('outlook.live') || host.includes('outlook.office') ||
+    host.includes('mail.yahoo') || host.includes('protonmail') || host.includes('tutanota') ||
+    host.includes('zoho.com/mail') || host.includes('fastmail') || host.includes('icloud.com/mail') ||
+    host.includes('mail.') || title.includes('inbox') || title.includes('compose') ||
+    url.includes('/mail/') || url.includes('compose') ||
+    fieldName.includes('subject') || fieldName.includes('compose') ||
+    el.closest('[role="dialog"][aria-label*="mail" i], [role="dialog"][aria-label*="compose" i], .compose, .email-compose, [data-message-id]') !== null
+  ) {
+    const isSubject = fieldName.includes('subject')
+    return { context: 'email', detail: isSubject ? 'email subject line' : 'email body' }
+  }
+
+  // Search engines
+  if (
+    host.includes('google.com') && (url.includes('/search') || fieldName.includes('search')) ||
+    host.includes('bing.com') || host.includes('duckduckgo') || host.includes('yahoo.com/search') ||
+    host.includes('brave.com/search') || host.includes('ecosia') ||
+    el.closest('form[action*="search"], form[role="search"], [data-search]') !== null ||
+    fieldName.includes('search') || el.getAttribute('type') === 'search'
+  ) {
+    return { context: 'search', detail: 'search query' }
+  }
+
+  // Chat & messaging apps
+  if (
+    host.includes('web.whatsapp') || host.includes('web.telegram') || host.includes('discord') ||
+    host.includes('slack.com') || host.includes('teams.microsoft') || host.includes('messenger.com') ||
+    host.includes('signal') || host.includes('element.io') || host.includes('matrix.to') ||
+    host.includes('chat.') || title.includes('chat') ||
+    el.closest('[data-testid*="message" i], [aria-label*="message" i], .chat-input, .message-input, [contenteditable][data-placeholder*="message" i]') !== null ||
+    fieldName.includes('message') || fieldName.includes('chat')
+  ) {
+    return { context: 'chat', detail: 'instant message' }
+  }
+
+  // Social media
+  if (
+    host.includes('twitter.com') || host.includes('x.com') || host.includes('facebook.com') ||
+    host.includes('instagram.com') || host.includes('linkedin.com') || host.includes('reddit.com') ||
+    host.includes('threads.net') || host.includes('mastodon') || host.includes('bsky.') ||
+    host.includes('tiktok.com') ||
+    el.closest('[data-testid*="tweet" i], [aria-label*="post" i], [data-testid*="post" i]') !== null
+  ) {
+    const isComment = fieldName.includes('comment') || fieldName.includes('reply') ||
+      el.closest('[data-testid*="reply" i], [aria-label*="comment" i], [aria-label*="reply" i]') !== null
+    return { context: 'social', detail: isComment ? 'social media reply/comment' : 'social media post' }
+  }
+
+  // Code editors
+  if (
+    host.includes('github.com') || host.includes('gitlab.com') || host.includes('bitbucket.org') ||
+    host.includes('codepen.io') || host.includes('codesandbox.io') || host.includes('stackblitz.com') ||
+    host.includes('stackoverflow.com') ||
+    el.closest('.CodeMirror, .monaco-editor, [data-mode-id], .ace_editor') !== null
+  ) {
+    const isIssue = url.includes('/issues') || url.includes('/pull') || url.includes('/merge')
+    const isComment = fieldName.includes('comment') || el.closest('.comment, .review-comment, .timeline-comment') !== null
+    if (isIssue) return { context: 'code', detail: 'issue/PR description' }
+    if (isComment) return { context: 'comment', detail: 'code review comment' }
+    return { context: 'code', detail: 'technical writing' }
+  }
+
+  // Comments on articles/blogs/forums
+  if (
+    fieldName.includes('comment') || fieldName.includes('reply') ||
+    el.closest('.comment-form, .reply-form, #respond, [id*="comment"]') !== null ||
+    host.includes('disqus.com') || host.includes('medium.com') || host.includes('wordpress')
+  ) {
+    return { context: 'comment', detail: 'article/blog comment' }
+  }
+
+  // Document editors
+  if (
+    host.includes('docs.google') || host.includes('notion.so') || host.includes('coda.io') ||
+    host.includes('dropboxpaper') || host.includes('quip.com') || host.includes('confluence')
+  ) {
+    return { context: 'document', detail: 'document/note editing' }
+  }
+
+  // Contact/support forms
+  if (
+    el.closest('form') !== null && (
+      fieldName.includes('contact') || fieldName.includes('inquiry') || fieldName.includes('feedback') ||
+      fieldName.includes('support') || fieldName.includes('body') ||
+      document.querySelector('form h1, form h2, form h3')?.textContent?.toLowerCase().includes('contact') ||
+      title.includes('contact') || title.includes('support') || title.includes('feedback')
+    )
+  ) {
+    return { context: 'form', detail: 'contact/support form' }
+  }
+
+  // Generic text area (long text field)
+  if (el instanceof HTMLTextAreaElement || el.isContentEditable) {
+    return { context: 'general', detail: 'text composition' }
+  }
+
+  return { context: 'general', detail: 'text input' }
+}
 
 export function setupComposeAssistant(): void {
   document.addEventListener('input', onInput, true)
@@ -82,10 +207,19 @@ async function maybeRequestRewrite(el: HTMLElement): Promise<void> {
 
   lastRequestAt = Date.now()
 
+  // Detect writing context for the AI
+  const { context, detail } = detectComposeContext(el)
+
+  // Skip search queries — user is searching, not composing
+  if (context === 'search') return
+
   const res = await safeSendMessageAsync<{ ok?: boolean; improved?: string; error?: string }>({
     type: MSG.REQUEST_COMPOSE_REWRITE,
     text,
     url: location.href,
+    composeContext: context,
+    composeDetail: detail,
+    pageTitle: document.title.slice(0, 100),
   })
 
   if (!res?.ok || !res.improved || res.improved.trim() === text.trim()) {
@@ -93,10 +227,10 @@ async function maybeRequestRewrite(el: HTMLElement): Promise<void> {
     return
   }
 
-  showPanel(el, text, res.improved.trim())
+  showPanel(el, text, res.improved.trim(), detail)
 }
 
-function showPanel(field: HTMLElement, original: string, improved: string): void {
+function showPanel(field: HTMLElement, original: string, improved: string, contextLabel?: string): void {
   removePanel()
 
   const rect = field.getBoundingClientRect()
@@ -112,7 +246,7 @@ function showPanel(field: HTMLElement, original: string, improved: string): void
   `
 
   const title = document.createElement('div')
-  title.textContent = 'Suggested revision'
+  title.innerHTML = `Suggested revision${contextLabel ? ` <span style="font-weight:400;color:#8b8fa3;font-size:11px">· ${contextLabel}</span>` : ''}`
   title.style.cssText = 'font-weight:600;margin-bottom:8px;color:#a5b4fc;font-size:12px'
 
   const preview = document.createElement('div')

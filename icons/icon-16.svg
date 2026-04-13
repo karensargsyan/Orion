@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2d1b69"/>
+      <stop offset="100%" stop-color="#1a1035"/>
+    </linearGradient>
+    <linearGradient id="ring" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#a29bfe"/>
+      <stop offset="50%" stop-color="#6c5ce7"/>
+      <stop offset="100%" stop-color="#a29bfe"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#6c5ce7" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#6c5ce7" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Background circle -->
+  <circle cx="8" cy="8" r="8" fill="url(#bg)"/>
+
+  <!-- Subtle glow -->
+  <circle cx="8" cy="8" r="6.688000000000001" fill="url(#glow)"/>
+
+  <!-- Main ring -->
+  <circle cx="8" cy="8" r="6.08" fill="none" stroke="url(#ring)" stroke-width="1"/>
+
+  <!-- Orion's belt — three dots -->
+  <circle cx="5.872" cy="7.3919999999999995" r="0.64" fill="#a29bfe"/>
+  <circle cx="8" cy="7.071999999999999" r="0.64" fill="#a29bfe"/>
+  <circle cx="10.128" cy="7.3919999999999995" r="0.64" fill="#a29bfe"/>
+
+  <!-- Connecting lines (subtle) -->
+  <line x1="5.872" y1="7.3919999999999995" x2="8" y2="7.071999999999999" stroke="#a29bfe" stroke-opacity="0.4" stroke-width="0.5"/>
+  <line x1="8" y1="7.071999999999999" x2="10.128" y2="7.3919999999999995" stroke="#a29bfe" stroke-opacity="0.4" stroke-width="0.5"/>
+
+  <!-- Center star -->
+  <polygon points="8,7.632 8.407293505963452,8.504706494036547 9.28,8.911999999999999 8.407293505963452,9.31929350596345 8,10.192 7.592706494036548,9.31929350596345 6.72,8.911999999999999 7.592706494036548,8.504706494036547" fill="#ffffff" opacity="0.9"/>
+
+  <!-- Top accent star (small) -->
+  <circle cx="8" cy="4.048" r="0.44799999999999995" fill="#ffffff" opacity="0.7"/>
+
+  <!-- Bottom accent dots -->
+  <circle cx="6.176" cy="11.648" r="0.384" fill="#a29bfe" opacity="0.5"/>
+  <circle cx="9.824" cy="11.648" r="0.384" fill="#a29bfe" opacity="0.5"/>
+</svg>

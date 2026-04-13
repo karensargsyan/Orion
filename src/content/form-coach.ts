@@ -167,6 +167,38 @@ function injectStyles(): void {
       border-radius: 4px;
       margin-top: 4px;
     }
+
+    #${COACH_ID} .coach-header {
+      font-size: 12px;
+      color: #7c6ef5;
+      margin-bottom: 10px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid #2e3140;
+      text-align: center;
+      font-weight: 500;
+    }
+
+    #${COACH_ID} .coach-step-badge {
+      font-size: 10px;
+      background: rgba(124,110,245,0.15);
+      color: #7c6ef5;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-weight: 600;
+    }
+
+    #${COACH_ID} .coach-fill-all {
+      background: transparent;
+      color: #7c6ef5;
+      border: 1px solid rgba(124,110,245,0.3);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 11px;
+      cursor: pointer;
+      transition: background 0.15s;
+      white-space: nowrap;
+    }
+    #${COACH_ID} .coach-fill-all:hover { background: rgba(124,110,245,0.1); }
   `
   document.head.appendChild(style)
 }
@@ -249,7 +281,9 @@ function positionCard(el: HTMLElement, field: CoachField): void {
 
   card.innerHTML = `
     <div class="coach-card">
+      ${progress === 1 ? '<div class="coach-header">Orion will help fill this form field by field</div>' : ''}
       <div class="coach-field-name">
+        <span class="coach-step-badge">Step ${progress} of ${total}</span>
         ${escHtml(field.label || 'Field')}
         ${field.required ? '<span class="coach-required">Required</span>' : ''}
       </div>
@@ -258,11 +292,11 @@ function positionCard(el: HTMLElement, field: CoachField): void {
         <input class="coach-input" type="${inputType}" value="${escAttr(field.suggestedValue || '')}" placeholder="Enter value...">
       </div>
       <div class="coach-actions">
-        <button class="coach-accept">✓ Fill</button>
-        <button class="coach-skip">Skip →</button>
+        <button class="coach-accept">\u2713 Fill</button>
+        <button class="coach-skip">Skip \u2192</button>
+        ${(total - progress) >= 2 ? '<button class="coach-fill-all">Fill all remaining</button>' : ''}
       </div>
       <div class="coach-progress">
-        Field ${progress} of ${total}
         <div class="coach-progress-bar"><div class="coach-progress-fill" style="width:${pct}%"></div></div>
       </div>
     </div>
@@ -292,6 +326,12 @@ function positionCard(el: HTMLElement, field: CoachField): void {
 
   acceptBtn.addEventListener('click', () => acceptField(input.value))
   skipBtn.addEventListener('click', () => skipField())
+
+  // Fill all remaining — auto-fill from current index onward
+  const fillAllBtn = card.querySelector('.coach-fill-all') as HTMLButtonElement | null
+  if (fillAllBtn) {
+    fillAllBtn.addEventListener('click', () => fillAllRemaining())
+  }
 
   // Enter key on input = accept
   input.addEventListener('keydown', (e) => {
@@ -341,6 +381,39 @@ function skipField(): void {
   state.skippedCount++
   state.currentIndex++
   showCurrentField()
+}
+
+async function fillAllRemaining(): Promise<void> {
+  if (!state) return
+
+  // Remove the coach card UI
+  document.getElementById(COACH_ID)?.remove()
+
+  // Fill all remaining fields from current index onwards
+  for (let i = state.currentIndex; i < state.fields.length; i++) {
+    const field = state.fields[i]
+    const el = document.querySelector<HTMLElement>(field.selector)
+    if (el) el.classList.remove(HIGHLIGHT_CLASS)
+
+    if (el && field.suggestedValue) {
+      const inputType = (el as HTMLInputElement).type || el.tagName.toLowerCase()
+      await fillField(el, field.suggestedValue, inputType)
+      state.filledCount++
+
+      // Brief flash green
+      el.style.outline = '2px solid #22c55e'
+      el.style.outlineOffset = '2px'
+      setTimeout(() => { el.style.outline = ''; el.style.outlineOffset = '' }, 600)
+
+      // Small delay between fields for visual feedback
+      await new Promise(r => setTimeout(r, 150))
+    } else {
+      state.skippedCount++
+    }
+  }
+
+  state.currentIndex = state.fields.length
+  finish()
 }
 
 function finish(): void {

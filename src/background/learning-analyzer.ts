@@ -3,6 +3,7 @@ import { callAI } from './ai-client'
 import { addSessionMemory } from './memory-manager'
 import { recordDomainKnowledge, recordLesson } from './mempalace-learner'
 import { mempalaceEnabled } from './mempalace-client'
+import { localMemoryEnabled, recordLocalDomainKnowledge, recordLocalLesson } from './local-memory'
 import { STORE } from '../shared/constants'
 import { dbPut } from '../shared/idb'
 
@@ -136,6 +137,22 @@ async function storeAsMemory(
     if (playbookMatch?.[1]?.trim()) {
       await recordLesson(
         settings,
+        `Playbook for ${session.domain}: ${playbookMatch[1].trim().slice(0, 1500)}`,
+        { source: 'learning-mode', domain: session.domain }
+      ).catch(() => {})
+    }
+  }
+
+  // Local memory: store domain knowledge and lessons
+  if (localMemoryEnabled(settings)) {
+    await recordLocalDomainKnowledge(
+      session.domain,
+      `[Learning Mode] ${analysis.slice(0, 2000)}`
+    ).catch(() => {})
+
+    const playbookMatch = analysis.match(/REUSABLE PLAYBOOK[:\s]*([\s\S]*?)(?=\n\n|\n[A-Z]|$)/i)
+    if (playbookMatch?.[1]?.trim()) {
+      await recordLocalLesson(
         `Playbook for ${session.domain}: ${playbookMatch[1].trim().slice(0, 1500)}`,
         { source: 'learning-mode', domain: session.domain }
       ).catch(() => {})

@@ -14,6 +14,7 @@ export interface APICapabilities {
   supportsVision: boolean
   supportsEmbeddings: boolean
   supportsStreaming: boolean
+  supportsReasoning?: boolean
   availableModels: ModelInfo[]
   defaultModel: string
   serverType: string
@@ -52,6 +53,11 @@ export interface PageButton {
   selector: string
   text: string
   role: string
+  // Submit Guard metadata:
+  formAction?: string       // parent form's action URL
+  isSubmitType?: boolean     // type="submit" or button inside form with no explicit type
+  isPrimary?: boolean        // has primary/CTA styling (btn-primary, cta, etc.)
+  ariaLabel?: string         // aria-label text
 }
 
 export interface PageLink {
@@ -70,6 +76,8 @@ export interface PageSnapshot {
   links: PageLink[]
   headings: string[]
   metaDescription: string
+  language?: string
+  readyState?: string
   screenshot?: string
   pageText?: string
   /** Full body text (viewport + off-screen + typical DOM-hidden copy); capped at extraction time. */
@@ -103,6 +111,10 @@ export interface UserActionEvent {
   url: string
   timestamp: number
   tabId?: number
+  /** HTML input type (text, email, tel, password, search, etc.) */
+  inputType?: string
+  /** Human-readable field label from <label>, placeholder, or aria-label */
+  fieldLabel?: string
 }
 
 // ─── Memory ───────────────────────────────────────────────────────────────────
@@ -163,6 +175,26 @@ export interface VaultEntry {
   encryptedData: EncryptedBlob
   createdAt: number
   updatedAt: number
+  /** If true, this entry was auto-collected from user input and awaits approval */
+  autoCollected?: boolean
+  /** Domain where the data was collected from */
+  sourceDomain?: string
+}
+
+// ─── Local Memory ─────────────────────────────────────────────────────────────
+
+export type LocalMemoryCategory = 'error' | 'success' | 'lesson' | 'domain_knowledge' | 'session_push'
+
+export interface LocalMemoryEntry {
+  id?: number
+  category: LocalMemoryCategory
+  domain: string
+  content: string
+  source: string
+  keywords: string[]
+  timestamp: number
+  accessCount: number
+  lastAccessed: number
 }
 
 export interface EncryptedBlob {
@@ -215,6 +247,30 @@ export interface IdentityData {
 }
 
 export type VaultData = CredentialData | AddressData | CardData | ContactData | IdentityData | Record<string, string>
+
+// ─── Input Journal (Total Recall) ─────────────────────────────────────────────
+
+export type InputFieldType =
+  | 'firstName' | 'lastName' | 'fullName'
+  | 'email' | 'phone'
+  | 'username' | 'password'
+  | 'street' | 'city' | 'state' | 'zip' | 'country'
+  | 'cardNumber' | 'cardExpiry' | 'cardCvv' | 'cardholderName'
+  | 'birthday' | 'company'
+  | 'unknown'
+
+export interface InputJournalEntry {
+  id?: number
+  fieldType: InputFieldType
+  fieldLabel: string
+  value: string
+  encrypted: boolean
+  domain: string
+  url: string
+  inputType: string
+  timestamp: number
+  source: 'user_action' | 'form_fill' | 'chat_pii'
+}
 
 // ─── Chat ─────────────────────────────────────────────────────────────────────
 
@@ -304,6 +360,11 @@ export interface Settings {
   mempalaceBridgeEnabled?: boolean
   mempalaceBridgeUrl?: string
   mempalaceWing?: string
+  localMemoryEnabled?: boolean
+  localMemoryMaxEntries?: number
+  autoCollectEnabled?: boolean
+  autoCollectMinFields?: number
+  autoCollectExcludeDomains?: string[]
   calendarDetectionEnabled: boolean
   onboardingComplete: boolean
   learningModeActive: boolean
@@ -316,6 +377,30 @@ export interface Settings {
   contextWindowTokens: number
   /** Use simplified prompt + fewer actions for small local models */
   liteMode: boolean
+  /** Telegram bot integration */
+  telegramBotEnabled?: boolean
+  telegramBotToken?: string
+  telegramAllowedChatIds?: string[]
+  telegramPollIntervalSec?: number
+  /** Automation preference: 'ask' prompts per-task, 'auto' runs automatically, 'guided' highlights for user */
+  automationPreference?: 'ask' | 'auto' | 'guided'
+  /** Total Recall: capture all form inputs for later recall */
+  inputJournalEnabled?: boolean
+  /** Vault auto-lock after idle minutes (0 = never) */
+  vaultLockTimeoutMin?: number
+  /** UI theme preference */
+  theme?: 'system' | 'dark' | 'light'
+  /** Panel tab visibility — opt-in features */
+  historyEnabled: boolean
+  historyShowInPanel: boolean
+  insightsEnabled: boolean
+  insightsShowInPanel: boolean
+  vaultEnabled: boolean
+  vaultShowInPanel: boolean
+  learnEnabled: boolean
+  learnShowInPanel: boolean
+  tabGroupsEnabled: boolean
+  tabGroupsShowInPanel: boolean
 }
 
 // ─── Confirmation ─────────────────────────────────────────────────────────────
@@ -337,6 +422,20 @@ export interface FillAssignment {
   selector: string
   value: string
   inputType: string
+}
+
+// ─── Form Assist ──────────────────────────────────────────────────────────────
+
+export interface FormAssistField {
+  fieldId: string
+  selector: string
+  label: string
+  inputType: string
+  value: string
+  confidence: 'high' | 'medium' | 'low'
+  hint: string
+  options?: string[]
+  required: boolean
 }
 
 // ─── AI Action Commands ───────────────────────────────────────────────────────
@@ -484,9 +583,69 @@ export interface PageContent {
   text: string
 }
 
+// ─── Pinned Facts ─────────────────────────────────────────────────────────
+
+export interface PinnedFact {
+  id: string
+  sessionId: string
+  label: string
+  value: string
+  sourceUrl: string
+  pinnedAt: number
+}
+
+// ─── Watch Mode ──────────────────────────────────────────────────────────
+
+export interface WatchSession {
+  tabId: number
+  selector?: string
+  baseline: string
+  startedAt: number
+  intervalSec: number
+  alarmName: string
+  eventCount: number
+}
+
+// ─── Execution Modes (V3: FR-V3-8) ──────────────────────────────────────────
+export type ExecutionMode = 'ask_only' | 'suggest' | 'approve' | 'auto_low_risk'
+
+export type WatchChangeCategory = 'price_change' | 'status_change' | 'content_update' | 'element_state' | 'cosmetic'
+
+export interface WatchEvent {
+  tabId: number
+  selector?: string
+  oldValue: string
+  newValue: string
+  timestamp: number
+  category?: WatchChangeCategory
+  summary?: string
+  numericDelta?: number
+  isSignificant?: boolean
+}
+
+// ─── Saved Workflows (V3: FR-V3-1, Appendix C) ─────────────────────────────
+
+export type SavedWorkflowStepType = 'scan' | 'extract' | 'compare' | 'propose_action' | 'run_action' | 'watch' | 'export'
+
+export interface SavedWorkflowStep {
+  type: SavedWorkflowStepType
+  params: Record<string, unknown>
+  requiresConfirmation?: boolean
+}
+
+export interface SavedWorkflow {
+  id: string
+  name: string
+  description?: string
+  steps: SavedWorkflowStep[]
+  executionMode: ExecutionMode
+  createdAt: number
+  updatedAt: number
+}
+
 // ─── PII Detection ─────────────────────────────────────────────────────────
 
-export type PIIType = 'email' | 'phone' | 'card' | 'name' | 'address'
+export type PIIType = 'email' | 'phone' | 'card' | 'name' | 'address' | 'ssn' | 'api_key'
 
 export interface PIIMatch {
   type: PIIType

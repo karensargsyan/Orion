@@ -19,7 +19,17 @@ export async function initSettings(container: HTMLElement): Promise<void> {
 
   container.innerHTML = `
     <div class="settings-form">
-      <h2>Settings</h2>
+      <div class="settings-tabs-bar">
+        <button class="settings-tab-btn active" data-stab="ai">AI</button>
+        <button class="settings-tab-btn" data-stab="automation">Automation</button>
+        <button class="settings-tab-btn" data-stab="memory">Memory</button>
+        <button class="settings-tab-btn" data-stab="security">Security</button>
+        <button class="settings-tab-btn" data-stab="integrations">Integrations</button>
+        <button class="settings-tab-btn" data-stab="advanced">Advanced</button>
+      </div>
+      <div class="settings-search-row">
+        <input type="text" id="settings-search" placeholder="Search settings..." class="settings-search-input">
+      </div>
 
       ${needsSetup ? `
       <div class="setup-banner">
@@ -31,7 +41,7 @@ export async function initSettings(container: HTMLElement): Promise<void> {
       </div>
       ` : ''}
 
-      <section class="settings-section">
+      <section class="settings-section" data-settings-tab="ai">
         <h3>AI Provider</h3>
         <div class="form-group">
           <label>Active Provider</label>
@@ -44,46 +54,49 @@ export async function initSettings(container: HTMLElement): Promise<void> {
         </div>
       </section>
 
-      <section class="settings-section provider-section" id="section-local" ${provider === 'local' ? '' : 'style="display:none"'}>
+      <section class="settings-section provider-section" data-settings-tab="ai" id="section-local" ${provider === 'local' ? '' : 'style="display:none"'}>
         <h3>Local AI Server</h3>
         ${renderConnectionInfo(s)}
         <div class="form-group">
           <label>Server URL</label>
           <div class="input-row-inline">
-            <input type="text" id="lm-url" value="${esc(s.lmStudioUrl ?? '')}" placeholder="http://localhost:1234/v1">
-            <button id="btn-test-connection" class="btn-small">Test</button>
+            <input type="text" id="lm-url" value="${esc(normalizeLocalUrl(s.lmStudioUrl ?? ''))}" placeholder="http://localhost:1234">
+            <button id="btn-test-connection" class="btn-small btn-test-action">Test</button>
           </div>
+          <p class="hint-text url-format-hint">Enter your server's base URL <strong>without</strong> <code>/v1</code> &mdash; Orion adds it automatically.<br>Examples: <code>http://localhost:1234</code> &middot; <code>http://localhost:11434</code> (Ollama)</p>
           <p id="connection-status" class="hint-text"></p>
         </div>
         <div class="form-group">
-          <label>Auth Token</label>
-          <input type="password" id="auth-token" value="${esc(s.authToken ?? '')}" placeholder="Optional">
+          <label>Auth Token <span class="optional-tag">optional</span></label>
+          <input type="password" id="auth-token" value="${esc(s.authToken ?? '')}" placeholder="Leave empty if not required">
         </div>
         <div class="form-group">
           <label>Model</label>
           <div class="input-row-inline">
             <select id="lm-model">
               <option value="${esc(s.lmStudioModel ?? '')}">
-                ${s.lmStudioModel ? esc(s.lmStudioModel) : '- click Refresh -'}
+                ${s.lmStudioModel ? esc(s.lmStudioModel) : '- Test connection first -'}
               </option>
             </select>
             <button id="btn-refresh-models" class="btn-small">Refresh</button>
           </div>
         </div>
+        ${renderCapabilityBadges(s.apiCapabilities)}
         <div class="form-actions">
           <button id="btn-re-probe" class="btn-small">Re-detect Capabilities</button>
           <p id="probe-status" class="hint-text"></p>
         </div>
       </section>
 
-      <section class="settings-section provider-section" id="section-gemini" ${provider === 'gemini' ? '' : 'style="display:none"'}>
+      <section class="settings-section provider-section" data-settings-tab="ai" id="section-gemini" ${provider === 'gemini' ? '' : 'style="display:none"'}>
         <h3>Google Gemini</h3>
         <div class="form-group">
           <label>API Key</label>
           <div class="input-row-inline">
             <input type="password" id="gemini-api-key" value="${esc(s.geminiApiKey ?? '')}" placeholder="AIza...">
-            <button id="btn-test-gemini" class="btn-small">Test</button>
+            <button id="btn-test-gemini" class="btn-small btn-test-action">Test</button>
           </div>
+          <p class="hint-text">Get a key at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com</a></p>
           <p id="gemini-status" class="hint-text"></p>
         </div>
         <div class="form-group">
@@ -97,11 +110,16 @@ export async function initSettings(container: HTMLElement): Promise<void> {
         </div>
       </section>
 
-      <section class="settings-section provider-section" id="section-openai" ${provider === 'openai' ? '' : 'style="display:none"'}>
+      <section class="settings-section provider-section" data-settings-tab="ai" id="section-openai" ${provider === 'openai' ? '' : 'style="display:none"'}>
         <h3>OpenAI</h3>
         <div class="form-group">
           <label>API Key</label>
-          <input type="password" id="openai-api-key" value="${esc(s.openaiApiKey ?? '')}" placeholder="sk-...">
+          <div class="input-row-inline">
+            <input type="password" id="openai-api-key" value="${esc(s.openaiApiKey ?? '')}" placeholder="sk-...">
+            <button id="btn-test-openai" class="btn-small btn-test-action">Test</button>
+          </div>
+          <p class="hint-text">Get a key at <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">platform.openai.com</a></p>
+          <p id="openai-status" class="hint-text"></p>
         </div>
         <div class="form-group">
           <label>Model</label>
@@ -111,11 +129,16 @@ export async function initSettings(container: HTMLElement): Promise<void> {
         </div>
       </section>
 
-      <section class="settings-section provider-section" id="section-anthropic" ${provider === 'anthropic' ? '' : 'style="display:none"'}>
+      <section class="settings-section provider-section" data-settings-tab="ai" id="section-anthropic" ${provider === 'anthropic' ? '' : 'style="display:none"'}>
         <h3>Anthropic Claude</h3>
         <div class="form-group">
           <label>API Key</label>
-          <input type="password" id="anthropic-api-key" value="${esc(s.anthropicApiKey ?? '')}" placeholder="sk-ant-...">
+          <div class="input-row-inline">
+            <input type="password" id="anthropic-api-key" value="${esc(s.anthropicApiKey ?? '')}" placeholder="sk-ant-...">
+            <button id="btn-test-anthropic" class="btn-small btn-test-action">Test</button>
+          </div>
+          <p class="hint-text">Get a key at <a href="https://console.anthropic.com/" target="_blank" rel="noopener">console.anthropic.com</a></p>
+          <p id="anthropic-status" class="hint-text"></p>
         </div>
         <div class="form-group">
           <label>Model</label>
@@ -125,7 +148,7 @@ export async function initSettings(container: HTMLElement): Promise<void> {
         </div>
       </section>
 
-      <section class="settings-section">
+      <section class="settings-section" data-settings-tab="ai">
         <h3>General</h3>
         <div class="form-group">
           <label>Rate Limit (requests/minute)</label>
@@ -147,52 +170,99 @@ export async function initSettings(container: HTMLElement): Promise<void> {
         </div>
       </section>
 
-      <section class="settings-section">
-        <h3>Monitoring</h3>
-        <div class="form-group form-group-toggle">
-          <label>Background monitoring</label>
-          <input type="checkbox" id="monitoring-enabled" ${s.monitoringEnabled ? 'checked' : ''}>
+      <section class="settings-section" data-settings-tab="automation">
+
+        <div class="settings-card">
+          <h3>Automation Control</h3>
+          <div class="form-group">
+            <label>Execution mode</label>
+            <select id="automation-preference">
+              <option value="ask" ${(s.automationPreference ?? 'ask') === 'ask' ? 'selected' : ''}>Ask each time</option>
+              <option value="auto" ${s.automationPreference === 'auto' ? 'selected' : ''}>Always auto (click for me)</option>
+              <option value="guided" ${s.automationPreference === 'guided' ? 'selected' : ''}>Always guided (highlight for me)</option>
+            </select>
+          </div>
+          <p class="hint-text" style="margin-top:-4px">
+            <strong>Ask:</strong> prompts you to choose Guided or Auto for each task.<br>
+            <strong>Auto:</strong> AI clicks elements automatically — fastest, hands-free.<br>
+            <strong>Guided:</strong> AI highlights what to click and you do it yourself — safest.
+          </p>
         </div>
-        <div class="form-group form-group-toggle">
-          <label>Vision mode (screenshots to AI)</label>
-          <input type="checkbox" id="vision-enabled" ${s.visionEnabled ? 'checked' : ''}>
+
+        <div class="settings-card">
+          <h3>Page Monitoring</h3>
+          <div class="form-group form-group-toggle">
+            <div>
+              <label>Background monitoring</label>
+              <p class="hint-text-inline">Periodically captures page state so the AI stays aware of changes.</p>
+            </div>
+            <input type="checkbox" id="monitoring-enabled" ${s.monitoringEnabled ? 'checked' : ''}>
+          </div>
+          <div class="form-group form-group-toggle">
+            <div>
+              <label>Vision mode (screenshots to AI)</label>
+              <p class="hint-text-inline">Sends page screenshots to the AI for visual understanding. Requires a vision-capable model.</p>
+            </div>
+            <input type="checkbox" id="vision-enabled" ${s.visionEnabled ? 'checked' : ''}>
+          </div>
+          <div class="form-group settings-dependent" id="screenshot-interval-group" style="${s.visionEnabled ? '' : 'display:none'}">
+            <label>Screenshot interval (seconds)</label>
+            <input type="number" id="screenshot-interval" value="${s.screenshotIntervalSec ?? 10}" min="5" max="120">
+            <p class="hint-text-inline">How often to capture a new screenshot. Lower = more aware but uses more tokens.</p>
+          </div>
         </div>
-        <div class="form-group">
-          <label>Screenshot interval (seconds)</label>
-          <input type="number" id="screenshot-interval" value="${s.screenshotIntervalSec ?? 10}" min="5" max="120">
+
+        <div class="settings-card">
+          <h3>Writing Assistance</h3>
+          <div class="form-group form-group-toggle">
+            <div>
+              <label>Compose assistant</label>
+              <p class="hint-text-inline">Shows an inline AI helper on text areas for real-time writing suggestions while you type.</p>
+            </div>
+            <input type="checkbox" id="compose-assistant-enabled" ${s.composeAssistantEnabled !== false ? 'checked' : ''}>
+          </div>
+          <div class="form-group form-group-toggle">
+            <div>
+              <label>Text rewrite suggestions</label>
+              <p class="hint-text-inline">Right-click selected text to rewrite it in different tones: professional, casual, concise, etc.</p>
+            </div>
+            <input type="checkbox" id="text-rewrite-enabled" ${s.textRewriteEnabled ? 'checked' : ''}>
+          </div>
         </div>
-        <div class="form-group form-group-toggle">
-          <label>Text rewrite suggestions</label>
-          <input type="checkbox" id="text-rewrite-enabled" ${s.textRewriteEnabled ? 'checked' : ''}>
+
+        <div class="settings-card">
+          <h3>Intelligence</h3>
+          <div class="form-group form-group-toggle">
+            <div>
+              <label>AI action learning</label>
+              <p class="hint-text-inline">Learns from successful actions on each domain to improve accuracy over time. Analysis stays local.</p>
+            </div>
+            <input type="checkbox" id="ai-action-learning-enabled" ${s.aiActionLearningEnabled !== false ? 'checked' : ''}>
+          </div>
+          <div class="form-group settings-dependent" id="learning-interval-group" style="${s.aiActionLearningEnabled !== false ? '' : 'display:none'}">
+            <label>Learning snapshot interval (seconds)</label>
+            <input type="number" id="learning-interval" value="${s.learningSnapshotIntervalSec ?? 3}" min="1" max="30">
+            <p class="hint-text-inline">How often to capture DOM snapshots during learning. Lower = more data but higher CPU.</p>
+          </div>
+          <div class="form-group form-group-toggle">
+            <div>
+              <label>Calendar detection</label>
+              <p class="hint-text-inline">Automatically detects events, dates, and appointments on pages. Offers to create calendar entries.</p>
+            </div>
+            <input type="checkbox" id="calendar-detection" ${s.calendarDetectionEnabled ? 'checked' : ''}>
+          </div>
+          <div class="form-group form-group-toggle">
+            <div>
+              <label>Input journal (Total Recall)</label>
+              <p class="hint-text-inline">Records all form inputs for later recall. Helps the AI remember what you've typed across sessions.</p>
+            </div>
+            <input type="checkbox" id="input-journal-enabled" ${s.inputJournalEnabled ? 'checked' : ''}>
+          </div>
         </div>
-        <div class="form-group form-group-toggle">
-          <label>Tab safety border (heuristic threat detection)</label>
-          <input type="checkbox" id="safety-border-enabled" ${s.safetyBorderEnabled ? 'checked' : ''}>
-        </div>
-        <p class="hint-text" style="margin-top:-8px;margin-bottom:10px">
-          Scores each page for phishing/scam signals using local heuristics (suspicious TLDs, fake login forms, urgency phrases).
-          Shows a green/orange/red border around the browser tab. No data is sent externally — analysis is fully local.
-          Disabled by default; may produce false positives on legitimate sites.
-        </p>
-        <div class="form-group form-group-toggle">
-          <label>Compose assistant (inline revised text while typing)</label>
-          <input type="checkbox" id="compose-assistant-enabled" ${s.composeAssistantEnabled !== false ? 'checked' : ''}>
-        </div>
-        <div class="form-group form-group-toggle">
-          <label>AI learning from your actions (periodic local model analysis)</label>
-          <input type="checkbox" id="ai-action-learning-enabled" ${s.aiActionLearningEnabled !== false ? 'checked' : ''}>
-        </div>
-        <div class="form-group">
-          <label>Learning mode snapshot interval (seconds)</label>
-          <input type="number" id="learning-interval" value="${s.learningSnapshotIntervalSec ?? 3}" min="1" max="30">
-        </div>
-        <div class="form-group form-group-toggle">
-          <label>Calendar detection</label>
-          <input type="checkbox" id="calendar-detection" ${s.calendarDetectionEnabled ? 'checked' : ''}>
-        </div>
+
       </section>
 
-      <section class="settings-section">
+      <section class="settings-section" data-settings-tab="integrations">
         <h3>Speech Recognition</h3>
         <p class="hint-text" style="margin-bottom:10px">
           Used during Supervised Learning. <strong>Web Speech</strong> calls Google’s online recognizer (often blocked by Brave Shields, VPNs, or firewalls—you’ll see a “network” STT error).
@@ -243,7 +313,7 @@ export async function initSettings(container: HTMLElement): Promise<void> {
         </div>
       </section>
 
-      <section class="settings-section">
+      <section class="settings-section" data-settings-tab="memory">
         <h3>MemPalace</h3>
         <p class="hint-text" style="margin-bottom:10px">
           Long-term memory runs in Python on your machine (<a href="https://github.com/milla-jovovich/mempalace" target="_blank" rel="noopener">MemPalace</a>).
@@ -268,8 +338,28 @@ export async function initSettings(container: HTMLElement): Promise<void> {
         <p id="mempalace-status" class="hint-text"></p>
       </section>
 
-      <section class="settings-section">
+      <section class="settings-section" data-settings-tab="security">
         <h3>Security</h3>
+
+        <div class="form-group">
+          <label style="font-weight:600;margin-bottom:6px">Extension Permissions</label>
+          <div style="font-size:11px;color:var(--text-dim);line-height:1.6;background:var(--bg-surface);padding:10px 12px;border-radius:var(--radius);border:1px solid var(--border)">
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px"><span style="color:var(--color-success)">&#x2713;</span> <strong>Current tab</strong> — read page content and interact with elements</div>
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px"><span style="color:var(--color-success)">&#x2713;</span> <strong>Page text &amp; forms</strong> — extract text, detect forms, read tables</div>
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px"><span style="color:var(--color-success)">&#x2713;</span> <strong>Screenshots</strong> — capture viewport for visual analysis</div>
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px"><span style="color:var(--color-success)">&#x2713;</span> <strong>Tab management</strong> — open, close, and group tabs</div>
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px"><span style="color:var(--color-success)">&#x2713;</span> <strong>Storage</strong> — save settings, vault, memory locally</div>
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px"><span style="color:var(--color-success)">&#x2713;</span> <strong>Input controls</strong> — click, type, and fill form fields</div>
+            <div style="display:flex;align-items:center;gap:6px"><span style="color:var(--color-success)">&#x2713;</span> <strong>Clipboard</strong> — copy extracted data when requested</div>
+          </div>
+          <small style="color:var(--text-dim);font-size:10px;margin-top:4px;display:block">All data stays local unless you configure a cloud AI provider.</small>
+        </div>
+
+        <div class="form-group">
+          <label>Vault auto-lock timeout (minutes)</label>
+          <input type="number" id="vault-lock-timeout" value="${s.vaultLockTimeoutMin ?? 15}" min="1" max="120">
+          <small style="color:var(--text-dim);font-size:11px">Lock the vault after this many minutes of inactivity. Default: 15 min.</small>
+        </div>
         ${s.hasPinSetup ? `
           <div class="form-group">
             <label>Change PIN</label>
@@ -282,13 +372,213 @@ export async function initSettings(container: HTMLElement): Promise<void> {
         ` : '<p class="hint-text">No PIN set. Go to Vault to set up encryption.</p>'}
       </section>
 
-      <section class="settings-section">
+      <section class="settings-section" data-settings-tab="memory">
+        <h3>Local Memory</h3>
+        <p class="hint-text" style="margin-bottom:10px">
+          Local memory stores lessons, errors, successes and domain knowledge in the browser (IndexedDB).
+          Always available, no external server needed. Replaces MemPalace for most use cases.
+        </p>
+        <div class="form-group form-group-toggle">
+          <label>Enable local memory</label>
+          <input type="checkbox" id="local-memory-enabled" ${s.localMemoryEnabled !== false ? 'checked' : ''}>
+        </div>
+        <div class="form-group">
+          <label>Max entries</label>
+          <input type="number" id="local-memory-max" value="${s.localMemoryMaxEntries ?? 500}" min="50" max="5000" step="50">
+          <small style="color:var(--text-dim);font-size:11px">Oldest/least-used entries are pruned automatically when limit is reached.</small>
+        </div>
+        <div class="form-row">
+          <button id="btn-local-memory-stats" class="btn-small">Show Stats</button>
+          <button id="btn-clear-local-memory" class="btn-small btn-danger">Clear Local Memory</button>
+        </div>
+        <p id="local-memory-status" class="hint-text"></p>
+      </section>
+
+      <section class="settings-section" data-settings-tab="memory">
+        <h3>Smart Auto-Collection</h3>
+        <p class="hint-text" style="margin-bottom:10px">
+          Monitors form inputs and extracts reusable personal data (name, email, phone, address, etc.)
+          using AI analysis. Extracted data is stored encrypted in the Vault with an "Auto-collected" badge for your review.
+        </p>
+        <div class="form-group form-group-toggle">
+          <label>Enable auto-collection</label>
+          <input type="checkbox" id="auto-collect-enabled" ${s.autoCollectEnabled !== false ? 'checked' : ''}>
+        </div>
+        <div class="form-group">
+          <label>Minimum fields before extraction</label>
+          <input type="number" id="auto-collect-min-fields" value="${s.autoCollectMinFields ?? 3}" min="2" max="10">
+          <small style="color:var(--text-dim);font-size:11px">Only extract when user fills this many fields on a page.</small>
+        </div>
+        <div class="form-group">
+          <label>Exclude domains (comma-separated)</label>
+          <input type="text" id="auto-collect-exclude" value="${esc((s.autoCollectExcludeDomains ?? []).join(', '))}" placeholder="e.g. google.com, facebook.com">
+          <small style="color:var(--text-dim);font-size:11px">Domains where auto-collection is disabled.</small>
+        </div>
+      </section>
+
+      <section class="settings-section" data-settings-tab="memory">
+        <h3>Total Recall</h3>
+        <p class="hint-text" style="margin-bottom:10px">
+          Records every form input (emails, usernames, passwords, addresses, etc.) so you can recall them later
+          via the Memory tab AI search. Sensitive fields (passwords, card numbers) are stored encrypted.
+        </p>
+        <div class="form-group form-group-toggle">
+          <label>Enable Total Recall</label>
+          <input type="checkbox" id="input-journal-enabled" ${s.inputJournalEnabled !== false ? 'checked' : ''}>
+        </div>
+      </section>
+
+      <section class="settings-section" data-settings-tab="advanced">
         <h3>Data</h3>
         <div class="form-row">
           <button id="btn-export-memory" class="btn-small">Export Memory</button>
           <button id="btn-clear-session-mem" class="btn-small btn-danger">Clear Session</button>
           <button id="btn-clear-all-mem" class="btn-small btn-danger">Clear All</button>
         </div>
+        <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
+          <label style="font-size:12px;color:var(--text-bright);margin-bottom:8px;display:block">Full Backup &amp; Restore</label>
+          <p class="hint-text" style="margin-bottom:8px">Exports all 14 data stores (vault excluded for security). Use to migrate or safeguard your data.</p>
+          <div class="form-row">
+            <button id="btn-full-backup" class="btn-small">Full Backup</button>
+            <button id="btn-full-restore" class="btn-small">Restore from File</button>
+            <input type="file" id="restore-file-input" accept=".json,.orion-backup" style="display:none">
+          </div>
+          <p id="backup-status" class="hint-text"></p>
+        </div>
+      </section>
+
+      <section class="settings-section" data-settings-tab="integrations">
+        <h3>Telegram Bot</h3>
+        <p class="hint-text" style="margin-bottom:10px">
+          Connect Orion to a Telegram bot so you can chat with the AI from your phone.
+          Create a bot via <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a> and paste the token below.
+        </p>
+        <div class="form-group form-group-toggle">
+          <label>Enable Telegram bot</label>
+          <input type="checkbox" id="telegram-enabled" ${s.telegramBotEnabled ? 'checked' : ''}>
+        </div>
+        <div class="form-group">
+          <label>Bot Token</label>
+          <div class="input-row-inline">
+            <input type="password" id="telegram-token" value="${esc(s.telegramBotToken ?? '')}" placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11">
+            <button id="btn-test-telegram" class="btn-small btn-test-action">Test</button>
+          </div>
+          <p id="telegram-status" class="hint-text"></p>
+        </div>
+        <div class="form-group">
+          <label>Poll interval (seconds)</label>
+          <input type="number" id="telegram-poll-interval" value="${s.telegramPollIntervalSec ?? 5}" min="2" max="60">
+          <small style="color:var(--text-dim);font-size:11px">How often to check for new Telegram messages.</small>
+        </div>
+        <div class="form-group">
+          <label>Allowed Chat IDs <span class="optional-tag">optional</span></label>
+          <input type="text" id="telegram-chat-ids" value="${esc((s.telegramAllowedChatIds ?? []).join(', '))}" placeholder="Leave empty to allow all chats">
+          <small style="color:var(--text-dim);font-size:11px">Comma-separated chat IDs. Empty = any chat can use the bot. Send /start to your bot to find your chat ID.</small>
+        </div>
+      </section>
+
+      <section class="settings-section" data-settings-tab="advanced">
+        <h3>Panel Tabs</h3>
+        <p class="hint-text" style="margin-bottom:10px">
+          Control which features are active and visible in the sidepanel. Disabling a feature stops all data collection.
+        </p>
+
+        <div class="tab-control-group">
+          <div class="tab-control-row">
+            <span class="feature-name">History</span>
+            <label class="toggle-label">
+              <input type="checkbox" id="history-enabled" ${s.historyEnabled ? 'checked' : ''}>
+              <span>Enable</span>
+            </label>
+            <label class="toggle-label" data-depends="history">
+              <input type="checkbox" id="history-show-in-panel" ${s.historyShowInPanel ? 'checked' : ''} ${!s.historyEnabled ? 'disabled' : ''}>
+              <span>Show in panel</span>
+            </label>
+          </div>
+
+          <div class="tab-control-row">
+            <span class="feature-name">Insights</span>
+            <label class="toggle-label">
+              <input type="checkbox" id="insights-enabled" ${s.insightsEnabled ? 'checked' : ''}>
+              <span>Enable</span>
+            </label>
+            <label class="toggle-label" data-depends="insights">
+              <input type="checkbox" id="insights-show-in-panel" ${s.insightsShowInPanel ? 'checked' : ''} ${!s.insightsEnabled ? 'disabled' : ''}>
+              <span>Show in panel</span>
+            </label>
+          </div>
+
+          <div class="tab-control-row">
+            <span class="feature-name">Vault</span>
+            <label class="toggle-label">
+              <input type="checkbox" id="vault-enabled" ${s.vaultEnabled ? 'checked' : ''}>
+              <span>Enable</span>
+            </label>
+            <label class="toggle-label" data-depends="vault">
+              <input type="checkbox" id="vault-show-in-panel" ${s.vaultShowInPanel ? 'checked' : ''} ${!s.vaultEnabled ? 'disabled' : ''}>
+              <span>Show in panel</span>
+            </label>
+          </div>
+
+          <div class="tab-control-row">
+            <span class="feature-name">Learn</span>
+            <label class="toggle-label">
+              <input type="checkbox" id="learn-enabled" ${s.learnEnabled ? 'checked' : ''}>
+              <span>Enable</span>
+            </label>
+            <label class="toggle-label" data-depends="learn">
+              <input type="checkbox" id="learn-show-in-panel" ${s.learnShowInPanel ? 'checked' : ''} ${!s.learnEnabled ? 'disabled' : ''}>
+              <span>Show in panel</span>
+            </label>
+          </div>
+
+          <div class="tab-control-row">
+            <span class="feature-name">Tab Groups</span>
+            <label class="toggle-label">
+              <input type="checkbox" id="tab-groups-enabled" ${s.tabGroupsEnabled !== false ? 'checked' : ''}>
+              <span>Enable</span>
+            </label>
+            <label class="toggle-label" data-depends="tab-groups">
+              <input type="checkbox" id="tab-groups-show-in-panel" ${s.tabGroupsShowInPanel !== false ? 'checked' : ''} ${s.tabGroupsEnabled === false ? 'disabled' : ''}>
+              <span>Show in panel</span>
+            </label>
+          </div>
+        </div>
+
+        <small style="color:var(--text-dim);font-size:11px;display:block;margin-top:8px">
+          Chat, Memory, and Settings tabs are always visible. Disabling "Enable" stops all background data collection for that feature.
+        </small>
+      </section>
+
+      <section class="settings-section" data-settings-tab="advanced">
+        <h3>Appearance</h3>
+        <div class="form-group">
+          <label>Theme</label>
+          <select id="theme-select">
+            <option value="dark" ${(s.theme ?? 'dark') === 'dark' ? 'selected' : ''}>Dark</option>
+            <option value="light" ${s.theme === 'light' ? 'selected' : ''}>Light</option>
+            <option value="system" ${s.theme === 'system' ? 'selected' : ''}>System (auto)</option>
+          </select>
+          <small style="color:var(--text-dim);font-size:11px">System follows your OS appearance preference.</small>
+        </div>
+      </section>
+
+      <section class="settings-section" data-settings-tab="advanced">
+        <h3>Debug</h3>
+        <p class="hint-text" style="margin-bottom:8px">Recent errors and API call log for troubleshooting.</p>
+        <div class="form-row" style="margin-bottom:8px">
+          <button id="btn-show-debug" class="btn-small">Show Recent Errors</button>
+          <button id="btn-copy-debug" class="btn-small">Copy Debug Info</button>
+          <button id="btn-clear-errors" class="btn-small btn-danger">Clear</button>
+        </div>
+        <div id="debug-output" style="display:none;max-height:200px;overflow-y:auto;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px;font-size:11px;font-family:var(--font-mono);white-space:pre-wrap;color:var(--text-dim)"></div>
+      </section>
+
+      <section class="settings-section" data-settings-tab="advanced">
+        <h3>About</h3>
+        <p class="hint-text">
+          <a href="#" id="btn-privacy-policy" style="color:var(--accent)">Privacy Policy</a>
+        </p>
       </section>
 
       <div class="settings-footer">
@@ -303,6 +593,8 @@ export async function initSettings(container: HTMLElement): Promise<void> {
   wireSTTProviderToggle(container)
   wireMicrophoneSettingsPanel(container)
   wireBraveWebSpeechTools(container)
+  wireSettingsTabs(container)
+  wireSettingsSearch(container)
   void showBraveSpeechUi(container)
   void refreshMicPermissionStatusLine(container)
 }
@@ -387,9 +679,13 @@ async function refreshMicPermissionStatusLine(container: HTMLElement): Promise<v
   }
 }
 
+function normalizeLocalUrl(url: string): string {
+  return url.replace(/\/v1\/?$/, '').replace(/\/+$/, '')
+}
+
 function renderConnectionInfo(s: Settings): string {
   const caps = s.apiCapabilities
-  if (!caps) return '<div id="connection-info-bar" class="connection-info"></div>'
+  if (!caps) return '<div id="connection-info-bar" class="connection-info disconnected-bar"><span class="connection-badge disconnected">Not connected</span><span class="hint-text" id="provider-status">Click Test to check your server</span></div>'
   return `
     <div id="connection-info-bar" class="connection-info">
       <span class="connection-badge connected">Connected</span>
@@ -398,32 +694,49 @@ function renderConnectionInfo(s: Settings): string {
   `
 }
 
+function renderCapabilityBadges(caps?: APICapabilities): string {
+  if (!caps || caps.availableModels.length === 0) return '<div id="capability-badges" class="capability-badges"></div>'
+  const badges: string[] = []
+  if (caps.supportsVision) badges.push('<span class="cap-badge cap-yes" title="Model supports image input">&#x1f441; Vision</span>')
+  else badges.push('<span class="cap-badge cap-no" title="Model does not support images">Vision</span>')
+  if (caps.supportsReasoning) badges.push('<span class="cap-badge cap-yes" title="Model supports reasoning/thinking">&#x1f9e0; Reasoning</span>')
+  if ((caps as unknown as Record<string, unknown>).contextWindowTokens) {
+    const ctx = (caps as unknown as Record<string, number>).contextWindowTokens
+    const label = ctx >= 1024 ? `${Math.round(ctx / 1024)}K` : `${ctx}`
+    badges.push(`<span class="cap-badge cap-info" title="Context window">${label} ctx</span>`)
+  }
+  if (badges.length === 0) return '<div id="capability-badges" class="capability-badges"></div>'
+  return `<div id="capability-badges" class="capability-badges">${badges.join('')}</div>`
+}
+
+/** Render model <option> elements, always including the saved selection even if not in the hardcoded list. */
+function renderModelOptions(models: string[], selected?: string): string {
+  // If saved model isn't in the list, prepend it so it stays selected
+  const list = selected && !models.includes(selected)
+    ? [selected, ...models]
+    : models
+  return list.map(m =>
+    `<option value="${m}" ${m === selected ? 'selected' : ''}>${m}</option>`
+  ).join('')
+}
+
 function renderGeminiModelOptions(selected?: string): string {
-  const models = [
+  return renderModelOptions([
     'gemini-2.5-flash-preview-04-17',
     'gemini-2.5-pro-preview-03-25',
     'gemini-2.0-flash',
     'gemini-2.0-flash-lite',
     'gemini-1.5-pro',
     'gemini-1.5-flash',
-  ]
-  return models.map(m =>
-    `<option value="${m}" ${m === selected ? 'selected' : ''}>${m}</option>`
-  ).join('')
+  ], selected)
 }
 
 function renderOpenAIModelOptions(selected?: string): string {
-  const models = ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'o3-mini', 'o4-mini']
-  return models.map(m =>
-    `<option value="${m}" ${m === selected ? 'selected' : ''}>${m}</option>`
-  ).join('')
+  return renderModelOptions(['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'o3-mini', 'o4-mini'], selected)
 }
 
 function renderAnthropicModelOptions(selected?: string): string {
-  const models = ['claude-sonnet-4-20250514', 'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229']
-  return models.map(m =>
-    `<option value="${m}" ${m === selected ? 'selected' : ''}>${m}</option>`
-  ).join('')
+  return renderModelOptions(['claude-sonnet-4-20250514', 'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229'], selected)
 }
 
 function wireProviderToggle(container: HTMLElement): void {
@@ -449,38 +762,63 @@ function wireSTTProviderToggle(container: HTMLElement): void {
 
 function wireSettingsEvents(container: HTMLElement, s: Settings): void {
   container.querySelector('#btn-test-connection')?.addEventListener('click', async () => {
-    const url = (container.querySelector('#lm-url') as HTMLInputElement).value.trim()
+    const rawUrl = (container.querySelector('#lm-url') as HTMLInputElement).value.trim()
+    const url = normalizeLocalUrl(rawUrl)
+    // Auto-fix the input field if user entered /v1
+    if (rawUrl !== url) (container.querySelector('#lm-url') as HTMLInputElement).value = url
     const token = (container.querySelector('#auth-token') as HTMLInputElement).value.trim()
     const statusEl = container.querySelector('#connection-status') as HTMLElement
+    const testBtn = container.querySelector('#btn-test-connection') as HTMLButtonElement
     statusEl.textContent = 'Testing...'
-    const res = await chrome.runtime.sendMessage({ type: MSG.MODELS_LIST, url, authToken: token }) as { ok: boolean; models: string[] }
-    if (res.models?.length > 0) {
-      statusEl.textContent = `Connected! ${res.models.length} model(s) available.`
-      statusEl.style.color = 'var(--color-success)'
-      // Also probe capabilities and update the status bar
-      const probe = await chrome.runtime.sendMessage({ type: MSG.PROBE_ENDPOINT, url, authToken: token || undefined }) as { ok: boolean; capabilities?: APICapabilities }
-      if (probe.ok && probe.capabilities) {
-        await chrome.runtime.sendMessage({ type: MSG.SETTINGS_SET, partial: { apiCapabilities: probe.capabilities } })
-        const probeEl = container.querySelector('#probe-status') as HTMLElement
-        if (probeEl) {
-          probeEl.textContent = `Detected: ${probe.capabilities.serverType}, ${probe.capabilities.availableModels.length} models, format: ${probe.capabilities.apiFormat}`
-          probeEl.style.color = 'var(--color-success)'
+    statusEl.style.color = ''
+    testBtn.disabled = true
+    testBtn.textContent = 'Testing...'
+    try {
+      const res = await chrome.runtime.sendMessage({ type: MSG.MODELS_LIST, url, authToken: token }) as { ok: boolean; models: string[] }
+      if (res.models?.length > 0) {
+        statusEl.textContent = `Connected! ${res.models.length} model(s) available.`
+        statusEl.style.color = 'var(--color-success)'
+        // Auto-populate model dropdown
+        const select = container.querySelector('#lm-model') as HTMLSelectElement
+        select.innerHTML = res.models.map(m =>
+          `<option value="${esc(m)}" ${m === s.lmStudioModel ? 'selected' : ''}>${esc(m)}</option>`
+        ).join('')
+        // Also probe capabilities and update the status bar
+        const probe = await chrome.runtime.sendMessage({ type: MSG.PROBE_ENDPOINT, url, authToken: token || undefined }) as { ok: boolean; capabilities?: APICapabilities }
+        if (probe.ok && probe.capabilities) {
+          await chrome.runtime.sendMessage({ type: MSG.SETTINGS_SET, partial: { apiCapabilities: probe.capabilities } })
+          const probeEl = container.querySelector('#probe-status') as HTMLElement
+          if (probeEl) {
+            probeEl.textContent = `Detected: ${probe.capabilities.serverType}, ${probe.capabilities.availableModels.length} models, format: ${probe.capabilities.apiFormat}`
+            probeEl.style.color = 'var(--color-success)'
+          }
+          // Update the header status
+          const infoBar = container.querySelector('#connection-info-bar') as HTMLElement
+          if (infoBar) {
+            infoBar.className = 'connection-info'
+            infoBar.innerHTML = `<span class="connection-badge connected">Connected</span><span class="hint-text" id="provider-status">${esc(probe.capabilities.serverType)} · ${res.models.length} model(s) · ${esc(probe.capabilities.apiFormat)}</span>`
+          }
+          // Update capability badges
+          const badgesEl = container.querySelector('#capability-badges') as HTMLElement
+          if (badgesEl) {
+            badgesEl.outerHTML = renderCapabilityBadges(probe.capabilities)
+          }
         }
-        // Update the header status
-        const headerStatus = container.querySelector('#provider-status') as HTMLElement
-        if (headerStatus) {
-          headerStatus.textContent = `${probe.capabilities.serverType} · ${res.models.length} model(s) · ${probe.capabilities.apiFormat}`
-          headerStatus.style.color = 'var(--color-success)'
-        }
+      } else {
+        statusEl.innerHTML = 'Could not connect. Make sure your server is running and the URL is correct.<br><small>Expected: <code>http://localhost:1234</code> (no <code>/v1</code> suffix)</small>'
+        statusEl.style.color = 'var(--color-error)'
       }
-    } else {
-      statusEl.textContent = 'Could not connect. Check URL and server.'
+    } catch (e) {
+      statusEl.textContent = `Connection failed: ${e instanceof Error ? e.message : String(e)}`
       statusEl.style.color = 'var(--color-error)'
+    } finally {
+      testBtn.disabled = false
+      testBtn.textContent = 'Test'
     }
   })
 
   container.querySelector('#btn-refresh-models')?.addEventListener('click', async () => {
-    const url = (container.querySelector('#lm-url') as HTMLInputElement).value.trim()
+    const url = normalizeLocalUrl((container.querySelector('#lm-url') as HTMLInputElement).value.trim())
     const token = (container.querySelector('#auth-token') as HTMLInputElement).value.trim()
     const res = await chrome.runtime.sendMessage({ type: MSG.MODELS_LIST, url, authToken: token }) as { ok: boolean; models: string[] }
     const select = container.querySelector('#lm-model') as HTMLSelectElement
@@ -490,23 +828,26 @@ function wireSettingsEvents(container: HTMLElement, s: Settings): void {
   })
 
   container.querySelector('#btn-re-probe')?.addEventListener('click', async () => {
-    const url = (container.querySelector('#lm-url') as HTMLInputElement).value.trim()
+    const url = normalizeLocalUrl((container.querySelector('#lm-url') as HTMLInputElement).value.trim())
     const token = (container.querySelector('#auth-token') as HTMLInputElement).value.trim()
     const statusEl = container.querySelector('#probe-status') as HTMLElement
     statusEl.textContent = 'Probing...'
+    statusEl.style.color = ''
     const res = await chrome.runtime.sendMessage({ type: MSG.PROBE_ENDPOINT, url, authToken: token || undefined }) as { ok: boolean; capabilities?: APICapabilities; error?: string }
     if (res.ok && res.capabilities) {
       statusEl.textContent = `Detected: ${res.capabilities.serverType}, ${res.capabilities.availableModels.length} models, format: ${res.capabilities.apiFormat}`
       statusEl.style.color = 'var(--color-success)'
       await chrome.runtime.sendMessage({ type: MSG.SETTINGS_SET, partial: { apiCapabilities: res.capabilities } })
       // Update the header bar
-      const headerStatus = container.querySelector('#provider-status') as HTMLElement
-      if (headerStatus) {
-        headerStatus.textContent = `${res.capabilities.serverType} · ${res.capabilities.availableModels.length} model(s) · ${res.capabilities.apiFormat}`
-      }
       const infoBar = container.querySelector('#connection-info-bar') as HTMLElement
-      if (infoBar && !infoBar.querySelector('.connection-badge')) {
-        infoBar.innerHTML = `<span class="connection-badge connected">Connected</span><span class="hint-text" id="provider-status">${res.capabilities.serverType} · ${res.capabilities.availableModels.length} model(s) · ${res.capabilities.apiFormat}</span>`
+      if (infoBar) {
+        infoBar.className = 'connection-info'
+        infoBar.innerHTML = `<span class="connection-badge connected">Connected</span><span class="hint-text" id="provider-status">${esc(res.capabilities.serverType)} · ${res.capabilities.availableModels.length} model(s) · ${esc(res.capabilities.apiFormat)}</span>`
+      }
+      // Update capability badges
+      const badgesEl = container.querySelector('#capability-badges') as HTMLElement
+      if (badgesEl) {
+        badgesEl.outerHTML = renderCapabilityBadges(res.capabilities)
       }
     } else {
       statusEl.textContent = `Failed: ${res.error || 'Unknown'}`
@@ -549,10 +890,67 @@ function wireSettingsEvents(container: HTMLElement, s: Settings): void {
     }
   })
 
+  container.querySelector('#btn-test-openai')?.addEventListener('click', async () => {
+    const apiKey = (container.querySelector('#openai-api-key') as HTMLInputElement).value.trim()
+    const statusEl = container.querySelector('#openai-status') as HTMLElement
+    if (!apiKey) { statusEl.textContent = 'Enter an API key first.'; statusEl.style.color = 'var(--color-error)'; return }
+    statusEl.textContent = 'Testing...'
+    statusEl.style.color = ''
+    try {
+      const res = await fetch('https://api.openai.com/v1/models', { headers: { 'Authorization': `Bearer ${apiKey}` } })
+      if (res.ok) {
+        const data = await res.json()
+        const count = data?.data?.length ?? 0
+        statusEl.textContent = `Connected! ${count} models available.`
+        statusEl.style.color = 'var(--color-success)'
+      } else {
+        const text = await res.text()
+        statusEl.textContent = `Error ${res.status}: ${text.slice(0, 100)}`
+        statusEl.style.color = 'var(--color-error)'
+      }
+    } catch (e) {
+      statusEl.textContent = `Connection failed: ${e instanceof Error ? e.message : String(e)}`
+      statusEl.style.color = 'var(--color-error)'
+    }
+  })
+
+  container.querySelector('#btn-test-anthropic')?.addEventListener('click', async () => {
+    const apiKey = (container.querySelector('#anthropic-api-key') as HTMLInputElement).value.trim()
+    const statusEl = container.querySelector('#anthropic-status') as HTMLElement
+    if (!apiKey) { statusEl.textContent = 'Enter an API key first.'; statusEl.style.color = 'var(--color-error)'; return }
+    statusEl.textContent = 'Testing...'
+    statusEl.style.color = ''
+    try {
+      const model = (container.querySelector('#anthropic-model') as HTMLSelectElement).value || 'claude-3-5-haiku-20241022'
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json',
+          'anthropic-dangerous-direct-browser-access': 'true',
+        },
+        body: JSON.stringify({ model, max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] }),
+      })
+      if (res.ok) {
+        statusEl.textContent = 'Connected! API key is valid.'
+        statusEl.style.color = 'var(--color-success)'
+      } else {
+        const text = await res.text()
+        statusEl.textContent = `Error ${res.status}: ${text.slice(0, 100)}`
+        statusEl.style.color = 'var(--color-error)'
+      }
+    } catch (e) {
+      statusEl.textContent = `Connection failed: ${e instanceof Error ? e.message : String(e)}`
+      statusEl.style.color = 'var(--color-error)'
+    }
+  })
+
   container.querySelector('#btn-save-settings')?.addEventListener('click', async () => {
+    const rawLocalUrl = (container.querySelector('#lm-url') as HTMLInputElement).value.trim()
     const partial: Partial<Settings> = {
       activeProvider: (container.querySelector('#active-provider') as HTMLSelectElement).value as Settings['activeProvider'],
-      lmStudioUrl: (container.querySelector('#lm-url') as HTMLInputElement).value.trim(),
+      lmStudioUrl: normalizeLocalUrl(rawLocalUrl),
       lmStudioModel: (container.querySelector('#lm-model') as HTMLSelectElement).value,
       authToken: (container.querySelector('#auth-token') as HTMLInputElement).value.trim(),
       rateLimitRpm: Number((container.querySelector('#rate-limit') as HTMLInputElement).value),
@@ -569,9 +967,9 @@ function wireSettingsEvents(container: HTMLElement, s: Settings): void {
       visionEnabled: (container.querySelector('#vision-enabled') as HTMLInputElement).checked,
       screenshotIntervalSec: Number((container.querySelector('#screenshot-interval') as HTMLInputElement).value),
       textRewriteEnabled: (container.querySelector('#text-rewrite-enabled') as HTMLInputElement).checked,
-      safetyBorderEnabled: (container.querySelector('#safety-border-enabled') as HTMLInputElement).checked,
       composeAssistantEnabled: (container.querySelector('#compose-assistant-enabled') as HTMLInputElement).checked,
       aiActionLearningEnabled: (container.querySelector('#ai-action-learning-enabled') as HTMLInputElement).checked,
+      automationPreference: (container.querySelector('#automation-preference') as HTMLSelectElement).value as 'ask' | 'auto' | 'guided',
       learningSnapshotIntervalSec: Number((container.querySelector('#learning-interval') as HTMLInputElement).value),
       calendarDetectionEnabled: (container.querySelector('#calendar-detection') as HTMLInputElement).checked,
       sttProvider: (container.querySelector('#stt-provider') as HTMLSelectElement).value as Settings['sttProvider'],
@@ -579,8 +977,37 @@ function wireSettingsEvents(container: HTMLElement, s: Settings): void {
       mempalaceBridgeEnabled: (container.querySelector('#mempalace-enabled') as HTMLInputElement).checked,
       mempalaceBridgeUrl: (container.querySelector('#mempalace-url') as HTMLInputElement).value.trim(),
       mempalaceWing: (container.querySelector('#mempalace-wing') as HTMLInputElement).value.trim() || undefined,
+      localMemoryEnabled: (container.querySelector('#local-memory-enabled') as HTMLInputElement).checked,
+      localMemoryMaxEntries: Number((container.querySelector('#local-memory-max') as HTMLInputElement).value),
+      inputJournalEnabled: (container.querySelector('#input-journal-enabled') as HTMLInputElement).checked,
+      autoCollectEnabled: (container.querySelector('#auto-collect-enabled') as HTMLInputElement).checked,
+      autoCollectMinFields: Number((container.querySelector('#auto-collect-min-fields') as HTMLInputElement).value),
+      autoCollectExcludeDomains: (container.querySelector('#auto-collect-exclude') as HTMLInputElement).value
+        .split(',').map(d => d.trim()).filter(Boolean),
+      telegramBotEnabled: (container.querySelector('#telegram-enabled') as HTMLInputElement).checked,
+      telegramBotToken: (container.querySelector('#telegram-token') as HTMLInputElement).value.trim() || undefined,
+      telegramPollIntervalSec: Number((container.querySelector('#telegram-poll-interval') as HTMLInputElement).value),
+      telegramAllowedChatIds: (container.querySelector('#telegram-chat-ids') as HTMLInputElement).value
+        .split(',').map(s => s.trim()).filter(Boolean),
+      vaultLockTimeoutMin: Number((container.querySelector('#vault-lock-timeout') as HTMLInputElement).value),
+      theme: (container.querySelector('#theme-select') as HTMLSelectElement).value as 'system' | 'dark' | 'light',
+      historyEnabled: (container.querySelector('#history-enabled') as HTMLInputElement).checked,
+      historyShowInPanel: (container.querySelector('#history-show-in-panel') as HTMLInputElement).checked,
+      insightsEnabled: (container.querySelector('#insights-enabled') as HTMLInputElement).checked,
+      insightsShowInPanel: (container.querySelector('#insights-show-in-panel') as HTMLInputElement).checked,
+      vaultEnabled: (container.querySelector('#vault-enabled') as HTMLInputElement).checked,
+      vaultShowInPanel: (container.querySelector('#vault-show-in-panel') as HTMLInputElement).checked,
+      learnEnabled: (container.querySelector('#learn-enabled') as HTMLInputElement).checked,
+      learnShowInPanel: (container.querySelector('#learn-show-in-panel') as HTMLInputElement).checked,
+      tabGroupsEnabled: (container.querySelector('#tab-groups-enabled') as HTMLInputElement).checked,
+      tabGroupsShowInPanel: (container.querySelector('#tab-groups-show-in-panel') as HTMLInputElement).checked,
     }
     await chrome.runtime.sendMessage({ type: MSG.SETTINGS_SET, partial })
+    // Apply theme immediately
+    if (partial.theme) {
+      const { applyTheme } = await import('./sidepanel')
+      applyTheme(partial.theme)
+    }
     const statusEl = container.querySelector('#save-status') as HTMLElement
     statusEl.textContent = 'Saved!'
     statusEl.style.color = 'var(--color-success)'
@@ -620,6 +1047,64 @@ function wireSettingsEvents(container: HTMLElement, s: Settings): void {
   container.querySelector('#btn-clear-all-mem')?.addEventListener('click', async () => {
     if (!confirm('Clear ALL memory and chat history?')) return
     await chrome.runtime.sendMessage({ type: MSG.MEMORY_CLEAR })
+  })
+
+  // Full backup
+  container.querySelector('#btn-full-backup')?.addEventListener('click', async () => {
+    const statusEl = container.querySelector('#backup-status') as HTMLElement
+    statusEl.textContent = 'Creating backup...'
+    statusEl.style.color = ''
+    try {
+      const res = await chrome.runtime.sendMessage({ type: MSG.FULL_BACKUP }) as { ok: boolean; data?: object }
+      if (res.data) {
+        const blob = new Blob([JSON.stringify(res.data, null, 2)], { type: 'application/json' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `orion-full-backup-${new Date().toISOString().slice(0, 10)}.json`
+        a.click()
+        URL.revokeObjectURL(url)
+        statusEl.textContent = 'Backup downloaded!'
+        statusEl.style.color = 'var(--color-success)'
+      }
+    } catch (e) {
+      statusEl.textContent = `Backup failed: ${String(e)}`
+      statusEl.style.color = 'var(--color-error)'
+    }
+  })
+
+  // Full restore
+  const restoreInput = container.querySelector('#restore-file-input') as HTMLInputElement
+  container.querySelector('#btn-full-restore')?.addEventListener('click', () => restoreInput?.click())
+  restoreInput?.addEventListener('change', async () => {
+    const file = restoreInput.files?.[0]
+    if (!file) return
+    const statusEl = container.querySelector('#backup-status') as HTMLElement
+    if (!confirm('This will REPLACE all current data with the backup. Continue?')) {
+      restoreInput.value = ''
+      return
+    }
+    statusEl.textContent = 'Restoring...'
+    statusEl.style.color = ''
+    try {
+      const text = await file.text()
+      const backup = JSON.parse(text)
+      const res = await chrome.runtime.sendMessage({ type: MSG.FULL_RESTORE, backup }) as {
+        ok: boolean; restored?: number; errors?: string[]
+      }
+      if (res.ok) {
+        const errMsg = res.errors?.length ? ` (${res.errors.length} warnings)` : ''
+        statusEl.textContent = `Restored ${res.restored} records${errMsg}. Reload to see changes.`
+        statusEl.style.color = 'var(--color-success)'
+      } else {
+        statusEl.textContent = 'Restore failed.'
+        statusEl.style.color = 'var(--color-error)'
+      }
+    } catch (e) {
+      statusEl.textContent = `Invalid file: ${String(e)}`
+      statusEl.style.color = 'var(--color-error)'
+    }
+    restoreInput.value = ''
   })
 
   container.querySelector('#btn-mempalace-probe')?.addEventListener('click', async () => {
@@ -664,6 +1149,196 @@ function wireSettingsEvents(container: HTMLElement, s: Settings): void {
       statusEl.textContent = res.error || 'Failed'
       statusEl.style.color = 'var(--color-error)'
     }
+  })
+
+  // ── Local Memory buttons ──────────────────────────────────────────────────
+  container.querySelector('#btn-local-memory-stats')?.addEventListener('click', async () => {
+    const statusEl = container.querySelector('#local-memory-status') as HTMLElement
+    statusEl.textContent = 'Loading...'
+    const res = await chrome.runtime.sendMessage({ type: 'LOCAL_MEMORY_STATS' }) as {
+      ok: boolean; total?: number; byCategory?: Record<string, number>
+    }
+    if (res.ok) {
+      const cats = res.byCategory ? Object.entries(res.byCategory).map(([k, v]) => `${k}: ${v}`).join(', ') : 'none'
+      statusEl.textContent = `${res.total ?? 0} entries (${cats})`
+      statusEl.style.color = 'var(--color-success)'
+    } else {
+      statusEl.textContent = 'Could not load stats'
+      statusEl.style.color = 'var(--color-error)'
+    }
+  })
+
+  container.querySelector('#btn-clear-local-memory')?.addEventListener('click', async () => {
+    if (!confirm('Clear all local memory entries? This cannot be undone.')) return
+    const statusEl = container.querySelector('#local-memory-status') as HTMLElement
+    await chrome.runtime.sendMessage({ type: 'LOCAL_MEMORY_CLEAR' })
+    statusEl.textContent = 'Local memory cleared.'
+    statusEl.style.color = 'var(--color-success)'
+  })
+
+  // ── Telegram bot buttons ───────────────────────────────────────────────────
+  container.querySelector('#btn-test-telegram')?.addEventListener('click', async () => {
+    const token = (container.querySelector('#telegram-token') as HTMLInputElement).value.trim()
+    const statusEl = container.querySelector('#telegram-status') as HTMLElement
+    if (!token) { statusEl.textContent = 'Enter a bot token first.'; statusEl.style.color = 'var(--color-error)'; return }
+    statusEl.textContent = 'Testing...'
+    statusEl.style.color = ''
+    const res = await chrome.runtime.sendMessage({ type: 'TELEGRAM_TEST', token }) as {
+      ok: boolean; botName?: string; error?: string
+    }
+    if (res.ok) {
+      statusEl.textContent = `Connected! Bot: ${res.botName}`
+      statusEl.style.color = 'var(--color-success)'
+    } else {
+      statusEl.textContent = res.error || 'Invalid token'
+      statusEl.style.color = 'var(--color-error)'
+    }
+  })
+
+  container.querySelector('#telegram-enabled')?.addEventListener('change', async () => {
+    const enabled = (container.querySelector('#telegram-enabled') as HTMLInputElement).checked
+    await chrome.runtime.sendMessage({ type: 'TELEGRAM_TOGGLE', enabled })
+  })
+
+  // ── Conditional visibility for dependent settings ──────────────────────
+  container.querySelector('#vision-enabled')?.addEventListener('change', () => {
+    const on = (container.querySelector('#vision-enabled') as HTMLInputElement).checked
+    const group = container.querySelector('#screenshot-interval-group') as HTMLElement
+    if (group) group.style.display = on ? '' : 'none'
+  })
+  container.querySelector('#ai-action-learning-enabled')?.addEventListener('change', () => {
+    const on = (container.querySelector('#ai-action-learning-enabled') as HTMLInputElement).checked
+    const group = container.querySelector('#learning-interval-group') as HTMLElement
+    if (group) group.style.display = on ? '' : 'none'
+  })
+
+  // ── Debug panel ──────────────────────────────────────────────────────────
+  container.querySelector('#btn-show-debug')?.addEventListener('click', async () => {
+    const output = container.querySelector('#debug-output') as HTMLElement
+    const res = await chrome.runtime.sendMessage({ type: MSG.GET_DEBUG_INFO }) as {
+      ok: boolean; debugText?: string; errorCount?: number
+    }
+    output.textContent = res.debugText || 'No errors recorded.'
+    output.style.display = 'block'
+  })
+
+  container.querySelector('#btn-copy-debug')?.addEventListener('click', async () => {
+    const res = await chrome.runtime.sendMessage({ type: MSG.GET_DEBUG_INFO }) as {
+      ok: boolean; debugText?: string
+    }
+    if (res.debugText) {
+      await navigator.clipboard.writeText(res.debugText)
+      const btn = container.querySelector('#btn-copy-debug') as HTMLElement
+      const orig = btn.textContent
+      btn.textContent = 'Copied!'
+      setTimeout(() => { btn.textContent = orig }, 1500)
+    }
+  })
+
+  container.querySelector('#btn-clear-errors')?.addEventListener('click', async () => {
+    await chrome.runtime.sendMessage({ type: MSG.CLEAR_ERRORS })
+    const output = container.querySelector('#debug-output') as HTMLElement
+    output.textContent = 'Errors cleared.'
+    output.style.display = 'block'
+  })
+
+  // ── Privacy Policy link ───────────────────────────────────────────────────
+  container.querySelector('#btn-privacy-policy')?.addEventListener('click', (e) => {
+    e.preventDefault()
+    void chrome.tabs.create({ url: chrome.runtime.getURL('privacy-policy.html'), active: true })
+  })
+
+  // ── Panel Tabs enable/show dependency ──────────────────────────────────
+  const features = ['history', 'insights', 'vault', 'learn', 'tab-groups']
+  features.forEach(feature => {
+    const enableInput = container.querySelector(`#${feature}-enabled`) as HTMLInputElement
+    const showInput = container.querySelector(`#${feature}-show-in-panel`) as HTMLInputElement
+    if (!enableInput || !showInput) return
+
+    enableInput.addEventListener('change', () => {
+      if (!enableInput.checked) {
+        showInput.checked = false
+        showInput.disabled = true
+      } else {
+        showInput.disabled = false
+      }
+    })
+  })
+}
+
+// ─── Settings Tabs ──────────────────────────────────────────────────────────
+
+function wireSettingsTabs(container: HTMLElement): void {
+  const buttons = container.querySelectorAll<HTMLElement>('.settings-tab-btn')
+  const sections = container.querySelectorAll<HTMLElement>('.settings-section[data-settings-tab]')
+  const footer = container.querySelector<HTMLElement>('.settings-footer')
+  const setupBanner = container.querySelector<HTMLElement>('.setup-banner')
+
+  function activateTab(tab: string): void {
+    buttons.forEach(btn => btn.classList.toggle('active', btn.dataset.stab === tab))
+    sections.forEach(sec => {
+      const match = sec.dataset.settingsTab === tab
+      // Provider sections have their own show/hide logic — don't override
+      if (sec.classList.contains('provider-section')) {
+        if (!match) sec.style.display = 'none'
+        // When matching, let wireProviderToggle control visibility
+        else if (match && sec.style.display === 'none') {
+          // Keep hidden unless it's the active provider section
+        }
+      } else {
+        sec.style.display = match ? '' : 'none'
+      }
+    })
+    if (footer) footer.style.display = ''
+    if (setupBanner) setupBanner.style.display = tab === 'ai' ? '' : 'none'
+    // Re-trigger provider visibility when switching to AI tab
+    if (tab === 'ai') {
+      const sel = container.querySelector<HTMLSelectElement>('#active-provider')
+      if (sel) sel.dispatchEvent(new Event('change'))
+    }
+    // Clear search when switching tabs
+    const searchInput = container.querySelector<HTMLInputElement>('#settings-search')
+    if (searchInput) searchInput.value = ''
+  }
+
+  buttons.forEach(btn => {
+    btn.addEventListener('click', () => activateTab(btn.dataset.stab || 'ai'))
+  })
+
+  // Initialize: show only the AI tab (or first tab with setup banner)
+  activateTab('ai')
+}
+
+function wireSettingsSearch(container: HTMLElement): void {
+  const searchInput = container.querySelector<HTMLInputElement>('#settings-search')
+  if (!searchInput) return
+
+  const sections = container.querySelectorAll<HTMLElement>('.settings-section[data-settings-tab]')
+  const tabBtns = container.querySelectorAll<HTMLElement>('.settings-tab-btn')
+
+  searchInput.addEventListener('input', () => {
+    const q = searchInput.value.toLowerCase().trim()
+    if (!q) {
+      // Restore active tab view
+      const activeBtn = container.querySelector<HTMLElement>('.settings-tab-btn.active')
+      const activeTab = activeBtn?.dataset.stab || 'ai'
+      sections.forEach(sec => {
+        const match = sec.dataset.settingsTab === activeTab
+        if (!sec.classList.contains('provider-section')) {
+          sec.style.display = match ? '' : 'none'
+        }
+      })
+      tabBtns.forEach(b => b.style.opacity = '')
+      return
+    }
+
+    // Search mode: show all matching sections regardless of tab
+    tabBtns.forEach(b => b.style.opacity = '0.4')
+    sections.forEach(sec => {
+      if (sec.classList.contains('provider-section')) return // skip provider toggle logic
+      const text = sec.textContent?.toLowerCase() || ''
+      sec.style.display = text.includes(q) ? '' : 'none'
+    })
   })
 }
 

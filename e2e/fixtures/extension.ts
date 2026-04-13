@@ -6,6 +6,7 @@ import { test as base, chromium, type BrowserContext, type Page, type Worker } f
 import path from 'path'
 import fs from 'fs'
 import { AIMockServer } from './ai-mock-server'
+import { RealAIProvider, type AIProvider } from './real-ai-provider'
 import { TestServer } from './test-server'
 
 const PROJECT_ROOT = path.resolve(__dirname, '../..')
@@ -80,10 +81,31 @@ export const test = base.extend<ExtensionFixtures>({
   },
 
   mockAI: async ({}, use) => {
-    const server = new AIMockServer()
-    await server.start()
-    await use(server)
-    await server.stop()
+    // Check if real AI testing is enabled
+    const useRealAI = process.env.USE_REAL_AI === 'true'
+    const provider = (process.env.PROVIDER || 'gemini') as AIProvider
+
+    if (useRealAI) {
+      console.log(`[Test] Using REAL AI: ${provider}`)
+      const realAI = new RealAIProvider({
+        provider,
+        geminiApiKey: process.env.GEMINI_API_KEY,
+        lmStudioUrl: process.env.LM_STUDIO_URL || 'http://127.0.0.1:1234',
+        lmStudioModel: process.env.LM_STUDIO_MODEL || 'test-model',
+        openaiApiKey: process.env.OPENAI_API_KEY,
+        openaiModel: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+      })
+      await realAI.start()
+      // Cast to AIMockServer interface for compatibility (RealAIProvider implements same interface)
+      await use(realAI as any)
+      await realAI.stop()
+    } else {
+      console.log('[Test] Using MOCK AI')
+      const server = new AIMockServer()
+      await server.start()
+      await use(server)
+      await server.stop()
+    }
   },
 
   testServer: async ({}, use) => {
@@ -100,17 +122,18 @@ export const test = base.extend<ExtensionFixtures>({
     // the cache later from the page context using SETTINGS_SET message.
     await serviceWorker.evaluate(async (mockUrl: string) => {
       const DB_NAME = 'pwa_memory'
-      const DB_VERSION = 7
+      const DB_VERSION = 11
 
       const db = await new Promise<IDBDatabase>((resolve, reject) => {
         const req = indexedDB.open(DB_NAME, DB_VERSION)
         req.onupgradeneeded = () => {
           const d = req.result
-          // Create stores if they don't exist (first run)
+          // Create stores if they don't exist (first run) — keep in sync with idb.ts v11
           const stores = ['chat_history', 'session_memory', 'global_memory', 'vault',
             'settings', 'calendar_events', 'habit_patterns', 'domain_skills',
             'user_behaviors', 'learning_sessions', 'supervised_playbooks',
-            'supervised_sessions', 'visual_sitemap']
+            'supervised_sessions', 'visual_sitemap', 'local_memory', 'input_journal',
+            'pinned_facts', 'workflows']
           for (const name of stores) {
             if (!d.objectStoreNames.contains(name)) {
               d.createObjectStore(name, { keyPath: 'key' })
@@ -143,6 +166,7 @@ export const test = base.extend<ExtensionFixtures>({
         sttProvider: 'web-speech',
         confirmationPreferences: [],
         globalAutoAccept: true,
+        automationPreference: 'auto',  // skip mode-choice dialog in tests
       }
 
       const tx = db.transaction('settings', 'readwrite')
@@ -191,6 +215,7 @@ export const test = base.extend<ExtensionFixtures>({
           calendarDetectionEnabled: false,
           aiActionLearningEnabled: false,
           globalAutoAccept: true,
+          automationPreference: 'auto',  // skip mode-choice dialog in tests
         },
       })
     }, mockAI.url)

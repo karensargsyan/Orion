@@ -1,0 +1,168 @@
+{
+  "extName": {
+    "message": "Orion",
+    "description": "Extension name"
+  },
+  "extDescription": {
+    "message": "AI browser assistant. Reads pages, fills forms, researches the web. Runs locally or via cloud APIs. Private and fast.",
+    "description": "Extension description"
+  },
+  "tabChat": {
+    "message": "Chat",
+    "description": "Chat tab label"
+  },
+  "tabMemory": {
+    "message": "Memory",
+    "description": "Memory tab label"
+  },
+  "tabInsights": {
+    "message": "Insights",
+    "description": "Insights tab label"
+  },
+  "tabVault": {
+    "message": "Vault",
+    "description": "Vault tab label"
+  },
+  "tabHistory": {
+    "message": "History",
+    "description": "History tab label"
+  },
+  "tabSettings": {
+    "message": "Settings",
+    "description": "Settings tab label"
+  },
+  "tabLearn": {
+    "message": "Learn",
+    "description": "Learning mode tab label"
+  },
+  "chatPlaceholder": {
+    "message": "Ask anything...",
+    "description": "Chat input placeholder"
+  },
+  "btnSend": {
+    "message": "Send",
+    "description": "Send message button"
+  },
+  "btnStop": {
+    "message": "Stop",
+    "description": "Stop AI response button"
+  },
+  "btnDescribe": {
+    "message": "Describe",
+    "description": "Describe page button"
+  },
+  "btnFill": {
+    "message": "Fill",
+    "description": "Fill form button"
+  },
+  "settingsTitle": {
+    "message": "Settings",
+    "description": "Settings page title"
+  },
+  "settingsAiProvider": {
+    "message": "AI Provider",
+    "description": "AI provider section title"
+  },
+  "settingsGeneral": {
+    "message": "General",
+    "description": "General section title"
+  },
+  "settingsMonitoring": {
+    "message": "Monitoring",
+    "description": "Monitoring section title"
+  },
+  "settingsSecurity": {
+    "message": "Security",
+    "description": "Security section title"
+  },
+  "settingsAppearance": {
+    "message": "Appearance",
+    "description": "Appearance section title"
+  },
+  "settingsData": {
+    "message": "Data",
+    "description": "Data section title"
+  },
+  "settingsSaved": {
+    "message": "Saved!",
+    "description": "Settings saved confirmation"
+  },
+  "themeDark": {
+    "message": "Dark",
+    "description": "Dark theme option"
+  },
+  "themeLight": {
+    "message": "Light",
+    "description": "Light theme option"
+  },
+  "themeSystem": {
+    "message": "System (auto)",
+    "description": "System auto theme option"
+  },
+  "providerLocal": {
+    "message": "Local (LM Studio / Ollama)",
+    "description": "Local AI provider"
+  },
+  "providerGemini": {
+    "message": "Google Gemini",
+    "description": "Gemini AI provider"
+  },
+  "providerOpenai": {
+    "message": "OpenAI",
+    "description": "OpenAI provider"
+  },
+  "providerAnthropic": {
+    "message": "Anthropic Claude",
+    "description": "Anthropic provider"
+  },
+  "btnSaveSettings": {
+    "message": "Save Settings",
+    "description": "Save settings button"
+  },
+  "btnExportMemory": {
+    "message": "Export Memory",
+    "description": "Export memory button"
+  },
+  "btnFullBackup": {
+    "message": "Full Backup",
+    "description": "Full backup button"
+  },
+  "btnRestore": {
+    "message": "Restore from File",
+    "description": "Restore backup button"
+  },
+  "aiConnected": {
+    "message": "AI connected ($PROVIDER$)",
+    "description": "AI connection status - connected",
+    "placeholders": {
+      "PROVIDER": {
+        "content": "$1",
+        "example": "local"
+      }
+    }
+  },
+  "aiDisconnected": {
+    "message": "AI unreachable",
+    "description": "AI connection status - disconnected"
+  },
+  "noHistory": {
+    "message": "No conversations yet.",
+    "description": "Empty history message"
+  },
+  "memoryClearedMsg": {
+    "message": "Memory cleared. Ask me anything.",
+    "description": "Shown after clearing memory"
+  },
+  "commandPaletteHint": {
+    "message": "Type a command or search...",
+    "description": "Command palette placeholder"
+  },
+  "notifAutomationDone": {
+    "message": "Automation Complete",
+    "description": "Notification title for completed automation"
+  },
+  "notifError": {
+    "message": "Orion Error",
+    "description": "Notification title for errors"
+  }
+}

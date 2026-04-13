@@ -7,80 +7,373 @@
 import { ensureContentScript } from './action-executor'
 import { MSG } from '../shared/constants'
 import type { SearchResult, PageContent } from '../shared/types'
+import { logTabEvent } from './error-logger'
 
 const researchTabIds = new Set<number>()
-let aiGroupId: number | null = null
 const TAB_LOAD_TIMEOUT = 15_000
-const MAX_RESEARCH_TABS = 8
+const MAX_RESEARCH_TABS = 6
+
+// ─── Global Tab Registry ────────────────────────────────────────────────────
+// Tracks ALL tabs opened by any part of the extension (research, workflow, etc.)
+
+const extensionTabIds = new Set<number>()
+const GLOBAL_TAB_LIMIT = 12
+
+/** Register a tab as extension-managed. Enforces global limit. */
+export function registerExtensionTab(tabId: number): void {
+  extensionTabIds.add(tabId)
+  // Enforce global limit — close oldest if over
+  if (extensionTabIds.size > GLOBAL_TAB_LIMIT) {
+    const oldest = extensionTabIds.values().next().value
+    if (oldest !== undefined && oldest !== tabId) {
+      extensionTabIds.delete(oldest)
+      logTabEvent('limit_evicted', oldest, '', 'research')
+      chrome.tabs.remove(oldest).catch(() => {})
+      researchTabIds.delete(oldest) // also clean up if it was a research tab
+    }
+  }
+}
+
+/** Unregister a tab (called when tab is closed). */
+export function unregisterExtensionTab(tabId: number): void {
+  extensionTabIds.delete(tabId)
+}
+
+/** Get total count of extension-managed tabs. */
+export function getExtensionTabCount(): number {
+  return extensionTabIds.size
+}
+
+/** Check if tab is extension-managed. */
+export function isExtensionTab(tabId: number): boolean {
+  return extensionTabIds.has(tabId)
+}
+
+/** Find an existing extension tab with the same URL (cross-system dedup). */
+export async function findExistingExtensionTab(url: string): Promise<number | undefined> {
+  const targetHref = new URL(url).href
+  for (const tabId of extensionTabIds) {
+    try {
+      const tab = await chrome.tabs.get(tabId)
+      if (tab.url && new URL(tab.url).href === targetHref) return tabId
+    } catch { extensionTabIds.delete(tabId) } // tab was closed
+  }
+  return undefined
+}
+
+/**
+ * Prune stale entries from both registries.
+ * Tabs may have been closed externally (by the user or a crash) without
+ * the onRemoved listener firing (e.g. service worker was suspended).
+ * Called periodically from the alarm handler.
+ */
+export async function pruneStaleExtensionTabs(): Promise<number> {
+  let pruned = 0
+  for (const tabId of [...extensionTabIds]) {
+    try { await chrome.tabs.get(tabId) } catch {
+      extensionTabIds.delete(tabId)
+      researchTabIds.delete(tabId)
+      pruned++
+    }
+  }
+  return pruned
+}
 
 // ─── Tab Group Management ────────────────────────────────────────────────────
+//
+// Each tab where the user opens the panel gets its OWN group with a unique color.
+// Research tabs opened by the extension join the group of the tab that triggered them.
+// Tabs the user didn't open the panel on are NEVER grouped.
 
 const AI_GROUP_TITLE = 'Orion'
-const AI_GROUP_COLOR: chrome.tabGroups.ColorEnum = 'blue'
+const GROUP_COLORS: chrome.tabGroups.ColorEnum[] = ['blue', 'cyan', 'green', 'yellow', 'orange', 'pink', 'purple', 'red']
+let colorIndex = 0
 
-async function getOrCreateAIGroup(windowId?: number): Promise<number | null> {
-  // Reuse existing group if still alive
-  if (aiGroupId !== null) {
-    try {
-      const group = await chrome.tabGroups.get(aiGroupId)
-      if (group) return aiGroupId
-    } catch { /* group was closed */ }
-    aiGroupId = null
+/** Maps an origin tabId → its group id */
+const tabGroupMap = new Map<number, number>()
+
+/** Maps a groupId → its unique session id (for group-based chat) */
+const groupSessionMap = new Map<number, string>()
+
+/** The "active" origin tab whose research tabs should be grouped together */
+let activeOriginTabId: number | null = null
+
+// ─── Group Pause/Stop API ───────────────────────────────────────────────────
+
+/** Groups whose AI interactions are paused (by groupId). */
+const pausedGroups = new Set<number>()
+
+export interface ActiveGroupInfo {
+  groupId: number
+  title: string
+  color: string
+  sessionId: string | null
+  paused: boolean
+  tabIds: number[]
+}
+
+export function pauseGroup(groupId: number): void {
+  pausedGroups.add(groupId)
+}
+
+export function resumeGroup(groupId: number): void {
+  pausedGroups.delete(groupId)
+}
+
+export function isGroupPaused(groupId: number): boolean {
+  return pausedGroups.has(groupId)
+}
+
+/** Check if a tab belongs to a paused group. */
+export function isTabInPausedGroup(tabId: number): boolean {
+  const groupId = tabGroupMap.get(tabId)
+  if (groupId === undefined) return false
+  return pausedGroups.has(groupId)
+}
+
+/** Get all tabIds belonging to a group. */
+export function getTabsInGroup(groupId: number): number[] {
+  const tabs: number[] = []
+  for (const [tabId, gid] of tabGroupMap.entries()) {
+    if (gid === groupId) tabs.push(tabId)
+  }
+  return tabs
+}
+
+/** Get all active Orion groups with their tabs, titles, colors, and pause state. */
+export async function getActiveGroups(): Promise<ActiveGroupInfo[]> {
+  // Invert tabGroupMap: groupId → tabId[]
+  const groupToTabs = new Map<number, number[]>()
+  for (const [tabId, groupId] of tabGroupMap.entries()) {
+    const list = groupToTabs.get(groupId) ?? []
+    list.push(tabId)
+    groupToTabs.set(groupId, list)
   }
 
-  // Find an existing "AI Working" group in this window
-  try {
-    const groups = await chrome.tabGroups.query({ title: AI_GROUP_TITLE })
-    if (groups.length > 0) {
-      aiGroupId = groups[0].id
-      return aiGroupId
+  const results: ActiveGroupInfo[] = []
+  for (const [groupId, tabIds] of groupToTabs.entries()) {
+    let title = 'Orion'
+    let color = 'grey'
+    try {
+      const group = await chrome.tabGroups.get(groupId)
+      title = group.title ?? 'Orion'
+      color = group.color ?? 'grey'
+    } catch {
+      // Group was disbanded externally — prune stale tracking
+      for (const tid of tabIds) tabGroupMap.delete(tid)
+      groupSessionMap.delete(groupId)
+      pausedGroups.delete(groupId)
+      continue
     }
-  } catch { /* tabGroups API not available */ }
 
+    results.push({
+      groupId,
+      title,
+      color,
+      sessionId: groupSessionMap.get(groupId) ?? null,
+      paused: pausedGroups.has(groupId),
+      tabIds,
+    })
+  }
+  return results
+}
+
+/** Stop a group: remove all tracking, ungroup tabs (but don't close them). Returns affected tabIds. */
+export async function stopGroup(groupId: number): Promise<number[]> {
+  const tabIds = getTabsInGroup(groupId)
+
+  // Clean up all tracking
+  for (const tabId of tabIds) {
+    tabGroupMap.delete(tabId)
+  }
+  groupSessionMap.delete(groupId)
+  pausedGroups.delete(groupId)
+
+  // Ungroup all tabs (keeps them open, just removes from the Chrome tab group)
+  for (const tabId of tabIds) {
+    try { await chrome.tabs.ungroup(tabId) } catch { /* tab may be gone */ }
+  }
+  return tabIds
+}
+
+function nextGroupColor(): chrome.tabGroups.ColorEnum {
+  const color = GROUP_COLORS[colorIndex % GROUP_COLORS.length]
+  colorIndex++
+  return color
+}
+
+/**
+ * Create a new Orion group for a tab where the user opened the panel.
+ * Each panel-open gets its own uniquely colored group.
+ */
+export async function createGroupForTab(tabId: number, title?: string): Promise<number> {
+  // If this tab already has a group, reuse it
+  const existingGroupId = tabGroupMap.get(tabId)
+  if (existingGroupId !== undefined) {
+    try {
+      await chrome.tabGroups.get(existingGroupId)
+      return existingGroupId // group still alive — keep existing session
+    } catch { tabGroupMap.delete(tabId) }
+  }
+
+  try {
+    // Determine initial title: "Orion: {domain}" or "Orion: New"
+    let groupTitle = title ? `Orion: ${title}` : 'Orion: New'
+    if (!title) {
+      try {
+        const tab = await chrome.tabs.get(tabId)
+        const url = tab.url ?? ''
+        if (url && !url.startsWith('chrome://') && !url.startsWith('about:') && !url.startsWith('chrome-extension://')) {
+          const domain = extractDomainShort(url)
+          if (domain) groupTitle = `Orion: ${domain}`
+        }
+      } catch { /* use default */ }
+    }
+
+    const newGroupId = await chrome.tabs.group({ tabIds: [tabId] })
+    await chrome.tabGroups.update(newGroupId, {
+      title: groupTitle,
+      color: nextGroupColor(),
+      collapsed: false,
+    })
+    tabGroupMap.set(tabId, newGroupId)
+    // Generate unique session for this group — fresh chat context
+    const sid = `session_orion_${Date.now()}`
+    groupSessionMap.set(newGroupId, sid)
+    activeOriginTabId = tabId
+    return newGroupId
+  } catch {
+    /* tabGroups API may not be available */
+    return -1
+  }
+}
+
+/** Extract short domain for group title (strips www.) */
+function extractDomainShort(url: string): string {
+  try {
+    const host = new URL(url).hostname
+    return host.replace(/^www\./, '')
+  } catch { return '' }
+}
+
+/**
+ * Ungroup a tab and clean up its group tracking.
+ * Called when the user closes the panel on a tab.
+ */
+export async function ungroupTab(tabId: number): Promise<void> {
+  tabGroupMap.delete(tabId)
+  try {
+    const tab = await chrome.tabs.get(tabId)
+    if (tab.groupId !== undefined && tab.groupId !== -1) {
+      await chrome.tabs.ungroup([tabId])
+    }
+  } catch { /* tab already gone */ }
+}
+
+/** Set which origin tab is currently active (research tabs join this group) */
+export function setActiveOriginTab(tabId: number): void {
+  activeOriginTabId = tabId
+}
+
+/** Get the group id for the currently active origin tab */
+function getActiveGroupId(): number | null {
+  if (activeOriginTabId === null) return null
+  const gid = tabGroupMap.get(activeOriginTabId)
+  if (gid === undefined) return null
+  return gid
+}
+
+/** Check if a tab has an Orion group */
+export function hasOrionGroup(tabId: number): boolean {
+  return tabGroupMap.has(tabId)
+}
+
+/** Returns true if the tab belongs to Orion (grouped or research tab). */
+export function isOrionTab(tabId: number): boolean {
+  return tabGroupMap.has(tabId) || researchTabIds.has(tabId)
+}
+
+/** Clean up tracking when a tab is removed */
+export function cleanupTabGroup(tabId: number): void {
+  const groupId = tabGroupMap.get(tabId)
+  tabGroupMap.delete(tabId)
+  if (activeOriginTabId === tabId) activeOriginTabId = null
+  // If no other tabs reference this groupId, clean up the session too
+  if (groupId !== undefined) {
+    let groupStillReferenced = false
+    for (const gid of tabGroupMap.values()) {
+      if (gid === groupId) { groupStillReferenced = true; break }
+    }
+    if (!groupStillReferenced) {
+      groupSessionMap.delete(groupId)
+      pausedGroups.delete(groupId)
+    }
+  }
+}
+
+/** Update the title of a tab's group (e.g. for Telegram auto-rename) */
+export async function updateGroupTitle(tabId: number, title: string): Promise<void> {
+  const groupId = tabGroupMap.get(tabId)
+  if (groupId === undefined) return
+  try {
+    await chrome.tabGroups.update(groupId, { title })
+  } catch { /* group may be gone */ }
+}
+
+/** Get the session id for a tab's group (fast path — tabGroupMap lookup) */
+export function getGroupSessionId(tabId: number): string | null {
+  const groupId = tabGroupMap.get(tabId)
+  if (groupId === undefined) return null
+  return groupSessionMap.get(groupId) ?? null
+}
+
+/** Resolve group session for a tab, with Chrome API fallback for manually moved tabs */
+export async function resolveGroupSession(tabId: number): Promise<string | null> {
+  // Fast path: tabGroupMap
+  const directSid = getGroupSessionId(tabId)
+  if (directSid) return directSid
+  // Slow path: query Chrome for the tab's actual groupId
+  try {
+    const tab = await chrome.tabs.get(tabId)
+    if (tab.groupId && tab.groupId !== -1) {
+      const sid = groupSessionMap.get(tab.groupId)
+      if (sid) {
+        tabGroupMap.set(tabId, tab.groupId) // cache for next time
+        return sid
+      }
+    }
+  } catch { /* tab gone */ }
   return null
 }
 
 /**
- * Add any tab to the shared AI tab group.
- * Used by both the web researcher (for research tabs) and the action executor (for the main working tab).
+ * Add a tab to the active origin tab's group.
+ * Used by research tabs — they join the group of the tab that triggered the research.
  */
 export async function addTabToAIGroup(tabId: number): Promise<void> {
-  try {
-    const tab = await chrome.tabs.get(tabId)
-    const groupId = await getOrCreateAIGroup(tab.windowId)
+  const groupId = getActiveGroupId()
+  if (groupId === null) return
 
-    if (groupId !== null) {
-      // Add to existing group
-      await chrome.tabs.group({ tabIds: [tabId], groupId })
-    } else {
-      // Create new group
-      const newGroupId = await chrome.tabs.group({ tabIds: [tabId] })
-      aiGroupId = newGroupId
-      await chrome.tabGroups.update(newGroupId, {
-        title: AI_GROUP_TITLE,
-        color: AI_GROUP_COLOR,
-        collapsed: false,
-      })
-    }
-  } catch {
-    // tabGroups API may not be available — that's fine, tabs still work
-  }
+  try {
+    await chrome.tabs.group({ tabIds: [tabId], groupId })
+    tabGroupMap.set(tabId, groupId) // track so research tabs inherit group session
+  } catch { /* group gone or API unavailable */ }
 }
 
-/**
- * Remove a tab from the AI group (e.g., when automation finishes on the main tab).
- * If the tab was the last in the group, Chrome auto-removes the group.
- */
+/** @deprecated — kept for compatibility, use ungroupTab instead */
 export async function removeTabFromAIGroup(tabId: number): Promise<void> {
-  try {
-    const tab = await chrome.tabs.get(tabId)
-    if (tab.groupId !== undefined && tab.groupId !== -1 && tab.groupId === aiGroupId) {
-      await chrome.tabs.ungroup([tabId])
-    }
-  } catch { /* tab already gone or API unavailable */ }
+  await ungroupTab(tabId)
 }
 
 async function createResearchTab(url: string): Promise<chrome.tabs.Tab> {
+  // Cross-system dedup: check if ANY extension tab already has this URL
+  const existingTabId = await findExistingExtensionTab(url).catch(() => undefined)
+  if (existingTabId != null) {
+    const existingTab = await chrome.tabs.get(existingTabId)
+    researchTabIds.add(existingTabId)
+    return existingTab
+  }
+
   // Enforce max research tabs — close oldest if at limit
   if (researchTabIds.size >= MAX_RESEARCH_TABS) {
     const oldest = researchTabIds.values().next().value
@@ -89,6 +382,8 @@ async function createResearchTab(url: string): Promise<chrome.tabs.Tab> {
 
   const tab = await chrome.tabs.create({ url, active: false })
   researchTabIds.add(tab.id!)
+  registerExtensionTab(tab.id!)
+  logTabEvent('created', tab.id!, url, 'research')
   await addTabToAIGroup(tab.id!)
   // Enable sidebar on research tabs so it's visible if user switches to them
   await chrome.sidePanel.setOptions({
@@ -277,16 +572,20 @@ export async function openAndReadTab(url: string): Promise<PageContent> {
     const tabInfo = await chrome.tabs.get(tabId)
     const text = (response?.pageText ?? response?.visibleText ?? '').slice(0, 12_000)
 
-    return {
+    const result = {
       title: tabInfo.title ?? url,
       url: tabInfo.url ?? url,
       text: text || 'No readable content found on this page.',
     }
+
+    // Auto-close after reading — content is captured, no need to keep the tab open
+    await safeCloseTab(tabId)
+
+    return result
   } catch (err) {
+    if (tabId) await safeCloseTab(tabId).catch(() => {})
     return { title: url, url, text: `Error reading page: ${err}` }
   }
-  // NOTE: tab is NOT auto-closed here — it stays in the research group
-  // so the AI can revisit it or the user can see it. Cleaned up via closeAllResearchTabs().
 }
 
 /**
@@ -302,6 +601,8 @@ export async function openAndReadMultipleTabs(urls: string[]): Promise<PageConte
 
 async function safeCloseTab(tabId: number): Promise<void> {
   researchTabIds.delete(tabId)
+  extensionTabIds.delete(tabId)
+  logTabEvent('closed', tabId, '', 'research')
   try { await chrome.tabs.remove(tabId) } catch { /* already closed */ }
 }
 
@@ -314,11 +615,9 @@ export async function closeAllResearchTabs(): Promise<void> {
   researchTabIds.clear()
 
   for (const tabId of tabIds) {
+    extensionTabIds.delete(tabId) // explicit cleanup — don't rely solely on onRemoved
     try { await chrome.tabs.remove(tabId) } catch { /* already closed */ }
   }
-
-  // Reset group tracking (only if no other tabs remain in the group)
-  aiGroupId = null
 }
 
 /** Get the number of currently open research tabs. */

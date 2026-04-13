@@ -8,7 +8,6 @@ import { extractPageText, extractVisibleText, extractCompletePageText, extractSe
 import { setupTextMonitor } from './text-monitor'
 import { findLabel, getUniqueSelector } from './dom-analyzer'
 import { injectMarkers, removeMarkers, buildAccessibilityTree, setLastMarkedElements, findElementByMarkerId, findElementByAIId, isControlElement, findNearbyControl, recoverStaleElement } from './element-markers'
-import { applySafetyBorderMessage } from './safety-border'
 import { setupComposeAssistant } from './compose-assistant'
 import { analyzeFileFromUrl, findAttachmentLinks, type FileAnalysisResult } from './file-analyzer'
 import { safeSendMessage } from './runtime-safe'
@@ -118,11 +117,6 @@ async function handleContentMessage(msg: Record<string, unknown>): Promise<unkno
     case MSG.PING:
       return { ok: true }
 
-    case MSG.SET_SAFETY_BORDER: {
-      applySafetyBorderMessage(msg)
-      return { ok: true }
-    }
-
     case MSG.SHOW_CLICK_EFFECT: {
       const x = msg.x as number
       const y = msg.y as number
@@ -163,6 +157,53 @@ async function handleContentMessage(msg: Record<string, unknown>): Promise<unkno
       return { ok: !!el }
     }
 
+    case MSG.GET_FOCUSED_FIELD: {
+      const focused = document.activeElement as HTMLElement | null
+      if (!focused || focused === document.body) {
+        return { ok: false, error: 'No focused editable field' }
+      }
+      const tag = focused.tagName.toLowerCase()
+      const isEditable = tag === 'input' || tag === 'textarea' || tag === 'select' ||
+        focused.isContentEditable || focused.getAttribute('role') === 'textbox'
+      if (!isEditable) {
+        return { ok: false, error: 'Focused element is not editable' }
+      }
+      // Build a robust selector
+      const selectors: string[] = []
+      if (focused.id) selectors.push(`#${CSS.escape(focused.id)}`)
+      if (focused.getAttribute('name')) selectors.push(`${tag}[name="${CSS.escape(focused.getAttribute('name')!)}"]`)
+      if (focused.getAttribute('aria-label')) selectors.push(`[aria-label="${CSS.escape(focused.getAttribute('aria-label')!)}"]`)
+      // Gather label
+      let label = ''
+      const inp = focused as HTMLInputElement
+      if (inp.labels && inp.labels.length > 0) label = inp.labels[0].textContent?.trim() ?? ''
+      if (!label) label = focused.getAttribute('aria-label') ?? focused.getAttribute('placeholder') ?? focused.getAttribute('name') ?? ''
+      // Gather nearby context for better AI understanding
+      const parent = focused.closest('form, fieldset, [role="group"], .form-group, .field, section') ?? focused.parentElement
+      const nearbyText = parent ? (parent.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 300) : ''
+      const inputType = focused.getAttribute('type') ?? (tag === 'textarea' ? 'textarea' : tag === 'select' ? 'select' : 'text')
+      const currentValue = (focused as HTMLInputElement).value ?? focused.textContent ?? ''
+      // Get options for select
+      const options: string[] = []
+      if (tag === 'select') {
+        for (const opt of (focused as HTMLSelectElement).options) {
+          if (opt.value) options.push(opt.text || opt.value)
+        }
+      }
+      return {
+        ok: true,
+        field: {
+          selector: selectors[0] || `${tag}`,
+          label,
+          inputType,
+          currentValue: currentValue.slice(0, 200),
+          nearbyText,
+          options: options.length > 0 ? options.slice(0, 30) : undefined,
+          required: focused.hasAttribute('required'),
+        }
+      }
+    }
+
     case MSG.FORM_COACH_START: {
       const fields = msg.fields as CoachField[]
       startCoach(fields, (summary) => {
@@ -175,13 +216,15 @@ async function handleContentMessage(msg: Record<string, unknown>): Promise<unkno
       return { ok: true }
     }
 
-    case MSG.SHOW_ACTIVITY_BORDER: {
-      showActivityBorder()
-      return { ok: true }
+    case MSG.GUIDED_HIGHLIGHT: {
+      const { showGuidedHighlight } = await import('./guided-overlay')
+      const result = await showGuidedHighlight(msg.target as import('./guided-overlay').GuidedTarget)
+      return { ok: true, ...result }
     }
 
-    case MSG.HIDE_ACTIVITY_BORDER: {
-      hideActivityBorder()
+    case MSG.GUIDED_HIDE: {
+      const { hideGuidedHighlight } = await import('./guided-overlay')
+      hideGuidedHighlight()
       return { ok: true }
     }
 
@@ -253,6 +296,18 @@ async function handleContentMessage(msg: Record<string, unknown>): Promise<unkno
       const freshSnap = buildSnapshot()
       lastSnapshot = freshSnap
       return { ...result, userActive: userIsInteracting, snapshot: freshSnap }
+    }
+
+    case MSG.WATCH_CHECK: {
+      const selector = msg.selector as string | undefined
+      let currentValue = ''
+      if (selector) {
+        const el = document.querySelector(selector)
+        currentValue = el?.textContent?.trim() ?? ''
+      } else {
+        currentValue = document.body.innerText?.slice(0, 5000) ?? ''
+      }
+      return { ok: true, selector, currentValue, timestamp: Date.now() }
     }
 
     default:
@@ -673,7 +728,7 @@ async function performClick(el: HTMLElement): Promise<{ ok: boolean; result?: st
     }
   }
 
-  await sleep(800)
+  await sleep(200) // reduced from 800ms — CDP is now the primary click path
 
   const postUrl = location.href
   const postTitle = document.title
@@ -1420,65 +1475,6 @@ function listClickableElements(): string {
     if (visible.length >= 35) break
   }
   return visible.join(', ') || 'none visible'
-}
-
-// ─── Activity overlay with stop button ──────────────────────────────────────
-
-const BORDER_ID = '__orion-activity-border'
-const STOP_BTN_ID = '__orion-stop-btn'
-
-function showActivityBorder(): void {
-  if (document.getElementById(BORDER_ID)) return
-
-  // Pulsing border frame
-  const el = document.createElement('div')
-  el.id = BORDER_ID
-  el.style.cssText = `
-    position:fixed;inset:0;pointer-events:none;z-index:2147483646;
-    border:2px solid rgba(108,92,231,0.6);
-    box-shadow:inset 0 0 30px rgba(108,92,231,0.08);
-    border-radius:0;animation:__orion-pulse 2s ease-in-out infinite;
-  `
-
-  // Floating stop button — top-right corner
-  const stopBtn = document.createElement('button')
-  stopBtn.id = STOP_BTN_ID
-  stopBtn.textContent = 'Stop AI'
-  stopBtn.style.cssText = `
-    position:fixed;top:12px;right:12px;z-index:2147483647;
-    padding:6px 16px;border:none;border-radius:6px;
-    background:rgba(220,38,38,0.9);color:#fff;
-    font:600 13px/1 -apple-system,BlinkMacSystemFont,sans-serif;
-    cursor:pointer;pointer-events:auto;
-    box-shadow:0 2px 8px rgba(0,0,0,0.3);
-    transition:background 0.15s, transform 0.1s;
-  `
-  stopBtn.addEventListener('mouseenter', () => { stopBtn.style.background = 'rgba(185,28,28,0.95)' })
-  stopBtn.addEventListener('mouseleave', () => { stopBtn.style.background = 'rgba(220,38,38,0.9)' })
-  stopBtn.addEventListener('mousedown', () => { stopBtn.style.transform = 'scale(0.95)' })
-  stopBtn.addEventListener('mouseup', () => { stopBtn.style.transform = '' })
-  stopBtn.addEventListener('click', () => {
-    chrome.runtime.sendMessage({ type: MSG.STOP_AUTOMATION }).catch(() => {})
-    hideActivityBorder()
-  })
-
-  const style = document.createElement('style')
-  style.id = `${BORDER_ID}-style`
-  style.textContent = `
-    @keyframes __orion-pulse {
-      0%,100%{border-color:rgba(108,92,231,0.6);box-shadow:inset 0 0 20px rgba(108,92,231,0.05)}
-      50%{border-color:rgba(108,92,231,0.9);box-shadow:inset 0 0 40px rgba(108,92,231,0.12)}
-    }
-  `
-  document.head.appendChild(style)
-  document.body.appendChild(el)
-  document.body.appendChild(stopBtn)
-}
-
-function hideActivityBorder(): void {
-  document.getElementById(BORDER_ID)?.remove()
-  document.getElementById(STOP_BTN_ID)?.remove()
-  document.getElementById(`${BORDER_ID}-style`)?.remove()
 }
 
 // ─── Init ─────────────────────────────────────────────────────────────────────

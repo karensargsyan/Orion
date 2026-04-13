@@ -33,7 +33,16 @@ function buildGeminiContents(
     if (m.imageData && m.role === 'user') {
       const match = m.imageData.match(/^data:([^;]+);base64,(.+)$/)
       if (match) {
-        parts.push({ inlineData: { mimeType: match[1], data: match[2] } })
+        const [, mimeType, base64] = match
+        // Validate base64: must be reasonable length, correct padding, valid chars
+        const isValidBase64 = base64.length > 100 &&
+          base64.length < 10_000_000 && // ~7.5MB max raw
+          base64.length % 4 === 0
+        if (isValidBase64) {
+          parts.push({ inlineData: { mimeType, data: base64 } })
+        } else {
+          console.warn(`[Gemini] Skipping malformed image: length=${base64.length}, padding=${base64.length % 4}`)
+        }
       }
     }
 
@@ -137,7 +146,8 @@ function processSSELine(line: string, fullText: string, port: StreamPort): strin
 export async function callGemini(
   messages: Pick<ChatMessage, 'role' | 'content' | 'imageData'>[],
   settings: Settings,
-  maxTokens = 2048
+  maxTokens = 2048,
+  signal?: AbortSignal
 ): Promise<string> {
   const apiKey = settings.geminiApiKey
   if (!apiKey) return ''
@@ -161,15 +171,28 @@ export async function callGemini(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      signal,
     })
 
-    if (!response.ok) return ''
+    if (!response.ok) {
+      try {
+        const errBody = await response.text()
+        console.warn(`[LocalAI] callGemini error ${response.status}: ${errBody.slice(0, 300)}`)
+      } catch {
+        console.warn(`[LocalAI] callGemini error: ${response.status} ${response.statusText}`)
+      }
+      return ''
+    }
 
     const json = await response.json() as {
       candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>
     }
-    return json.candidates?.[0]?.content?.parts?.map(p => p.text ?? '').join('') ?? ''
-  } catch {
+    const result = json.candidates?.[0]?.content?.parts?.map(p => p.text ?? '').join('') ?? ''
+    if (!result) console.warn(`[LocalAI] callGemini returned empty content. Candidates: ${JSON.stringify(json.candidates?.length ?? 0)}`)
+    return result
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') return ''
+    console.warn(`[LocalAI] callGemini network error:`, err)
     return ''
   }
 }

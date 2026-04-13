@@ -127,7 +127,7 @@ function resolveProvider(settings: Settings): { format: 'openai' | 'anthropic' |
     default: {
       const caps = settings.apiCapabilities
       const format = caps?.apiFormat === 'anthropic' ? 'anthropic' as const : 'openai' as const
-      const baseUrl = (caps?.baseUrl || settings.lmStudioUrl).replace(/\/+$/, '')
+      const baseUrl = (caps?.baseUrl || settings.lmStudioUrl).replace(/\/v1\/?$/, '').replace(/\/+$/, '')
       return {
         format,
         baseUrl,
@@ -188,11 +188,15 @@ function buildOpenAIMessages(
 ): Array<{ role: string; content: string | OpenAIMessageContent[] }> {
   return messages.map(m => {
     if (visionEnabled && m.imageData && m.role === 'user') {
-      const parts: OpenAIMessageContent[] = [
-        { type: 'text', text: m.content },
-        { type: 'image_url', image_url: { url: m.imageData, detail: 'low' } },
-      ]
-      return { role: m.role, content: parts }
+      // Validate image data URL before sending
+      const isValid = m.imageData.startsWith('data:image/') && m.imageData.length > 200 && m.imageData.length < 10_000_000
+      if (isValid) {
+        const parts: OpenAIMessageContent[] = [
+          { type: 'text', text: m.content },
+          { type: 'image_url', image_url: { url: m.imageData, detail: 'low' } },
+        ]
+        return { role: m.role, content: parts }
+      }
     }
     return { role: m.role, content: m.content }
   })
@@ -219,10 +223,16 @@ function buildAnthropicMessages(
       const match = m.imageData.match(/^data:([^;]+);base64,(.+)$/)
       const blocks: AnthropicContentBlock[] = [{ type: 'text', text: m.content }]
       if (match) {
-        blocks.push({
-          type: 'image',
-          source: { type: 'base64', media_type: match[1], data: match[2] },
-        })
+        const [, mediaType, base64] = match
+        const isValid = base64.length > 100 && base64.length < 10_000_000 && base64.length % 4 === 0
+        if (isValid) {
+          blocks.push({
+            type: 'image',
+            source: { type: 'base64', media_type: mediaType, data: base64 },
+          })
+        } else {
+          console.warn(`[Anthropic] Skipping malformed image: length=${base64.length}`)
+        }
       }
       anthropicMessages.push({ role: m.role, content: blocks })
     } else {
@@ -472,16 +482,32 @@ export async function streamChat(
 
 // ─── Non-streaming call (for background tasks) ───────────────────────────────
 
+/** Retryable status codes for transient failures. */
+const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504])
+const MAX_RETRIES = 3
+const RETRY_DELAYS = [1000, 3000, 9000]
+
 export async function callAI(
   messages: Pick<ChatMessage, 'role' | 'content' | 'imageData'>[],
   settings: Settings,
   maxTokens = 512,
-  forceVision = false
+  forceVision = false,
+  signal?: AbortSignal
 ): Promise<string> {
+  // Rate limit non-streaming calls too
+  const got = rateLimiter.consume()
+  if (!got) {
+    const waited = await rateLimiter.consumeWithWait(3000)
+    if (!waited) {
+      console.warn('[LocalAI] callAI rate limit exhausted')
+      return ''
+    }
+  }
+
   const format = getApiFormat(settings)
 
   if (format === 'gemini') {
-    return callGemini(messages, settings, maxTokens)
+    return callGemini(messages, settings, maxTokens, signal)
   }
 
   const baseUrl = getBaseUrl(settings)
@@ -489,66 +515,80 @@ export async function callAI(
   const hasVision = forceVision || supportsVision(settings)
   const model = getActiveModel(settings)
 
-  try {
-    if (format === 'anthropic') {
-      const { system, messages: msgs } = buildAnthropicMessages(messages)
-      const body: Record<string, unknown> = { model, messages: msgs, max_tokens: maxTokens, temperature: getAdaptiveTemperature(settings) }
-      if (system) body.system = system
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      if (format === 'anthropic') {
+        const { system, messages: msgs } = buildAnthropicMessages(messages)
+        const body: Record<string, unknown> = { model, messages: msgs, max_tokens: maxTokens, temperature: getAdaptiveTemperature(settings) }
+        if (system) body.system = system
 
-      const res = await fetch(`${baseUrl}/v1/messages`, { method: 'POST', headers, body: JSON.stringify(body) })
+        const res = await fetch(`${baseUrl}/v1/messages`, { method: 'POST', headers, body: JSON.stringify(body), signal })
+        if (!res.ok) {
+          if (RETRYABLE_STATUSES.has(res.status) && attempt < MAX_RETRIES) {
+            console.warn(`[LocalAI] callAI Anthropic ${res.status}, retry ${attempt + 1}/${MAX_RETRIES}`)
+            await sleep(RETRY_DELAYS[attempt])
+            continue
+          }
+          console.warn(`[LocalAI] callAI Anthropic error: ${res.status} ${res.statusText}`)
+          return ''
+        }
+        const json = await res.json() as { content?: Array<{ text?: string }>; error?: { message?: string } }
+        if (json.error?.message) {
+          console.warn(`[LocalAI] callAI Anthropic API error: ${json.error.message}`)
+          return ''
+        }
+        return json.content?.[0]?.text ?? ''
+      }
+
+      const body = {
+        model,
+        messages: buildOpenAIMessages(messages, hasVision),
+        max_tokens: maxTokens,
+        temperature: getAdaptiveTemperature(settings),
+      }
+      const res = await fetch(`${baseUrl}/v1/chat/completions`, { method: 'POST', headers, body: JSON.stringify(body), signal })
       if (!res.ok) {
-        console.warn(`[LocalAI] callAI Anthropic error: ${res.status} ${res.statusText}`)
+        if (RETRYABLE_STATUSES.has(res.status) && attempt < MAX_RETRIES) {
+          console.warn(`[LocalAI] callAI ${res.status}, retry ${attempt + 1}/${MAX_RETRIES}`)
+          await sleep(RETRY_DELAYS[attempt])
+          continue
+        }
+        try {
+          const errBody = await res.text()
+          console.warn(`[LocalAI] callAI error ${res.status}: ${errBody.slice(0, 300)}`)
+        } catch {
+          console.warn(`[LocalAI] callAI error: ${res.status} ${res.statusText}`)
+        }
         return ''
       }
-      const json = await res.json() as { content?: Array<{ text?: string }>; error?: { message?: string } }
+      const json = await res.json() as {
+        choices?: Array<{ message?: { content?: string; reasoning_content?: string } }>;
+        error?: { message?: string; code?: string };
+      }
       if (json.error?.message) {
-        console.warn(`[LocalAI] callAI Anthropic API error: ${json.error.message}`)
+        console.warn(`[LocalAI] callAI model error: ${json.error.message}`)
         return ''
       }
-      return json.content?.[0]?.text ?? ''
-    }
-
-    const body = {
-      model,
-      messages: buildOpenAIMessages(messages, hasVision),
-      max_tokens: maxTokens,
-      temperature: getAdaptiveTemperature(settings),
-    }
-    const res = await fetch(`${baseUrl}/v1/chat/completions`, { method: 'POST', headers, body: JSON.stringify(body) })
-    if (!res.ok) {
-      // Try to read the error body for details (e.g., LM Studio "insufficient system resources")
-      try {
-        const errBody = await res.text()
-        console.warn(`[LocalAI] callAI error ${res.status}: ${errBody.slice(0, 300)}`)
-      } catch {
-        console.warn(`[LocalAI] callAI error: ${res.status} ${res.statusText}`)
+      const msg = json.choices?.[0]?.message
+      return msg?.content || msg?.reasoning_content || ''
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') return ''
+      if (attempt < MAX_RETRIES) {
+        console.warn(`[LocalAI] callAI network error, retry ${attempt + 1}/${MAX_RETRIES}:`, err)
+        await sleep(RETRY_DELAYS[attempt])
+        continue
       }
+      console.warn(`[LocalAI] callAI network error (final):`, err)
       return ''
     }
-    const json = await res.json() as {
-      choices?: Array<{ message?: { content?: string; reasoning_content?: string } }>;
-      error?: { message?: string; code?: string };
-    }
-    // LM Studio sometimes returns 200 OK with an error object in the body
-    if (json.error?.message) {
-      console.warn(`[LocalAI] callAI model error: ${json.error.message}`)
-      return ''
-    }
-    const msg = json.choices?.[0]?.message
-    // Prefer content; fall back to reasoning_content if content is empty
-    // (reasoning models like Gemma 4 may put actions in reasoning when
-    // they exhaust max_tokens before producing content)
-    return msg?.content || msg?.reasoning_content || ''
-  } catch (err) {
-    console.warn(`[LocalAI] callAI network error:`, err)
-    return ''
   }
+  return ''
 }
 
 // ─── Fetch models ─────────────────────────────────────────────────────────────
 
 export async function fetchModels(baseUrl: string, authToken?: string): Promise<string[]> {
-  const url = baseUrl.replace(/\/+$/, '')
+  const url = baseUrl.replace(/\/v1\/?$/, '').replace(/\/+$/, '')
   const headers: Record<string, string> = {}
   if (authToken) headers['Authorization'] = `Bearer ${authToken}`
 
@@ -615,7 +655,10 @@ export function truncateMessagesToFit(
   // Build from the end, adding messages until budget is spent
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i]
-    const msgTokens = estimateTokens(msg.content ?? '') + (msg.imageData ? 500 : 0)
+    // Images are base64-encoded and extremely large — estimate ~1 token per 4 bytes
+    // A typical screenshot is 100K-500K base64 chars → 25K-125K tokens
+    const imageTokens = msg.imageData ? Math.ceil(msg.imageData.length / 4) : 0
+    const msgTokens = estimateTokens(msg.content ?? '') + imageTokens
     if (totalTokens + msgTokens > available && result.length >= 2) break
     result.unshift(msg)
     totalTokens += msgTokens

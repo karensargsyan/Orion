@@ -178,17 +178,37 @@ function analyzeHeadings(): string[] {
 
 // ─── Button analysis ──────────────────────────────────────────────────────────
 
+/** Detect if a button has primary/CTA styling via CSS class names */
+function detectPrimaryButton(el: HTMLElement): boolean {
+  const cls = (el.className ?? '').toString()
+  return /\b(primary|cta|submit|main-action|send|checkout|btn-primary|btn-success|btn-danger)\b/i.test(cls)
+}
+
 function analyzeButtons(): PageButton[] {
   const buttons = [
     ...document.querySelectorAll<HTMLElement>('button, input[type="submit"], input[type="button"], [role="button"]'),
   ]
   return buttons
     .filter(isVisible)
-    .map(btn => ({
-      selector: getUniqueSelector(btn),
-      text: (btn.textContent?.trim() || (btn as HTMLInputElement).value || btn.getAttribute('aria-label') || '').slice(0, 60),
-      role: btn.getAttribute('role') || btn.tagName.toLowerCase(),
-    }))
+    .map(btn => {
+      const tag = btn.tagName.toUpperCase()
+      const inp = btn as HTMLInputElement
+      const form = btn.closest('form')
+      const explicitType = btn.getAttribute('type')
+      // A button is submit-type if it's input[type=submit], or a <button> inside a form
+      // with type="submit" or no explicit type (default for <button> in a form is "submit")
+      const isSubmitType = (tag === 'INPUT' && inp.type === 'submit') ||
+        (tag === 'BUTTON' && !!form && (explicitType === 'submit' || !explicitType))
+      return {
+        selector: getUniqueSelector(btn),
+        text: (btn.textContent?.trim() || inp.value || btn.getAttribute('aria-label') || '').slice(0, 60),
+        role: btn.getAttribute('role') || btn.tagName.toLowerCase(),
+        formAction: form?.action || undefined,
+        isSubmitType,
+        isPrimary: detectPrimaryButton(btn),
+        ariaLabel: btn.getAttribute('aria-label') || undefined,
+      }
+    })
     .filter(b => b.text.length > 0)
     .slice(0, 20)
 }
@@ -272,6 +292,8 @@ export function buildSnapshot(): PageSnapshot {
     links: analyzeLinks(),
     headings: analyzeHeadings(),
     metaDescription: document.querySelector<HTMLMetaElement>('meta[name="description"]')?.content?.trim() ?? '',
+    language: document.documentElement.lang || navigator.language || '',
+    readyState: document.readyState,
   }
 }
 

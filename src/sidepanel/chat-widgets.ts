@@ -16,9 +16,19 @@ export interface ActionConfirmWidget {
   description: string
   risk: 'read' | 'write' | 'destructive'
   actions: string[]
+  reasoning?: string
+  confidence?: number
+  targetSelector?: string
 }
 
-export type Widget = ChoiceWidget | ConfirmWidget | ActionConfirmWidget
+export interface ActionPlanWidget {
+  kind: 'action_plan'
+  id: string
+  title: string
+  steps: Array<{ description: string; status: 'pending' | 'active' | 'completed' | 'failed'; error?: string }>
+}
+
+export type Widget = ChoiceWidget | ConfirmWidget | ActionConfirmWidget | ActionPlanWidget
 
 const CHOICE_RE = /\[CHOICE:id=&quot;([^&]*)&quot;\]\s*(.*?)\s*\[\/CHOICE\]/g
 const CONFIRM_RE = /\[CONFIRM:id=&quot;([^&]*)&quot;\]\s*(.*?)\s*\[\/CONFIRM\]/g
@@ -76,7 +86,7 @@ export function renderWidgetsInContainer(container: HTMLElement, widgets: Widget
       renderChoiceCard(slot, w)
     } else if (w.kind === 'action_confirm') {
       renderActionConfirmCard(slot, w)
-    } else {
+    } else if (w.kind === 'confirm') {
       renderConfirmCard(slot, w)
     }
   }
@@ -107,39 +117,95 @@ function renderConfirmCard(slot: HTMLElement, widget: ConfirmWidget): void {
 export function renderActionConfirmCard(slot: HTMLElement, widget: ActionConfirmWidget): void {
   const riskClass = `risk-${widget.risk}`
   const riskLabel = widget.risk === 'destructive' ? 'High Risk' : widget.risk === 'write' ? 'Write Action' : 'Action'
+
+  const confidenceHtml = widget.confidence != null
+    ? `<span class="confirm-action-confidence" title="AI confidence">${widget.confidence}%</span>`
+    : ''
+
+  const showTargetHtml = widget.targetSelector
+    ? `<button class="confirm-action-btn confirm-show-target" data-target-selector="${escapeAttr(widget.targetSelector)}" title="Highlight the target element on the page">Show target</button>`
+    : ''
+
   slot.className = `confirm-action-card ${riskClass}`
   slot.innerHTML = `
     <div class="confirm-action-header">
       <span class="confirm-action-risk">${riskLabel}</span>
+      ${confidenceHtml}
       <span class="confirm-action-title">The assistant wants to:</span>
     </div>
-    <div class="confirm-action-desc">${widget.description}</div>
+    <div class="confirm-action-desc"></div>
+    ${widget.reasoning ? '<div class="confirm-action-reasoning"></div>' : ''}
     <div class="confirm-action-options">
-      <button class="confirm-action-btn confirm-accept" data-confirm-id="${widget.id}" data-preference="once">Accept</button>
-      <button class="confirm-action-btn confirm-always" data-confirm-id="${widget.id}" data-preference="always_this">Accept &amp; Don't Ask Again</button>
-      <button class="confirm-action-btn confirm-all" data-confirm-id="${widget.id}" data-preference="always_all">Accept All (never ask)</button>
-      <button class="confirm-action-btn confirm-decline" data-confirm-id="${widget.id}" data-preference="decline">Decline</button>
+      ${showTargetHtml}
+      <button class="confirm-action-btn confirm-accept" data-confirm-id="${escapeAttr(widget.id)}" data-preference="once">Accept</button>
+      <button class="confirm-action-btn confirm-always" data-confirm-id="${escapeAttr(widget.id)}" data-preference="always_this">Accept &amp; Don't Ask Again</button>
+      <button class="confirm-action-btn confirm-all" data-confirm-id="${escapeAttr(widget.id)}" data-preference="always_all">Accept All (never ask)</button>
+      <button class="confirm-action-btn confirm-decline" data-confirm-id="${escapeAttr(widget.id)}" data-preference="decline">Decline</button>
     </div>
   `
+  // Use textContent to safely set description (prevents XSS from AI-generated content)
+  const descEl = slot.querySelector('.confirm-action-desc')
+  if (descEl) descEl.textContent = widget.description
+  if (widget.reasoning) {
+    const reasonEl = slot.querySelector('.confirm-action-reasoning')
+    if (reasonEl) reasonEl.textContent = widget.reasoning
+  }
 }
 
 export function createActionConfirmElement(
   id: string,
   description: string,
   risk: string,
-  actions: string[]
+  actions: string[],
+  reasoning?: string,
+  confidence?: number,
+  targetSelector?: string
 ): HTMLElement {
   const div = document.createElement('div')
   div.dataset.widgetId = id
-  const widget: ActionConfirmWidget = { kind: 'action_confirm', id, description, risk: risk as ActionConfirmWidget['risk'], actions }
+  const widget: ActionConfirmWidget = { kind: 'action_confirm', id, description, risk: risk as ActionConfirmWidget['risk'], actions, reasoning, confidence, targetSelector }
   renderActionConfirmCard(div, widget)
+  return div
+}
+
+export function createModeChoiceElement(
+  id: string,
+  description: string,
+): HTMLElement {
+  const div = document.createElement('div')
+  div.className = 'mode-choice-card'
+  div.dataset.modeChoiceId = id
+  div.innerHTML = `
+    <div class="mode-choice-header">How should I handle this?</div>
+    <div class="mode-choice-desc"></div>
+    <div class="mode-choice-buttons">
+      <button class="mode-choice-btn mode-choice-guide" data-mode-id="${id}" data-mode="guided">
+        <span class="mode-choice-icon">🎯</span>
+        <span class="mode-choice-label">Guide me</span>
+        <span class="mode-choice-hint">Highlight what to click</span>
+      </button>
+      <button class="mode-choice-btn mode-choice-auto" data-mode-id="${id}" data-mode="auto">
+        <span class="mode-choice-icon">⚡</span>
+        <span class="mode-choice-label">Do for me</span>
+        <span class="mode-choice-hint">Auto-click everything</span>
+      </button>
+    </div>
+    <label class="mode-choice-remember">
+      <input type="checkbox" class="mode-choice-remember-check" data-mode-id="${escapeAttr(id)}">
+      <span>Remember my choice</span>
+    </label>
+  `
+  // Use textContent to safely set description (prevents XSS from AI-generated content)
+  const descEl = div.querySelector('.mode-choice-desc')
+  if (descEl) descEl.textContent = description
   return div
 }
 
 export function attachWidgetHandlers(
   container: HTMLElement,
   onChoice: (widgetId: string, value: string) => void,
-  onConfirmAction?: (confirmId: string, preference: string, container: HTMLElement) => void
+  onConfirmAction?: (confirmId: string, preference: string, container: HTMLElement) => void,
+  onModeChoice?: (modeId: string, mode: 'auto' | 'guided', remember: boolean) => void
 ): void {
   container.addEventListener('click', (e) => {
     const target = e.target as HTMLElement
@@ -160,6 +226,18 @@ export function attachWidgetHandlers(
       return
     }
 
+    if (target.classList.contains('confirm-show-target')) {
+      const selector = target.dataset.targetSelector
+      if (selector) {
+        chrome.tabs.query({ active: true, currentWindow: true }).then(tabs => {
+          if (tabs[0]?.id) {
+            chrome.tabs.sendMessage(tabs[0].id, { type: 'HIGHLIGHT_FIELD', selector }).catch(() => {})
+          }
+        })
+      }
+      return
+    }
+
     if (target.classList.contains('confirm-action-btn')) {
       const confirmId = target.dataset.confirmId!
       const preference = target.dataset.preference!
@@ -175,5 +253,242 @@ export function attachWidgetHandlers(
       }
       onConfirmAction?.(confirmId, preference, container)
     }
+
+    if (target.classList.contains('mode-choice-btn') || target.closest('.mode-choice-btn')) {
+      const btn = target.closest('.mode-choice-btn') as HTMLElement
+      if (!btn) return
+      const modeId = btn.dataset.modeId!
+      const mode = btn.dataset.mode as 'auto' | 'guided'
+      const card = btn.closest('.mode-choice-card') as HTMLElement
+      if (card) {
+        const allBtns = card.querySelectorAll<HTMLButtonElement>('.mode-choice-btn')
+        allBtns.forEach(b => { b.disabled = true })
+        btn.classList.add('mode-choice-selected')
+        card.classList.add('mode-choice-done')
+      }
+      const rememberCheck = card?.querySelector<HTMLInputElement>(`.mode-choice-remember-check[data-mode-id="${modeId}"]`)
+      const remember = rememberCheck?.checked ?? false
+      onModeChoice?.(modeId, mode, remember)
+    }
   })
 }
+
+// ─── Form Assist Card ─────────────────────────────────────────────────────────
+
+import type { FormAssistField } from '../shared/types'
+
+function escapeAttr(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+const LONG_FIELD_RE = /justification|description|reason|explain|why|purpose|detail|comment|note|message|summary/i
+
+function isLongField(label: string, value: string): boolean {
+  return LONG_FIELD_RE.test(label) || value.length > 80
+}
+
+function confidenceBadge(conf: FormAssistField['confidence'], hint: string): string {
+  const cls = `confidence-badge confidence-${conf}`
+  const label = conf === 'high' ? 'vault' : conf === 'medium' ? 'suggested' : 'needs input'
+  return `<span class="${cls}" title="${escapeAttr(hint)}">${label}</span>`
+}
+
+export function createFormAssistElement(
+  id: string,
+  fields: FormAssistField[],
+  formTitle: string
+): HTMLElement {
+  const div = document.createElement('div')
+  div.className = 'form-assist-card'
+  div.dataset.assistId = id
+
+  const vaultCount = fields.filter(f => f.confidence === 'high').length
+  const aiCount = fields.filter(f => f.confidence === 'medium').length
+
+  let subtitle = `${fields.length} field${fields.length !== 1 ? 's' : ''} found`
+  if (vaultCount > 0) subtitle += ` · ${vaultCount} from vault`
+  if (aiCount > 0) subtitle += ` · ${aiCount} AI suggested`
+
+  const fieldsHtml = fields.map(f => {
+    const reqStar = f.required ? '<span class="required-star">*</span>' : ''
+    const badge = confidenceBadge(f.confidence, f.hint)
+
+    let inputHtml: string
+    if (f.inputType === 'select' && f.options?.length) {
+      const opts = f.options.map(o => {
+        const sel = o === f.value ? ' selected' : ''
+        return `<option value="${escapeAttr(o)}"${sel}>${escapeHtml(o)}</option>`
+      }).join('')
+      inputHtml = `<select class="form-assist-value" data-field-id="${f.fieldId}"><option value="">-- Select --</option>${opts}</select>`
+    } else if (f.inputType === 'checkbox') {
+      const checked = f.value === 'true' || f.value === '1' || f.value === 'yes' ? ' checked' : ''
+      inputHtml = `<label class="form-assist-checkbox"><input type="checkbox" class="form-assist-value" data-field-id="${f.fieldId}"${checked}> ${escapeHtml(f.label)}</label>`
+    } else if (isLongField(f.label, f.value)) {
+      inputHtml = `<textarea class="form-assist-value" data-field-id="${f.fieldId}" rows="3" placeholder="${escapeAttr(f.hint)}">${escapeHtml(f.value)}</textarea>`
+    } else {
+      const type = f.inputType === 'email' ? 'email' : f.inputType === 'tel' ? 'tel' : f.inputType === 'date' ? 'date' : 'text'
+      inputHtml = `<input class="form-assist-value" type="${type}" data-field-id="${f.fieldId}" value="${escapeAttr(f.value)}" placeholder="${escapeAttr(f.hint)}">`
+    }
+
+    return `
+      <div class="form-assist-field" data-field-id="${f.fieldId}">
+        <div class="form-assist-field-header">
+          <label class="form-assist-label">${escapeHtml(f.label)} ${reqStar}</label>
+          ${badge}
+        </div>
+        ${inputHtml}
+        <div class="form-assist-field-actions">
+          <button class="btn-small btn-copy-field" data-field-id="${f.fieldId}" title="Copy to clipboard">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+            Copy
+          </button>
+          <button class="btn-small btn-fill-field" data-field-id="${f.fieldId}" data-selector="${escapeAttr(f.selector)}" data-input-type="${escapeAttr(f.inputType)}" title="Fill this field on the page">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
+            Fill
+          </button>
+        </div>
+      </div>`
+  }).join('')
+
+  div.innerHTML = `
+    <div class="form-assist-header">
+      <div class="form-assist-icon">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+      </div>
+      <div>
+        <div class="form-assist-title">Form Assistant</div>
+        <div class="form-assist-subtitle">${escapeHtml(subtitle)}</div>
+      </div>
+    </div>
+    <div class="form-assist-fields">${fieldsHtml}</div>
+    <div class="form-assist-footer">
+      <button class="btn-primary btn-fill-all" data-assist-id="${id}">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
+        Fill All
+      </button>
+      <button class="btn-small btn-copy-all" data-assist-id="${id}">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+        Copy All
+      </button>
+    </div>
+  `
+  return div
+}
+
+function getFieldValue(card: HTMLElement, fieldId: string): string {
+  const el = card.querySelector<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(`.form-assist-value[data-field-id="${fieldId}"]`)
+  if (!el) return ''
+  if (el instanceof HTMLInputElement && el.type === 'checkbox') return el.checked ? 'true' : 'false'
+  return el.value
+}
+
+function flashButton(btn: HTMLElement, cls: string, text: string, duration = 1500): void {
+  const origText = btn.innerHTML
+  btn.classList.add(cls)
+  btn.innerHTML = text
+  setTimeout(() => { btn.classList.remove(cls); btn.innerHTML = origText }, duration)
+}
+
+export interface FormAssistCallbacks {
+  onFillField: (selector: string, value: string, inputType: string) => Promise<boolean>
+  onCopyField: (value: string) => void
+  onCopyAll: (text: string) => void
+}
+
+export function attachFormAssistHandlers(
+  card: HTMLElement,
+  callbacks: FormAssistCallbacks
+): void {
+  // Copy field
+  card.addEventListener('click', async (e) => {
+    const target = e.target as HTMLElement
+    const btn = target.closest('.btn-copy-field') as HTMLElement | null
+    if (btn) {
+      const fid = btn.dataset.fieldId!
+      const val = getFieldValue(card, fid)
+      if (val) {
+        callbacks.onCopyField(val)
+        flashButton(btn, 'copied', '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg> Copied!')
+      }
+      return
+    }
+
+    // Fill field
+    const fillBtn = target.closest('.btn-fill-field') as HTMLElement | null
+    if (fillBtn) {
+      const fid = fillBtn.dataset.fieldId!
+      const selector = fillBtn.dataset.selector!
+      const inputType = fillBtn.dataset.inputType!
+      const val = getFieldValue(card, fid)
+      if (!val) return
+
+      const ok = await callbacks.onFillField(selector, val, inputType)
+      if (ok) {
+        flashButton(fillBtn, 'filled', '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg> Filled!')
+      } else {
+        // Fallback: copy to clipboard instead
+        callbacks.onCopyField(val)
+        flashButton(fillBtn, 'fill-failed', '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg> Copied instead', 2000)
+      }
+      return
+    }
+
+    // Fill All
+    const fillAll = target.closest('.btn-fill-all') as HTMLButtonElement | null
+    if (fillAll) {
+      fillAll.disabled = true
+      const fields = card.querySelectorAll<HTMLElement>('.form-assist-field')
+      let filled = 0, copied = 0, skipped = 0
+      const total = fields.length
+
+      for (const field of fields) {
+        const fid = field.dataset.fieldId!
+        const val = getFieldValue(card, fid)
+        if (!val) { skipped++; continue }
+
+        const fb = field.querySelector<HTMLElement>('.btn-fill-field')
+        const selector = fb?.dataset.selector ?? ''
+        const inputType = fb?.dataset.inputType ?? 'text'
+
+        fillAll.textContent = `Filling... ${filled + copied + skipped + 1}/${total}`
+
+        if (selector) {
+          const ok = await callbacks.onFillField(selector, val, inputType)
+          if (ok) { filled++ } else { callbacks.onCopyField(val); copied++ }
+        } else { skipped++ }
+      }
+
+      card.classList.add('form-assist-done')
+      const summaryEl = document.createElement('div')
+      summaryEl.className = 'form-assist-summary'
+      let summary = `Filled ${filled} field${filled !== 1 ? 's' : ''}`
+      if (copied > 0) summary += `, copied ${copied} (site blocked fill)`
+      if (skipped > 0) summary += `, skipped ${skipped} empty`
+      summaryEl.textContent = summary
+      card.querySelector('.form-assist-footer')?.replaceWith(summaryEl)
+      return
+    }
+
+    // Copy All
+    const copyAll = target.closest('.btn-copy-all') as HTMLElement | null
+    if (copyAll) {
+      const fields = card.querySelectorAll<HTMLElement>('.form-assist-field')
+      const lines: string[] = []
+      for (const field of fields) {
+        const fid = field.dataset.fieldId!
+        const label = field.querySelector('.form-assist-label')?.textContent?.trim() ?? fid
+        const val = getFieldValue(card, fid)
+        if (val) lines.push(`${label}:\n${val}`)
+      }
+      const text = lines.join('\n\n')
+      callbacks.onCopyAll(text)
+      flashButton(copyAll, 'copied', '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg> Copied all!')
+    }
+  })
+}
+
+

@@ -1,6 +1,7 @@
 import type { LearnedPlaybook, Settings } from '../shared/types'
 import { getAllPlaybooks, getPlaybooksByDomain, savePlaybook } from './memory-manager'
 import { mempalaceEnabled, searchMempalace } from './mempalace-client'
+import { localMemoryEnabled, searchLocalMemory } from './local-memory'
 
 export interface PlaybookMatch {
   playbook: LearnedPlaybook
@@ -31,6 +32,23 @@ export async function findMatchingPlaybook(
 
   if (!bestMatch && mempalaceEnabled(settings)) {
     bestMatch = await semanticFallback(userInput, candidates, settings)
+  }
+
+  // Local memory fallback: search for matching playbook lessons
+  if (!bestMatch && localMemoryEnabled(settings)) {
+    try {
+      const localResults = await searchLocalMemory(userInput, { category: 'lesson', limit: 3 })
+      if (localResults) {
+        // Look for playbook-matching results in local memory
+        for (const candidate of candidates) {
+          const triggerStr = candidate.triggers.join(' ').toLowerCase()
+          if (localResults.toLowerCase().includes(triggerStr)) {
+            bestMatch = { playbook: candidate, score: 0.4 }
+            break
+          }
+        }
+      }
+    } catch { /* local memory not available */ }
   }
 
   return bestMatch

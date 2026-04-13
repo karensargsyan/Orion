@@ -1,6 +1,7 @@
 import * as esbuild from 'esbuild'
 import * as fs from 'fs'
 import * as path from 'path'
+import { execSync } from 'child_process'
 
 const watch = process.argv.includes('--watch')
 
@@ -22,12 +23,57 @@ function copyDir(src: string, dest: string): void {
   fs.cpSync(src, dest, { recursive: true })
 }
 
+function bumpPatchVersion(): string {
+  // Bump src/manifest.json
+  const manifestPath = path.join(__dirname, 'src/manifest.json')
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as { version: string }
+  const parts = manifest.version.split('.').map(Number)
+  parts[2] = (parts[2] ?? 0) + 1
+  const newVersion = parts.join('.')
+  manifest.version = newVersion
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n')
+
+  // Keep package.json in sync
+  const pkgPath = path.join(__dirname, 'package.json')
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { version: string }
+  pkg.version = newVersion
+  fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n')
+
+  return newVersion
+}
+
+function notifyBuildReady(version: string): void {
+  const box = [
+    '╔══════════════════════════════════════════════╗',
+    `║  ✅  Orion built — v${version.padEnd(26)}║`,
+    '║                                              ║',
+    '║  Load in Chrome:                             ║',
+    '║  1. Go to chrome://extensions                ║',
+    '║  2. Enable Developer Mode (toggle top-right) ║',
+    '║  3. "Load unpacked" → select dist/           ║',
+    '║     (or click "Update" if already loaded)    ║',
+    '╚══════════════════════════════════════════════╝',
+  ]
+  console.log('\n' + box.join('\n') + '\n')
+
+  // macOS system notification (silent fail on other platforms)
+  if (process.platform === 'darwin') {
+    try {
+      execSync(`osascript -e 'display notification "Reload in Chrome to test" with title "Orion v${version} ready"'`)
+    } catch {
+      // osascript unavailable — ignore
+    }
+  }
+}
+
 function copyStatic(): void {
   copyFile('src/manifest.json', 'dist/manifest.json')
   copyFile('src/sidepanel/sidepanel.html', 'dist/sidepanel/sidepanel.html')
   copyFile('src/offscreen/offscreen.html', 'dist/offscreen/offscreen.html')
   copyFile('src/permissions/microphone-permission.html', 'dist/permissions/microphone-permission.html')
+  copyFile('docs/privacy-policy.html', 'dist/privacy-policy.html')
   if (fs.existsSync('icons')) copyDir('icons', 'dist/icons')
+  if (fs.existsSync('src/_locales')) copyDir('src/_locales', 'dist/_locales')
   // _dev is NOT copied to dist — Chrome rejects filenames starting with "_"
 }
 
@@ -81,15 +127,29 @@ const buildConfigs: esbuild.BuildOptions[] = [
     format: 'esm',
     platform: 'browser',
   },
+  // Command Palette (IIFE — injected on demand into pages)
+  {
+    ...sharedOptions,
+    entryPoints: ['src/content/command-palette.ts'],
+    outfile: 'dist/content/command-palette.js',
+    format: 'iife',
+    platform: 'browser',
+  },
 ]
 
-copyStatic()
-
 async function main(): Promise<void> {
+  // Auto-bump version on every build (skip in watch mode to avoid infinite bumps)
+  const newVersion = watch ? (() => {
+    const m = JSON.parse(fs.readFileSync('src/manifest.json', 'utf8')) as { version: string }
+    return m.version
+  })() : bumpPatchVersion()
+
+  copyStatic()
+
   if (watch) {
     const contexts = await Promise.all(buildConfigs.map(b => esbuild.context(b)))
     await Promise.all(contexts.map(ctx => ctx.watch()))
-    console.log('[LocalAI] Watching for changes… (Ctrl+C to stop)')
+    console.log(`[watch] Orion v${newVersion} — watching for changes…`)
     // Keep process alive
     await new Promise(() => {})
   } else {
@@ -101,7 +161,7 @@ async function main(): Promise<void> {
       console.error(`[LocalAI] Build failed with ${errors.length} error(s)`)
       process.exit(1)
     }
-    console.log('[LocalAI] Build complete → dist/')
+    notifyBuildReady(newVersion)
   }
 }
 

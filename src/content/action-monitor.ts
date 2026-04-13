@@ -73,15 +73,73 @@ function onClickCapture(e: MouseEvent): void {
   queueAction(makeEvent('click', el, { text: getElementText(el) }))
 }
 
-let inputDebounce: ReturnType<typeof setTimeout> | null = null
+/** Per-field debounce map to avoid cancelling inputs across different fields */
+const inputDebouncers = new Map<string, ReturnType<typeof setTimeout>>()
+
 function onInputCapture(e: Event): void {
   const el = e.target as HTMLInputElement
   if (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA' && !el.isContentEditable) return
-  if (inputDebounce) clearTimeout(inputDebounce)
-  inputDebounce = setTimeout(() => {
-    const value = isSensitive(el) ? '[redacted]' : el.value?.slice(0, 100) ?? ''
-    queueAction(makeEvent('input', el, { value }))
-  }, 800)
+
+  const fieldKey = getUniqueSelector(el)
+  const prev = inputDebouncers.get(fieldKey)
+  if (prev) clearTimeout(prev)
+
+  inputDebouncers.set(fieldKey, setTimeout(() => {
+    inputDebouncers.delete(fieldKey)
+    // Send actual values — background handles encryption for sensitive fields
+    const value = el.value?.slice(0, 500) ?? ''
+    const inputType = el.type ?? (el.isContentEditable ? 'contenteditable' : 'textarea')
+    const fieldLabel = extractFieldLabel(el)
+    queueAction(makeEvent('input', el, {
+      value,
+      inputType,
+      fieldLabel: fieldLabel || undefined,
+      detail: [
+        (el as HTMLInputElement).name || '',
+        (el as HTMLInputElement).autocomplete || '',
+      ].filter(Boolean).join('|') || undefined,
+    }))
+  }, 800))
+}
+
+/** Extract a human-readable label for a form field */
+function extractFieldLabel(el: HTMLElement): string {
+  // 1. Check for associated <label> element
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement) {
+    if (el.id) {
+      const label = document.querySelector(`label[for="${CSS.escape(el.id)}"]`)
+      if (label?.textContent?.trim()) return label.textContent.trim().slice(0, 60)
+    }
+    // Check parent <label>
+    const parentLabel = el.closest('label')
+    if (parentLabel?.textContent?.trim()) {
+      const labelText = parentLabel.textContent.replace(el.value ?? '', '').trim()
+      if (labelText) return labelText.slice(0, 60)
+    }
+  }
+  // 2. aria-label
+  const ariaLabel = el.getAttribute('aria-label')
+  if (ariaLabel?.trim()) return ariaLabel.trim().slice(0, 60)
+  // 3. aria-labelledby
+  const labelledBy = el.getAttribute('aria-labelledby')
+  if (labelledBy) {
+    const referenced = document.getElementById(labelledBy)
+    if (referenced?.textContent?.trim()) return referenced.textContent.trim().slice(0, 60)
+  }
+  // 4. placeholder
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+    if (el.placeholder?.trim()) return el.placeholder.trim().slice(0, 60)
+  }
+  // 5. title attribute
+  const title = el.getAttribute('title')
+  if (title?.trim()) return title.trim().slice(0, 60)
+  // 6. name or id attribute (last resort)
+  const name = el.getAttribute('name') ?? el.id ?? ''
+  if (name) {
+    // Convert camelCase/snake_case to human readable: firstName -> First Name
+    return name.replace(/[_-]/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/\b\w/g, c => c.toUpperCase()).slice(0, 60)
+  }
+  return ''
 }
 
 function onSubmitCapture(e: Event): void {

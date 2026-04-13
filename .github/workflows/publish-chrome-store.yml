@@ -1,0 +1,274 @@
+# ============================================================================
+# Orion Chrome Extension -- Publish to Chrome Web Store
+# ============================================================================
+#
+# IMPORTANT: The very FIRST upload of the extension MUST be done manually via
+# the Chrome Web Store Developer Dashboard (https://chrome.google.com/webstore/devconsole).
+# The Chrome Web Store API can only UPDATE an existing item; it cannot create
+# new listings. Once you have uploaded v1 manually you can use this workflow
+# for every subsequent release.
+#
+# NOTE: This repo lives on Azure DevOps (vs-ssh.visualstudio.com). To use
+# this GitHub Actions workflow you would need to mirror the repo to GitHub.
+# An equivalent Azure Pipelines YAML is included at the bottom of this file,
+# commented out, for direct use on Azure DevOps.
+#
+# ---------------------------------------------------------------------------
+# HOW TO OBTAIN THE REQUIRED SECRETS
+# ---------------------------------------------------------------------------
+#
+# 1. CHROME_EXTENSION_ID
+#    After your first manual upload, open the Developer Dashboard.
+#    The extension ID is the 32-character string shown under your extension
+#    (e.g. "abcdefghijklmnopqrstuvwxyzabcdef"). Copy it exactly.
+#
+# 2. CHROME_CLIENT_ID  and  CHROME_CLIENT_SECRET
+#    a) Go to https://console.cloud.google.com/
+#    b) Create a project (or reuse one).
+#    c) Enable the "Chrome Web Store API" under APIs & Services > Library.
+#    d) Go to APIs & Services > Credentials > Create Credentials > OAuth client ID.
+#    e) Choose application type "Desktop app", give it a name, and click Create.
+#    f) Copy the Client ID and Client Secret shown in the dialog.
+#
+# 3. CHROME_REFRESH_TOKEN
+#    a) Open this URL in a browser (replace YOUR_CLIENT_ID):
+#
+#       https://accounts.google.com/o/oauth2/auth?response_type=code&scope=https://www.googleapis.com/auth/chromewebstore&client_id=YOUR_CLIENT_ID&redirect_uri=urn:ietf:wg:oauth:2.0:oob
+#
+#    b) Authorize access and copy the authorization code.
+#    c) Exchange the code for a refresh token:
+#
+#       curl "https://oauth2.googleapis.com/token" \
+#         -d "client_id=YOUR_CLIENT_ID" \
+#         -d "client_secret=YOUR_CLIENT_SECRET" \
+#         -d "code=YOUR_AUTH_CODE" \
+#         -d "grant_type=authorization_code" \
+#         -d "redirect_uri=urn:ietf:wg:oauth:2.0:oob"
+#
+#    d) The response JSON contains a "refresh_token" field. Copy that value.
+#
+# 4. Store all four values as repository secrets in GitHub:
+#    Settings > Secrets and variables > Actions > New repository secret
+#    - CHROME_EXTENSION_ID
+#    - CHROME_CLIENT_ID
+#    - CHROME_CLIENT_SECRET
+#    - CHROME_REFRESH_TOKEN
+#
+# ============================================================================
+
+name: Publish to Chrome Web Store
+
+on:
+  push:
+    tags:
+      - "v*"          # e.g. v1.0.0, v0.7.0-beta
+  workflow_dispatch:   # allow manual runs from the Actions tab
+
+# Only one publish job at a time
+concurrency:
+  group: chrome-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Build, Upload & Release
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write  # needed for creating GitHub Releases
+
+    steps:
+      # ----- checkout & setup ------------------------------------------------
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: npm
+
+      # ----- build -----------------------------------------------------------
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build extension
+        run: npm run build
+
+      # ----- package ---------------------------------------------------------
+      - name: Create ZIP (exclude source maps)
+        run: |
+          cd dist
+          zip -r ../orion-extension.zip . -x "*.map"
+          cd ..
+          echo "ZIP contents:"
+          unzip -l orion-extension.zip
+
+      # ----- extract version for release name --------------------------------
+      - name: Determine version string
+        id: version
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          else
+            # manual dispatch -- fall back to package.json version
+            VERSION=$(node -p "require('./package.json').version")
+            echo "tag=v${VERSION}-manual" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ----- upload to Chrome Web Store -------------------------------------
+      - name: Upload to Chrome Web Store
+        env:
+          EXTENSION_ID: ${{ secrets.CHROME_EXTENSION_ID }}
+          CLIENT_ID: ${{ secrets.CHROME_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.CHROME_CLIENT_SECRET }}
+          REFRESH_TOKEN: ${{ secrets.CHROME_REFRESH_TOKEN }}
+        run: |
+          # Obtain a fresh access token using the refresh token
+          echo "Requesting access token..."
+          TOKEN_RESPONSE=$(curl -s -X POST "https://oauth2.googleapis.com/token" \
+            -d "client_id=${CLIENT_ID}" \
+            -d "client_secret=${CLIENT_SECRET}" \
+            -d "refresh_token=${REFRESH_TOKEN}" \
+            -d "grant_type=refresh_token")
+
+          ACCESS_TOKEN=$(echo "$TOKEN_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+          if [ -z "$ACCESS_TOKEN" ]; then
+            echo "::error::Failed to obtain access token. Response:"
+            echo "$TOKEN_RESPONSE"
+            exit 1
+          fi
+          echo "Access token obtained."
+
+          # Upload the ZIP to the Chrome Web Store (updates the existing item)
+          echo "Uploading extension..."
+          UPLOAD_RESPONSE=$(curl -s \
+            -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+            -H "x-goog-api-version: 2" \
+            -X PUT \
+            -T orion-extension.zip \
+            "https://www.googleapis.com/upload/chromewebstore/v1.1/items/${EXTENSION_ID}")
+
+          UPLOAD_STATUS=$(echo "$UPLOAD_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('uploadState','FAILURE'))")
+          echo "Upload status: $UPLOAD_STATUS"
+
+          if [ "$UPLOAD_STATUS" != "SUCCESS" ]; then
+            echo "::error::Upload failed. Response:"
+            echo "$UPLOAD_RESPONSE"
+            exit 1
+          fi
+
+          # Publish the uploaded item
+          echo "Publishing extension..."
+          PUBLISH_RESPONSE=$(curl -s \
+            -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+            -H "x-goog-api-version: 2" \
+            -H "Content-Length: 0" \
+            -X POST \
+            "https://www.googleapis.com/chromewebstore/v1.1/items/${EXTENSION_ID}/publish")
+
+          PUBLISH_STATUS=$(echo "$PUBLISH_RESPONSE" | python3 -c "import sys,json; sl=json.load(sys.stdin).get('status',['FAILURE']); print(sl[0] if isinstance(sl,list) else sl)")
+          echo "Publish status: $PUBLISH_STATUS"
+
+          if [ "$PUBLISH_STATUS" != "OK" ]; then
+            echo "::warning::Publish returned status: $PUBLISH_STATUS"
+            echo "$PUBLISH_RESPONSE"
+            # Do not fail the job -- "ITEM_PENDING_REVIEW" is common and expected
+          fi
+
+      # ----- GitHub Release --------------------------------------------------
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Orion ${{ steps.version.outputs.tag }}
+          files: orion-extension.zip
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.tag, '-') }}
+
+
+# ============================================================================
+# AZURE PIPELINES EQUIVALENT
+# ============================================================================
+# If the repo stays on Azure DevOps, save the section below as
+# azure-pipelines.yml at the repo root and configure the four secret
+# variables (CHROME_EXTENSION_ID, CHROME_CLIENT_ID, CHROME_CLIENT_SECRET,
+# CHROME_REFRESH_TOKEN) as pipeline variables marked "secret".
+#
+# trigger:
+#   tags:
+#     include:
+#       - v*
+#
+# pool:
+#   vmImage: ubuntu-latest
+#
+# steps:
+#   - task: NodeTool@0
+#     inputs:
+#       versionSpec: '18.x'
+#     displayName: 'Set up Node.js 18'
+#
+#   - script: npm ci
+#     displayName: 'Install dependencies'
+#
+#   - script: npm run build
+#     displayName: 'Build extension'
+#
+#   - script: |
+#       cd dist
+#       zip -r $(Build.ArtifactStagingDirectory)/orion-extension.zip . -x "*.map"
+#     displayName: 'Create ZIP (exclude source maps)'
+#
+#   - script: |
+#       TOKEN_RESPONSE=$(curl -s -X POST "https://oauth2.googleapis.com/token" \
+#         -d "client_id=$(CHROME_CLIENT_ID)" \
+#         -d "client_secret=$(CHROME_CLIENT_SECRET)" \
+#         -d "refresh_token=$(CHROME_REFRESH_TOKEN)" \
+#         -d "grant_type=refresh_token")
+#
+#       ACCESS_TOKEN=$(echo "$TOKEN_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+#
+#       echo "Uploading extension..."
+#       UPLOAD_RESPONSE=$(curl -s \
+#         -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+#         -H "x-goog-api-version: 2" \
+#         -X PUT \
+#         -T $(Build.ArtifactStagingDirectory)/orion-extension.zip \
+#         "https://www.googleapis.com/upload/chromewebstore/v1.1/items/$(CHROME_EXTENSION_ID)")
+#
+#       UPLOAD_STATUS=$(echo "$UPLOAD_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('uploadState','FAILURE'))")
+#       echo "Upload status: $UPLOAD_STATUS"
+#       if [ "$UPLOAD_STATUS" != "SUCCESS" ]; then
+#         echo "##vso[task.logissue type=error]Upload failed"
+#         echo "$UPLOAD_RESPONSE"
+#         exit 1
+#       fi
+#
+#       echo "Publishing extension..."
+#       PUBLISH_RESPONSE=$(curl -s \
+#         -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+#         -H "x-goog-api-version: 2" \
+#         -H "Content-Length: 0" \
+#         -X POST \
+#         "https://www.googleapis.com/chromewebstore/v1.1/items/$(CHROME_EXTENSION_ID)/publish")
+#
+#       PUBLISH_STATUS=$(echo "$PUBLISH_RESPONSE" | python3 -c "import sys,json; sl=json.load(sys.stdin).get('status',['FAILURE']); print(sl[0] if isinstance(sl,list) else sl)")
+#       echo "Publish status: $PUBLISH_STATUS"
+#     displayName: 'Upload & Publish to Chrome Web Store'
+#
+#   - task: GitHubRelease@1
+#     inputs:
+#       gitHubConnection: 'github-service-connection'
+#       repositoryName: '$(Build.Repository.Name)'
+#       action: 'create'
+#       target: '$(Build.SourceVersion)'
+#       tagSource: 'gitTag'
+#       assets: '$(Build.ArtifactStagingDirectory)/orion-extension.zip'
+#       isDraft: false
+#       isPreRelease: false
+#       addChangeLog: true
+#     displayName: 'Create GitHub Release'
+# ============================================================================
